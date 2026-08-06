@@ -122,6 +122,14 @@ typedef struct H264SEIContext {
     H264SEIRecoveryPoint recovery_point;
     H264SEIBufferingPeriod buffering_period;
     H264SEIGreenMetaData green_metadata;
+
+    /* MVC-specific SEI */
+    int sei_mvc_present;
+    H264SEIViewScalabilityInfo vui;
+    H264SEIMultiviewSceneInfo mvs;
+    H264SEIViewDependencyChange vdc;
+    H264SEIMultiviewViewPosition mvp;
+    H264SEIMultiviewAcquisitionInfo mva;
 } H264SEIContext;
 
 struct H264ParamSets;

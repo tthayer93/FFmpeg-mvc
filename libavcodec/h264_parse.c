@@ -21,6 +21,7 @@
 #include "get_bits.h"
 #include "golomb.h"
 #include "h264.h"
+#include "h264dec.h"
 #include "h264pred.h"
 #include "h264_parse.h"
 #include "h264_ps.h"
@@ -530,6 +531,66 @@ int ff_h264_decode_extradata(const uint8_t *data, int size, H264ParamSets *ps,
  *
  * @return profile as defined by AV_PROFILE_H264_*
  */
+int ff_h264_parse_mvc_extension_slice(H264SliceContext *sl, H264Context *h, GetBitContext *gb)
+{
+    int i;
+
+    if (sl->slice_type_nos == AV_PICTURE_TYPE_I)
+        return 0;
+
+    if (!h->ps.sps->inter_view_mvc_pic_flag)
+        return 0;
+
+    for (i = 0; i < 2; i++)
+        h->ref_view_list_count[i] = 0;
+
+    /* E.3.2: num_ref_views_l0_minus1 + refs for P/SP slices */
+    {
+        unsigned nr = get_ue_golomb(gb);
+        if (nr > 31) {
+            av_log(h->avctx, AV_LOG_ERROR, "num_ref_views_l0_minus1 overflow\n");
+            return AVERROR_INVALIDDATA;
+        }
+        for (i = 0; i <= nr; i++) {
+            unsigned view_idc = get_ue_golomb(gb);
+            if (view_idc > 255) {
+                av_log(h->avctx, AV_LOG_ERROR, "ref_view_component_idc overflow\n");
+                return AVERROR_INVALIDDATA;
+            }
+            H264Picture *pic = h->view_pic[view_idc];
+            if (!pic || !pic->f->buf[0]) {
+                av_log(h->avctx, AV_LOG_DEBUG, "view %u not found for inter-view ref L0[%d]\n", view_idc, i);
+                continue;
+            }
+            h->ref_view_list[0][h->ref_view_list_count[0]++] = pic;
+        }
+    }
+
+    /* E.3.2: num_ref_views_l1_minus1 + refs for B slices */
+    if (sl->list_count > 1 && sl->slice_type_nos == AV_PICTURE_TYPE_B) {
+        unsigned nr = get_ue_golomb(gb);
+        if (nr > 31) {
+            av_log(h->avctx, AV_LOG_ERROR, "num_ref_views_l1_minus1 overflow\n");
+            return AVERROR_INVALIDDATA;
+        }
+        for (i = 0; i <= nr; i++) {
+            unsigned view_idc = get_ue_golomb(gb);
+            if (view_idc > 255) {
+                av_log(h->avctx, AV_LOG_ERROR, "ref_view_component_idc overflow\n");
+                return AVERROR_INVALIDDATA;
+            }
+            H264Picture *pic = h->view_pic[view_idc];
+            if (!pic || !pic->f->buf[0]) {
+                av_log(h->avctx, AV_LOG_DEBUG, "view %u not found for inter-view ref L1[%d]\n", view_idc, i);
+                continue;
+            }
+            h->ref_view_list[1][h->ref_view_list_count[1]++] = pic;
+        }
+    }
+
+    return 0;
+}
+
 int ff_h264_get_profile(const SPS *sps)
 {
     int profile = sps->profile_idc;

@@ -162,6 +162,7 @@ typedef struct H264Picture {
     atomic_int *decode_error_flags;
 
     int gray;
+    uint8_t view_id;  ///< MVC view component ID (0 for non-MVC)
 } H264Picture;
 
 typedef struct H264Ref {
@@ -577,6 +578,34 @@ typedef struct H264Context {
     int non_gray;                       ///< Did we encounter a intra frame after a gray gap frame
     int noref_gray;
     int skip_gray;
+
+    /* MVC-specific decoder state */
+    int     mvc_enabled;
+    uint8_t current_view_id;
+    uint8_t temporal_id;
+    uint8_t priority_id;
+    int     nb_views;
+
+    /* Per-view reference tracking */
+    H264Picture *view_pic[32];
+
+    /* MVC inter-view reference lists */
+    int ref_view_list_count[2];
+    H264Picture *ref_view_list[2][32];
+
+    /* View selection AVOptions */
+    uint32_t    seen_view_mask;
+    int        *view_ids;
+    unsigned    nb_view_ids;
+    unsigned   *view_ids_available;
+    unsigned    nb_view_ids_available;
+    unsigned   *view_pos_available;
+    unsigned    nb_view_pos_available;
+
+    int     auto_pack_stereo;
+    AVFrame *sbs_cached_f;
+    int     sbs_cached_poc;
+    int     sbs_pack_view_id;
 } H264Context;
 
 extern const uint16_t ff_h264_mb_sizes[4];
@@ -595,6 +624,8 @@ int ff_h264_alloc_tables(H264Context *h);
 int ff_h264_decode_ref_pic_list_reordering(H264SliceContext *sl, void *logctx);
 int ff_h264_build_ref_list(H264Context *h, H264SliceContext *sl);
 void ff_h264_remove_all_refs(H264Context *h);
+void ff_h264_add_inter_view_ref(H264Context *h, int list, H264Picture *pic);
+void ff_h264_clear_inter_view_refs(H264Context *h);
 
 /**
  * Execute the reference picture marking (memory management control operations).

@@ -425,6 +425,20 @@ int ff_h264_build_ref_list(H264Context *h, H264SliceContext *sl)
     if (FRAME_MBAFF(h))
         h264_fill_mbaff_ref_list(sl);
 
+    if (h->mvc_enabled) {
+        for (int list = 0; list < sl->list_count; list++) {
+            int base = sl->ref_count[list];
+            for (int i = 0; i < h->ref_view_list_count[list]; i++) {
+                int idx = base + i;
+                if (idx >= FF_ARRAY_ELEMS(sl->ref_list[0]))
+                    break;
+                ref_from_h264pic(&sl->ref_list[list][idx], h->ref_view_list[list][i]);
+            }
+            sl->ref_count[list] = FFMIN(base + h->ref_view_list_count[list],
+                                       FF_ARRAY_ELEMS(sl->ref_list[0]));
+        }
+    }
+
     return 0;
 }
 
@@ -583,6 +597,8 @@ void ff_h264_remove_all_refs(H264Context *h)
     h->short_ref_count = 0;
 
     memset(h->default_ref, 0, sizeof(h->default_ref));
+
+    ff_h264_clear_inter_view_refs(h);
 }
 
 static void generate_sliding_window_mmcos(H264Context *h)
@@ -889,4 +905,28 @@ int ff_h264_decode_ref_pic_marking(H264SliceContext *sl, GetBitContext *gb,
     sl->nb_mmco = nb_mmco;
 
     return 0;
+}
+
+void ff_h264_add_inter_view_ref(H264Context *h, int list, H264Picture *pic)
+{
+    int idx = h->ref_view_list_count[list];
+
+    if (idx >= FF_ARRAY_ELEMS(h->ref_view_list[0]))
+        return;
+
+    for (int i = 0; i < idx; i++) {
+        if (h->ref_view_list[list][i] == pic)
+            return;
+    }
+
+    h->ref_view_list[list][idx] = pic;
+    h->ref_view_list_count[list]++;
+}
+
+void ff_h264_clear_inter_view_refs(H264Context *h)
+{
+    for (int list = 0; list < 2; list++) {
+        memset(h->ref_view_list[list], 0, sizeof(h->ref_view_list[0]));
+        h->ref_view_list_count[list] = 0;
+    }
 }

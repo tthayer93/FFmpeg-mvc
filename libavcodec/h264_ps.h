@@ -100,6 +100,18 @@ typedef struct SPS {
     int bit_depth_chroma;                 ///< bit_depth_chroma_minus8 + 8
     int residual_color_transform_flag;    ///< residual_colour_transform_flag
     int constraint_set_flags;             ///< constraint_set[0-3]_flag
+    /* MVC-specific fields (Amd.B) */
+    int     mvc;                      ///< non-zero if this SPS is for an MVC profile
+    uint8_t view_id;                  ///< view component ID
+    uint8_t base_view_id;             ///< view component ID of the base view
+    int     no_base_view_flag;        ///< 1 if no base view exists
+    int     inter_view_mvc_pic_flag;  ///< 1 if inter-view MVC pictures are used
+    int     num_views_minus1;         ///< total number of views minus 1 (from View Scalability Info)
+
+    /* Anchor reference info from SPS extension */
+    int     num_anchor_refs_l0[2];    ///< per L0/L1, from multi_view_sps
+    int     num_anchor_refs_l1[2];
+
     uint8_t data[4096];
     size_t data_size;
 } SPS;
@@ -173,5 +185,16 @@ int ff_h264_decode_picture_parameter_set(GetBitContext *gb, AVCodecContext *avct
  * Uninit H264 param sets structure.
  */
 void ff_h264_ps_uninit(H264ParamSets *ps);
+
+/**
+ * Decode MVC SPS extension (NAL unit type 14)
+ */
+int ff_h264_decode_seq_parameter_set_extension(GetBitContext *gb, AVCodecContext *avctx,
+                                               H264ParamSets *ps, int ignore_truncation);
+
+/**
+ * Return non-zero if profile_idc is an MVC profile.
+ */
+int ff_h264_is_mvc_profile(int profile_idc);
 
 #endif /* AVCODEC_H264_PS_H */

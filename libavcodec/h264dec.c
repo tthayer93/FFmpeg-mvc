@@ -36,6 +36,7 @@
 #include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/thread.h"
+#include "libavutil/stereo3d.h"
 #include "libavutil/video_enc_params.h"
 
 #include "codec_internal.h"
@@ -50,6 +51,7 @@
 #include "golomb.h"
 #include "hwaccel_internal.h"
 #include "hwconfig.h"
+#include "decode.h"
 #include "mpegutils.h"
 #include "profiles.h"
 #include "rectangle.h"
@@ -363,6 +365,10 @@ static av_cold int h264_decode_end(AVCodecContext *avctx)
 
     h->cur_pic_ptr = NULL;
 
+    av_frame_free(&h->sbs_cached_f);
+    h->sbs_cached_poc = INT_MIN;
+    h->sbs_pack_view_id = 0;
+
     av_refstruct_pool_uninit(&h->decode_error_flags_pool);
 
     av_freep(&h->slice_ctx);
@@ -372,6 +378,11 @@ static av_cold int h264_decode_end(AVCodecContext *avctx)
     ff_h264_ps_uninit(&h->ps);
 
     ff_h2645_packet_uninit(&h->pkt);
+
+    av_freep(&h->view_ids_available);
+    h->nb_view_ids_available = 0;
+    av_freep(&h->view_pos_available);
+    h->nb_view_pos_available = 0;
 
     h264_free_pic(h, &h->cur_pic);
     h264_free_pic(h, &h->last_pic_for_ec);
@@ -483,6 +494,8 @@ static av_cold void h264_decode_flush(AVCodecContext *avctx)
     ff_h264_flush_change(h);
     ff_h264_sei_uninit(&h->sei);
 
+    h->seen_view_mask = 0;
+
     for (i = 0; i < H264_MAX_PICTURE_COUNT; i++)
         ff_h264_unref_picture(&h->DPB[i]);
     h->cur_pic_ptr = NULL;
@@ -578,6 +591,53 @@ static void debug_green_metadata(const H264SEIGreenMetaData *gm, void *logctx)
             av_log(logctx, AV_LOG_DEBUG, "  xsd_metric_value: %f\n",
                    (float)gm->xsd_metric_value/100);
     }
+}
+
+static int ff_h264_view_id_requested(const H264Context *h, uint8_t view_id)
+{
+    if (!h->nb_view_ids)
+        return 1;
+    for (unsigned i = 0; i < h->nb_view_ids; i++) {
+        if ((uint8_t)h->view_ids[i] == view_id)
+            return 1;
+    }
+    return 0;
+}
+
+static void ff_h264_update_view_ids_available(H264Context *h)
+{
+    uint32_t mask = h->seen_view_mask;
+    unsigned count = 0;
+
+    if (!mask) {
+        av_freep(&h->view_ids_available);
+        h->nb_view_ids_available = 0;
+        return;
+    }
+
+    while (mask) {
+        count += mask & 1;
+        mask >>= 1;
+    }
+
+    if (h->nb_view_ids_available == count && h->view_ids_available)
+        return;
+
+    av_freep(&h->view_ids_available);
+    h->view_ids_available = av_malloc_array(count, sizeof(*h->view_ids_available));
+    if (!h->view_ids_available) {
+        h->nb_view_ids_available = 0;
+        return;
+    }
+
+    mask = h->seen_view_mask;
+    unsigned total = count;
+    for (unsigned i = 0; mask && count > 0; i++, mask >>= 1) {
+        if (mask & 1)
+            h->view_ids_available[--count] = (unsigned)i;
+    }
+
+    h->nb_view_ids_available = total;
 }
 
 static int decode_nal_units(H264Context *h, AVBufferRef *buf_ref,
@@ -704,14 +764,22 @@ static int decode_nal_units(H264Context *h, AVBufferRef *buf_ref,
                 if (ret < 0)
                     goto end;
             }
-            if (ff_h264_decode_seq_parameter_set(&tmp_gb, avctx, &h->ps, 0) >= 0)
+            if (ff_h264_decode_seq_parameter_set(&tmp_gb, avctx, &h->ps, 0) >= 0) {
+                if (h->ps.sps && ff_h264_is_mvc_profile(h->ps.sps->profile_idc))
+                    h->mvc_enabled = 1;
                 break;
+            }
             av_log(h->avctx, AV_LOG_DEBUG,
                    "SPS decoding failure, trying again with the complete NAL\n");
             init_get_bits8(&tmp_gb, nal->raw_data + 1, nal->raw_size - 1);
-            if (ff_h264_decode_seq_parameter_set(&tmp_gb, avctx, &h->ps, 0) >= 0)
+            if (ff_h264_decode_seq_parameter_set(&tmp_gb, avctx, &h->ps, 0) >= 0) {
+                if (h->ps.sps && ff_h264_is_mvc_profile(h->ps.sps->profile_idc))
+                    h->mvc_enabled = 1;
                 break;
+            }
             ff_h264_decode_seq_parameter_set(&nal->gb, avctx, &h->ps, 1);
+            if (h->ps.sps && ff_h264_is_mvc_profile(h->ps.sps->profile_idc))
+                h->mvc_enabled = 1;
             break;
         }
         case H264_NAL_PPS:
@@ -730,9 +798,59 @@ static int decode_nal_units(H264Context *h, AVBufferRef *buf_ref,
         case H264_NAL_END_SEQUENCE:
         case H264_NAL_END_STREAM:
         case H264_NAL_FILLER_DATA:
-        case H264_NAL_SPS_EXT:
         case H264_NAL_AUXILIARY_SLICE:
             break;
+        case H264_NAL_SPS_EXT: {
+            GetBitContext tmp_gb = nal->gb;
+            if (ff_h264_decode_seq_parameter_set_extension(&tmp_gb, avctx, &h->ps, 0) >= 0) {
+                if (h->ps.sps) {
+                    uint8_t view_id = h->ps.sps->view_id;
+                    h->seen_view_mask |= 1U << view_id;
+                }
+                break;
+            }
+            ff_h264_decode_seq_parameter_set_extension(&nal->gb, avctx, &h->ps, 1);
+            if (h->ps.sps) {
+                uint8_t view_id = h->ps.sps->view_id;
+                h->seen_view_mask |= 1U << view_id;
+            }
+            break;
+        }
+        case H264_NAL_EXTEN_SLICE:
+        case H264_NAL_DEPTH_EXTEN_SLICE: {
+            GetBitContext tmp_gb = nal->gb;
+            int svc_ext_flag = get_bits1(&tmp_gb);
+            if (svc_ext_flag) {
+                get_bits(&tmp_gb, 2);
+            } else {
+                (void)get_bits1(&tmp_gb);
+            }
+            h->current_view_id = show_bits(&tmp_gb, 8);
+            h->mvc_enabled     = 1;
+
+            if (!ff_h264_view_id_requested(h, h->current_view_id))
+                break;
+
+            h->has_slice = 1;
+
+            if ((err = ff_h264_queue_decode_slice(h, nal))) {
+                H264SliceContext *sl = h->slice_ctx + h->nb_slice_ctx_queued;
+                sl->ref_count[0] = sl->ref_count[1] = 0;
+                break;
+            }
+
+            max_slice_ctx = avctx->hwaccel ? 1 : h->nb_slice_ctx;
+            if (h->nb_slice_ctx_queued == max_slice_ctx) {
+                if (h->avctx->hwaccel) {
+                    ret = FF_HW_CALL(avctx, decode_slice, nal->raw_data, nal->raw_size);
+                    h->nb_slice_ctx_queued = 0;
+                } else
+                    ret = ff_h264_execute_decode_slices(h);
+                if (ret < 0 && (h->avctx->err_recognition & AV_EF_EXPLODE))
+                    goto end;
+            }
+            break;
+        }
         default:
             av_log(avctx, AV_LOG_DEBUG, "Unknown NAL code: %d (%d bits)\n",
                    nal->type, nal->size_bits);
@@ -857,6 +975,108 @@ static int h264_export_enc_params(AVFrame *f, const H264Picture *p)
     return 0;
 }
 
+static int try_auto_pack_sbs(H264Context *h, AVFrame *dst, H264Picture *srcp)
+{
+    if (!h->auto_pack_stereo || !h->mvc_enabled)
+        return -1;
+
+    if (h->nb_view_ids_available != 2)
+        return -1;
+
+    if (h->nb_view_ids && h->view_ids[0] != -1)
+        return -1;
+
+    int poc = srcp->poc;
+    int view_id = srcp->view_id;
+    AVFrame *cur_f = srcp->needs_fg ? srcp->f_grain : srcp->f;
+
+    if (poc != h->sbs_cached_poc) {
+        av_frame_unref(h->sbs_cached_f);
+        h->sbs_cached_poc = poc;
+        h->sbs_pack_view_id = view_id;
+
+        if (av_frame_ref(h->sbs_cached_f, cur_f) < 0)
+            return AVERROR(ENOMEM);
+
+        return -1;
+    }
+
+    if (!h->sbs_cached_f->buf[0])
+        return -1;
+
+    const int cached_view_id = h->sbs_pack_view_id;
+    AVFrame *lf, *rf;
+
+    if (view_id < cached_view_id) {
+        lf = cur_f;
+        rf = h->sbs_cached_f;
+    } else {
+        lf = h->sbs_cached_f;
+        rf = cur_f;
+    }
+
+    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(lf->format);
+    if (!desc)
+        return -1;
+
+    const int width  = lf->width;
+    const int height = lf->height;
+    const int hsub   = desc->log2_chroma_w;
+    const int vsub   = desc->log2_chroma_h;
+
+    AVFrame *packed = av_frame_alloc();
+    if (!packed)
+        return -1;
+
+    packed->format  = lf->format;
+    packed->width   = width * 2;
+    packed->height  = height;
+
+    if (av_frame_get_buffer(packed, 0) < 0) {
+        av_frame_free(&packed);
+        return -1;
+    }
+
+    if (av_frame_copy_props(packed, cur_f) < 0) {
+        av_frame_free(&packed);
+        return -1;
+    }
+
+    AVStereo3D *stereo = av_stereo3d_create_side_data(packed);
+    if (stereo) {
+        stereo->type = AV_STEREO3D_SIDEBYSIDE;
+        stereo->view = AV_STEREO3D_VIEW_LEFT;
+    }
+
+    if (srcp->sei_recovery_frame_cnt == 0)
+        packed->flags |= AV_FRAME_FLAG_KEY;
+
+    for (int i = 0; i < av_pix_fmt_count_planes(lf->format); i++) {
+        const int pw = (i == 1 || i == 2) ? AV_CEIL_RSHIFT(width, hsub) : width;
+        const int ph = (i == 1 || i == 2) ? AV_CEIL_RSHIFT(height, vsub) : height;
+        const int bpp = desc->comp[i].step / 8;
+
+        for (int y = 0; y < ph; y++) {
+            memcpy(packed->data[i] + y * packed->linesize[i],
+                   lf->data[i] + y * lf->linesize[i], pw * bpp);
+            memcpy(packed->data[i] + y * packed->linesize[i] + pw * bpp,
+                   rf->data[i] + y * rf->linesize[i], pw * bpp);
+        }
+    }
+
+    av_frame_unref(dst);
+    if (av_frame_ref(dst, packed) < 0) {
+        int err = AVERROR(ENOMEM);
+        av_frame_free(&packed);
+        return err;
+    }
+
+    av_frame_unref(h->sbs_cached_f);
+    h->sbs_cached_poc = INT_MIN;
+
+    return 0;
+}
+
 static int output_frame(H264Context *h, AVFrame *dst, H264Picture *srcp)
 {
     int ret;
@@ -889,6 +1109,16 @@ static int output_frame(H264Context *h, AVFrame *dst, H264Picture *srcp)
 
     if (!(h->avctx->export_side_data & AV_CODEC_EXPORT_DATA_FILM_GRAIN))
         av_frame_remove_side_data(dst, AV_FRAME_DATA_FILM_GRAIN_PARAMS);
+
+    if (h->mvc_enabled) {
+        int view_id = srcp->view_id;
+        AVFrameSideData *sd;
+
+        ff_frame_new_side_data(h->avctx, dst,
+                               AV_FRAME_DATA_VIEW_ID, sizeof(int), &sd);
+        if (sd)
+            *(int *)sd->data = view_id;
+    }
 
     return 0;
 fail:
@@ -957,11 +1187,19 @@ static int finalize_frame(H264Context *h, AVFrame *dst, H264Picture *out, int *g
                           f->format, f->width, f->height>>1);
         }
 
-        ret = output_frame(h, dst, out);
-        if (ret < 0)
+        if ((ret = try_auto_pack_sbs(h, dst, out)) == 0) {
+            *got_frame = 1;
+        } else if (ret < -1) {
             return ret;
+        }
 
-        *got_frame = 1;
+        if (!*got_frame) {
+            ret = output_frame(h, dst, out);
+            if (ret < 0)
+                return ret;
+
+            *got_frame = 1;
+        }
 
         if (CONFIG_MPEGVIDEODEC) {
             ff_print_debug_info2(h->avctx, dst,
@@ -1071,6 +1309,14 @@ static int h264_decode_frame(AVCodecContext *avctx, AVFrame *pict,
         if ((ret = ff_h264_field_end(h, &h->slice_ctx[0], 0)) < 0)
             return ret;
 
+        if (h->cur_pic_ptr) {
+            h->cur_pic_ptr->view_id = h->current_view_id;
+            if (h->mvc_enabled && h->current_view_id < 32)
+                h->view_pic[h->current_view_id] = h->cur_pic_ptr;
+        }
+
+        ff_h264_update_view_ids_available(h);
+
         /* Wait for second field. */
         if (h->next_output_pic) {
             ret = finalize_frame(h, pict, h->next_output_pic, got_frame);
@@ -1089,6 +1335,7 @@ static int h264_decode_frame(AVCodecContext *avctx, AVFrame *pict,
 #define OFFSET(x) offsetof(H264Context, x)
 #define VD AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_DECODING_PARAM
 #define VDX VD | AV_OPT_FLAG_EXPORT
+
 static const AVOption h264_options[] = {
     { "is_avc", "is avc", OFFSET(is_avc), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, VDX },
     { "nal_length_size", "nal_length_size", OFFSET(nal_length_size), AV_OPT_TYPE_INT, {.i64 = 0}, 0, 4, VDX },
@@ -1096,6 +1343,17 @@ static const AVOption h264_options[] = {
     { "x264_build", "Assume this x264 version if no x264 version found in any SEI", OFFSET(x264_build), AV_OPT_TYPE_INT, {.i64 = -1}, -1, INT_MAX, VD },
     { "skip_gray", "Do not return gray gap frames", OFFSET(skip_gray), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, VD },
     { "noref_gray", "Avoid using gray gap frames as references", OFFSET(noref_gray), AV_OPT_TYPE_BOOL, {.i64 = 1}, 0, 1, VD },
+    { "view_ids", "Array of view IDs that should be decoded and output; a single -1 to decode all views",
+        .offset = OFFSET(view_ids), .type = AV_OPT_TYPE_INT | AV_OPT_TYPE_FLAG_ARRAY,
+        .min = -1, .max = INT_MAX, .flags = VD },
+    { "view_ids_available", "Array of available view IDs is exported here",
+        .offset = OFFSET(view_ids_available), .type = AV_OPT_TYPE_UINT | AV_OPT_TYPE_FLAG_ARRAY,
+        .flags = VDX | AV_OPT_FLAG_READONLY },
+    { "view_pos_available", "Array of view positions for view_ids_available",
+        .offset = OFFSET(view_pos_available), .type = AV_OPT_TYPE_UINT | AV_OPT_TYPE_FLAG_ARRAY,
+        .flags = VDX | AV_OPT_FLAG_READONLY },
+    { "auto_pack_stereo", "Automatically pack 2-view MVC into side-by-side",
+        OFFSET(auto_pack_stereo), AV_OPT_TYPE_BOOL, {.i64 = 1}, 0, 1, VD },
     { NULL },
 };
 

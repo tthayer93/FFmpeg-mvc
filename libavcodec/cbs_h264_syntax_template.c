@@ -46,23 +46,22 @@ static int FUNC(nal_unit_header)(CodedBitstreamContext *ctx, RWContext *rw,
     if (current->nal_unit_type == 14 ||
         current->nal_unit_type == 20 ||
         current->nal_unit_type == 21) {
-        if (current->nal_unit_type != 21)
+        if (current->nal_unit_type != 21) {
             flag(svc_extension_flag);
-        else
+            if (!current->svc_extension_flag)
+                flag(avc_3d_extension_flag);
+        } else {
             flag(avc_3d_extension_flag);
+        }
 
         if (current->svc_extension_flag) {
             av_log(ctx->log_ctx, AV_LOG_ERROR, "SVC not supported.\n");
             return AVERROR_PATCHWELCOME;
-
-        } else if (current->avc_3d_extension_flag) {
-            av_log(ctx->log_ctx, AV_LOG_ERROR, "3DAVC not supported.\n");
-            return AVERROR_PATCHWELCOME;
-
-        } else {
-            av_log(ctx->log_ctx, AV_LOG_ERROR, "MVC not supported.\n");
-            return AVERROR_PATCHWELCOME;
         }
+
+        if (current->avc_3d_extension_flag)
+            av_log(ctx->log_ctx, AV_LOG_WARNING,
+                   "3D-AVC extension is experimental.\n");
     }
 
     return 0;
@@ -1181,13 +1180,7 @@ static int FUNC(slice_header)(CodedBitstreamContext *ctx, RWContext *rw,
         }
     }
 
-    if (current->nal_unit_header.nal_unit_type == 20 ||
-        current->nal_unit_header.nal_unit_type == 21) {
-        av_log(ctx->log_ctx, AV_LOG_ERROR, "MVC / 3DAVC not supported.\n");
-        return AVERROR_PATCHWELCOME;
-    } else {
-        CHECK(FUNC(ref_pic_list_modification)(ctx, rw, current));
-    }
+    CHECK(FUNC(ref_pic_list_modification)(ctx, rw, current));
 
     if ((pps->weighted_pred_flag && (slice_type_p || slice_type_sp)) ||
         (pps->weighted_bipred_idc == 1 && slice_type_b)) {

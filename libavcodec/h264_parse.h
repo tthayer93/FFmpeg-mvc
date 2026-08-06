@@ -121,8 +121,16 @@ int ff_h264_init_poc(int pic_field_poc[2], int *pic_poc,
                      int picture_structure, int nal_ref_idc);
 
 int ff_h264_decode_extradata(const uint8_t *data, int size, H264ParamSets *ps,
-                             int *is_avc, int *nal_length_size,
-                             int err_recognition, void *logctx);
+                              int *is_avc, int *nal_length_size,
+                              int err_recognition, void *logctx);
+
+typedef struct H264SliceContext H264SliceContext;
+typedef struct H264Context     H264Context;
+
+/**
+ * Parse MVC extension slice header elements (H.264 Amd.B E.3.2).
+ */
+int ff_h264_parse_mvc_extension_slice(H264SliceContext *sl, H264Context *h, GetBitContext *gb);
 
 static av_always_inline uint32_t pack16to32(unsigned a, unsigned b)
 {

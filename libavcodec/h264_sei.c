@@ -57,6 +57,8 @@ void ff_h264_sei_uninit(H264SEIContext *h)
     h->common.frame_packing.present       = 0;
     h->common.display_orientation.present = 0;
 
+    h->sei_mvc_present = 0;
+
     ff_h2645_sei_reset(&h->common);
 }
 
@@ -226,6 +228,166 @@ static int decode_green_metadata(H264SEIGreenMetaData *h, GetByteContext *gb)
     return 0;
 }
 
+static int decode_view_scalability_info(H264SEIViewScalabilityInfo *h, GetBitContext *gb)
+{
+    unsigned i, j;
+    int nops = get_ue_golomb_31(gb);
+
+    if (nops >= 32) {
+        av_log(NULL, AV_LOG_ERROR, "num_operations_points_minus1 out of range: %d\n", nops);
+        return AVERROR_INVALIDDATA;
+    }
+    h->num_operations_points_minus1 = nops;
+
+    for (i = 0; i <= nops; i++) {
+        int num_views = get_ue_golomb_31(gb);
+
+        if (num_views >= 32) {
+            av_log(NULL, AV_LOG_ERROR, "num_target_views_minus1 out of range: %d\n", num_views);
+            return AVERROR_INVALIDDATA;
+        }
+
+        h->op_id[i] = get_bits(gb, 8);
+
+        for (j = 0; j <= num_views; j++) {
+            skip_bits1(gb); // target_view_component_idc - not stored separately, view component ID is derived from view_id
+            h->target_temporal_id[i][j] = get_ue_golomb_31(gb); // target_temporal_id_minus1 + 1
+            skip_bits1(gb); // target_quality_id - always 0 for MVC
+        }
+
+        h->num_target_views[i] = num_views;
+    }
+
+    return 0;
+}
+
+static int decode_multiview_scene_info(H264SEIMultiviewSceneInfo *h, GetBitContext *gb)
+{
+    unsigned i;
+    int info_type = get_bits(gb, 8);
+    int nviews = get_ue_golomb_31(gb);
+
+    if (nviews >= 256) {
+        av_log(NULL, AV_LOG_ERROR, "num_views_minus1 out of range: %d\n", nviews);
+        return AVERROR_INVALIDDATA;
+    }
+
+    h->multiview_scene_info_type = info_type;
+    h->num_views_minus1 = nviews;
+
+    for (i = 0; i <= nviews; i++) {
+        int view_comp_idc = get_bits(gb, 8);
+        int pos_orient_flag = 0;
+
+        if ((view_comp_idc == 0) && (info_type != 1))
+            continue;
+
+        h->view_component_idc[i] = view_comp_idc;
+
+        if (info_type == 0) {
+            skip_bits1(gb); // base_view_flag - handled implicitly
+        } else {
+            int horiz_fov_present = get_bits1(gb);
+            pos_orient_flag = get_bits1(gb);
+
+            if (horiz_fov_present)
+                h->horizontal_fov[i] = get_bits(gb, 16);
+        }
+
+        if (pos_orient_flag) {
+            h->view_position_horizontal[i]      = get_se_golomb_long(gb);
+            h->view_position_vertical[i]        = get_se_golomb_long(gb);
+            h->view_orientation_horizontal[i]   = get_se_golomb_long(gb);
+            h->view_orientation_vertical[i]     = get_se_golomb_long(gb);
+        }
+    }
+
+    return 0;
+}
+
+static int decode_multiview_acquisition_info(H264SEIMultiviewAcquisitionInfo *h, GetBitContext *gb)
+{
+    unsigned i;
+    int nviews = get_ue_golomb_31(gb);
+
+    if (nviews >= 256) {
+        av_log(NULL, AV_LOG_ERROR, "num_views_minus1 out of range: %d\n", nviews);
+        return AVERROR_INVALIDDATA;
+    }
+
+    h->multiview_acquisition_info_type = get_bits(gb, 8);
+    h->pan_radius                      = get_bits(gb, 16);
+    h->elevation_angle                 = get_se_golomb_long(gb);
+    h->display_width                   = get_bits(gb, 16);
+    h->display_height                  = get_bits(gb, 16);
+    h->interaxial_distance_mm          = get_bits(gb, 16);
+    h->disable_rotation_warping_flag   = get_bits1(gb);
+
+    if (!h->disable_rotation_warping_flag) {
+        h->pan_angular_velocity_limit   = get_bits(gb, 32);
+        h->tilt_angular_velocity_limit  = get_bits(gb, 32);
+        h->roll_angular_velocity_limit  = get_bits(gb, 32);
+    }
+
+    h->num_views_minus1 = nviews;
+
+    for (i = 0; i <= nviews; i++) {
+        h->horizontal_fov[i]           = get_bits(gb, 16);
+        h->vertical_fov[i]             = get_bits(gb, 16);
+    }
+
+    return 0;
+}
+
+static int decode_view_dependency_change(H264SEIViewDependencyChange *h, GetBitContext *gb)
+{
+    unsigned i;
+    int num_changes = get_ue_golomb_31(gb);
+
+    if (num_changes >= 32) {
+        av_log(NULL, AV_LOG_ERROR, "num_view_dependency_change out of range: %d\n", num_changes);
+        return AVERROR_INVALIDDATA;
+    }
+
+    h->num_view_dependency_change = num_changes;
+
+    for (i = 0; i < num_changes; i++) {
+        h->old_view_id[i] = get_bits(gb, 8);
+        h->new_view_id[i] = get_bits(gb, 8);
+    }
+
+    return 0;
+}
+
+static int decode_multiview_view_position(H264SEIMultiviewViewPosition *h, GetBitContext *gb)
+{
+    unsigned i;
+    int nviews = get_ue_golomb_31(gb);
+
+    if (nviews >= 256) {
+        av_log(NULL, AV_LOG_ERROR, "num_views out of range: %d\n", nviews);
+        return AVERROR_INVALIDDATA;
+    }
+
+    h->num_views = nviews + 1;
+
+    for (i = 0; i <= nviews; i++) {
+        int is_3d_ref_present;
+
+        h->view_id[i] = get_bits(gb, 8);
+        is_3d_ref_present = get_bits1(gb);
+
+        if (is_3d_ref_present) {
+            h->display_position_horizontal[i] = get_se_golomb_long(gb);
+            h->display_position_vertical[i]   = get_se_golomb_long(gb);
+        }
+
+        h->is_3d_reference_display_present[i] = is_3d_ref_present;
+    }
+
+    return 0;
+}
+
 int ff_h264_sei_decode(H264SEIContext *h, GetBitContext *gb,
                        const H264ParamSets *ps, void *logctx)
 {
@@ -278,6 +440,26 @@ int ff_h264_sei_decode(H264SEIContext *h, GetBitContext *gb,
             break;
         case SEI_TYPE_GREEN_METADATA:
             ret = decode_green_metadata(&h->green_metadata, &gbyte_payload);
+            break;
+        case SEI_TYPE_VIEW_SCALABILITY_INFO:
+            ret = decode_view_scalability_info(&h->vui, &gb_payload);
+            if (ret >= 0) h->sei_mvc_present = 1;
+            break;
+        case SEI_TYPE_MULTIVIEW_SCENE_INFO_4:
+            ret = decode_multiview_scene_info(&h->mvs, &gb_payload);
+            if (ret >= 0) h->sei_mvc_present = 1;
+            break;
+        case SEI_TYPE_MULTIVIEW_ACQUISITION_INFO_4:
+            ret = decode_multiview_acquisition_info(&h->mva, &gb_payload);
+            if (ret >= 0) h->sei_mvc_present = 1;
+            break;
+        case SEI_TYPE_VIEW_DEPENDENCY_CHANGE:
+            ret = decode_view_dependency_change(&h->vdc, &gb_payload);
+            if (ret >= 0) h->sei_mvc_present = 1;
+            break;
+        case SEI_TYPE_MULTIVIEW_VIEW_POSITION_4:
+            ret = decode_multiview_view_position(&h->mvp, &gb_payload);
+            if (ret >= 0) h->sei_mvc_present = 1;
             break;
         default:
             ret = ff_h2645_sei_message_decode(&h->common, type, AV_CODEC_ID_H264,

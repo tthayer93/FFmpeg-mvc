@@ -144,6 +144,54 @@ enum SEIType {
  *
  * The semantics of the common values are the same for all standards.
  */
+typedef struct {
+    int num_operations_points_minus1;
+    uint8_t op_id[32];
+    int num_target_views[32];
+    uint8_t target_temporal_id[32][32];
+} H264SEIViewScalabilityInfo;
+
+typedef struct {
+    int multiview_scene_info_type;
+    uint8_t view_component_idc[256];
+    uint16_t horizontal_fov[256];
+    int16_t view_position_horizontal[256];
+    int16_t view_position_vertical[256];
+    int16_t view_orientation_horizontal[256];
+    int16_t view_orientation_vertical[256];
+    int num_views_minus1;
+} H264SEIMultiviewSceneInfo;
+
+typedef struct {
+    int num_view_dependency_change;
+    uint8_t old_view_id[32];
+    uint8_t new_view_id[32];
+} H264SEIViewDependencyChange;
+
+typedef struct {
+    uint8_t view_id[256];
+    int is_3d_reference_display_present[256];
+    int32_t display_position_horizontal[256];
+    int32_t display_position_vertical[256];
+    int num_views;
+} H264SEIMultiviewViewPosition;
+
+typedef struct {
+    uint8_t multiview_acquisition_info_type;
+    uint16_t pan_radius;
+    int16_t elevation_angle;
+    uint16_t horizontal_fov[256];
+    uint16_t vertical_fov[256];
+    uint16_t display_width;
+    uint16_t display_height;
+    uint16_t interaxial_distance_mm;
+    int disable_rotation_warping_flag;
+    uint32_t pan_angular_velocity_limit;
+    uint32_t tilt_angular_velocity_limit;
+    uint32_t roll_angular_velocity_limit;
+    int num_views_minus1;
+} H264SEIMultiviewAcquisitionInfo;
+
 typedef enum {
     SEI_FPA_H264_TYPE_CHECKERBOARD        = 0,
     SEI_FPA_H264_TYPE_INTERLEAVE_COLUMN   = 1,

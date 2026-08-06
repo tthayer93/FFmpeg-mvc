@@ -327,6 +327,7 @@ int ff_h264_decode_seq_parameter_set(GetBitContext *gb, AVCodecContext *avctx,
     sps->constraint_set_flags = constraint_set_flags;
     sps->level_idc            = level_idc;
     sps->vui.video_full_range_flag = -1;
+    sps->mvc                   = ff_h264_is_mvc_profile(profile_idc);
 
     memset(sps->scaling_matrix4, 16, sizeof(sps->scaling_matrix4));
     memset(sps->scaling_matrix8, 16, sizeof(sps->scaling_matrix8));
@@ -591,6 +592,109 @@ int ff_h264_decode_seq_parameter_set(GetBitContext *gb, AVCodecContext *avctx,
 fail:
     av_refstruct_unref(&sps);
     return AVERROR_INVALIDDATA;
+}
+
+int ff_h264_is_mvc_profile(int profile_idc)
+{
+    return (profile_idc == 118 ||
+            profile_idc == 128 ||
+            profile_idc == 138);
+}
+
+static int decode_multi_view_sps(GetBitContext *gb, SPS *sps, void *logctx)
+{
+    unsigned int i;
+    int num_anchor_refs_l0_minus1[2];
+    int num_anchor_refs_l1_minus1[2];
+    int base_view_flag;
+
+    base_view_flag = get_bits1(gb);
+    if (!base_view_flag) {
+        sps->base_view_id = get_bits(gb, 8) + 1;
+        sps->no_base_view_flag = 0;
+    } else {
+        sps->base_view_id = 0;
+        sps->no_base_view_flag = 1;
+    }
+
+    sps->inter_view_mvc_pic_flag = get_bits1(gb);
+
+    for (i = 0; i < 2; i++) {
+        num_anchor_refs_l0_minus1[i] = get_ue_golomb_31(gb);
+        if (num_anchor_refs_l0_minus1[i] > 15U) {
+            av_log(logctx, AV_LOG_ERROR, "num_anchor_refs_l0_minus1 invalid\n");
+            return AVERROR_INVALIDDATA;
+        }
+    }
+
+    for (i = 0; i < 2; i++) {
+        num_anchor_refs_l1_minus1[i] = get_ue_golomb_31(gb);
+        if (num_anchor_refs_l1_minus1[i] > 15U) {
+            av_log(logctx, AV_LOG_ERROR, "num_anchor_refs_l1_minus1 invalid\n");
+            return AVERROR_INVALIDDATA;
+        }
+    }
+
+    sps->num_anchor_refs_l0[0] = num_anchor_refs_l0_minus1[0] + 1;
+    sps->num_anchor_refs_l0[1] = num_anchor_refs_l0_minus1[1] + 1;
+    sps->num_anchor_refs_l1[0] = num_anchor_refs_l1_minus1[0] + 1;
+    sps->num_anchor_refs_l1[1] = num_anchor_refs_l1_minus1[1] + 1;
+
+    return 0;
+}
+
+int ff_h264_decode_seq_parameter_set_extension(GetBitContext *gb, AVCodecContext *avctx,
+                                                H264ParamSets *ps, int ignore_truncation)
+{
+    SPS *sps;
+    int view_id;
+    unsigned int svc_extension_flag;
+    unsigned int avc_3d_extension_flag;
+    int ret;
+    int i;
+
+    svc_extension_flag = get_bits1(gb);
+    if (svc_extension_flag) {
+        av_log(avctx, AV_LOG_VERBOSE, "SVC SPS extension not supported\n");
+        return 0;
+    }
+
+    avc_3d_extension_flag = get_bits1(gb);
+    if (avc_3d_extension_flag) {
+        av_log(avctx, AV_LOG_VERBOSE, "3D-AVC SPS extension not supported\n");
+        return 0;
+    }
+
+    view_id = get_bits(gb, 8);
+    skip_bits_long(gb, 6);  /* priority_id */
+    skip_bits_long(gb, 3);  /* temporal_id - 1 */
+    skip_bits_long(gb, 1);  /* layer_dependency_flag */
+
+    sps = NULL;
+    for (i = 0; i < MAX_SPS_COUNT; i++) {
+        if (!ps->sps_list[i])
+            continue;
+        if (view_id < ps->sps_list[i]->view_id)
+            break;
+        sps = (SPS *)ps->sps_list[i];
+    }
+
+    if (!sps || !ff_h264_is_mvc_profile(sps->profile_idc)) {
+        av_log(avctx, AV_LOG_VERBOSE, "No matching MVC SPS found for view %d\n", view_id);
+        return 0;
+    }
+
+    sps->view_id = (uint8_t)view_id;
+    sps->mvc = 1;
+
+    ret = decode_multi_view_sps(gb, sps, avctx);
+    if (ret < 0)
+        return ret;
+
+    av_log(avctx, AV_LOG_VERBOSE, "MVC SPS extension: view_id=%d base_view_id=%d no_base_view=%d inter_view=%d\n",
+           view_id, sps->base_view_id, sps->no_base_view_flag, sps->inter_view_mvc_pic_flag);
+
+    return 0;
 }
 
 static void init_dequant8_coeff_table(PPS *pps, const SPS *sps)

@@ -1829,11 +1829,18 @@ static int h264_slice_header_parse(const H264Context *h, H264SliceContext *sl,
         return ret;
 
     if (sl->slice_type_nos != AV_PICTURE_TYPE_I) {
-       ret = ff_h264_decode_ref_pic_list_reordering(sl, h->avctx);
-       if (ret < 0) {
-           sl->ref_count[1] = sl->ref_count[0] = 0;
-           return ret;
-       }
+        ret = ff_h264_decode_ref_pic_list_reordering(sl, h->avctx);
+        if (ret < 0) {
+            sl->ref_count[1] = sl->ref_count[0] = 0;
+            return ret;
+        }
+    }
+
+    /* Parse MVC extension slice header elements */
+    if (nal->type == H264_NAL_EXTEN_SLICE && h->ps.sps->inter_view_mvc_pic_flag) {
+        ret = ff_h264_parse_mvc_extension_slice(sl, (H264Context *)h, &sl->gb);
+        if (ret < 0)
+            return ret;
     }
 
     sl->pwt.use_weight = 0;
