@@ -647,6 +647,9 @@ typedef struct H264Context {
     /** One-shot warning flag for the drop above. */
     int mvc_missing_view_warned;
 
+    /** One-shot warning flag for the hardware-acceleration software fallback. */
+    int mvc_hw_fallback_warned;
+
     /** Per-packet latch set when a VCL NAL is skipped because its view is
      *  not user-selected (view_ids option); lets the "no frame!" check in
      *  h264_decode_frame() consume fully-deselected packets. Reset per
