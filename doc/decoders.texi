@@ -92,6 +92,9 @@ type 15) is parsed (view list, per-view anchor/non-anchor reference lists,
 operations, mvc VUI), and dependent-view slices (NAL unit types 19-23) are
 decoded using their 24-bit NAL unit header extension.
 
+H.264/MVC is decoded in software; hardware acceleration is not supported
+and requests fall back to software with a warning.
+
 By default, a @emph{two-view} stream decoded with all views selected is
 assembled into a @emph{single} native side-by-side (SBS) frame per access unit
 (twice the view width) carrying one @code{AV_FRAME_DATA_STEREO3D} entry (type
