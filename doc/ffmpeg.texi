@@ -3249,6 +3249,53 @@ ffmpeg -i src.ext -lmax 21*QP2LAMBDA dst.ext
 @end itemize
 @c man end EXAMPLES
 
+@section Multiview video (H.264/MVC)
+
+The h264 decoder decodes H.264/MVC multiview streams (one picture per view per
+access unit); views are selected with the view specifiers on @option{-map}
+(see above). Two specifics apply: the decoder outputs all views by default
+(unlike MV-HEVC's base-layer default), so single-eye extraction needs an
+explicit @code{view:} specifier (a bare @option{-map} or @code{vidx:0} selects
+all views, delivered as one native side-by-side frame on a re-packable
+two-view stream); and the bitstream carries no view position information, so
+the @code{vpos:} specifier does not apply.
+
+On a two-view stream the all-views default is delivered natively as one
+side-by-side (SBS) frame per access unit (twice the view width, a single
+stereo side data entry) instead of two interleaved full-size frames.
+Single-eye extraction - an explicit @code{view:} specifier or the legacy
+@option{view_ids} option - still yields one single-view stream per access
+unit; the decoder adds no stereo side data in single-eye mode (container- or
+frame-packing-SEI-derived stereo side data passes through unchanged).
+
+@example
+# decode only the view with view ID 0
+ffmpeg -i stereo.h264 -map 0:v:view:0 -an base.mkv
+
+# decode only the view with view ID 1
+ffmpeg -i stereo.h264 -map 0:v:view:1 -an view1.mkv
+
+# all views (default): one native side-by-side frame per access unit
+ffmpeg -i stereo.h264 -an sbs.mkv
+@end example
+
+A side-by-side image can also be produced by decoding each eye and stacking
+the results; keep this per-eye recipe as the fallback for single-eye
+workflows, or when frame-exact agreement with the single-eye decode matters on
+streams showing the small base-view delivery-order residual of the all-views
+decode (the native all-views SBS packs the all-views decode verbatim; see the
+h264 decoder documentation).
+The per-eye decodes below use the global @option{view_ids} input option
+(pre-@option{-i} form); it is equivalent to the @code{view:} form above, but
+ffmpeg prints a non-fatal warning recommending the view specifiers, and it
+cannot be combined with view specifiers on @option{-map}.
+
+@example
+ffmpeg -view_ids 0 -i stereo.h264 -map 0:v:0 -an left.mkv
+ffmpeg -view_ids 1 -i stereo.h264 -map 0:v:0 -an right.mkv
+ffmpeg -i left.mkv -i right.mkv -filter_complex "[0:v][1:v]hstack" sbs.mkv
+@end example
+
 @include config.texi
 @ifset config-all
 @ifset config-avutil

@@ -83,6 +83,92 @@ this option.
 
 @end table
 
+@section h264
+H.264/AVC (AKA ITU-T H.264 or ISO/IEC 14496-10) decoder.
+
+The decoder also supports H.264/MVC multiview streams: the Annex E
+@code{sequence_parameter_set_mvc_extension} carried by subset SPSes (NAL unit
+type 15) is parsed (view list, per-view anchor/non-anchor reference lists,
+operations, mvc VUI), and dependent-view slices (NAL unit types 19-23) are
+decoded using their 24-bit NAL unit header extension.
+
+By default, a @emph{two-view} stream decoded with all views selected is
+assembled into a @emph{single} native side-by-side (SBS) frame per access unit
+(twice the view width) carrying one @code{AV_FRAME_DATA_STEREO3D} entry (type
+@code{side-by-side}, left eye physically left per the eye-order rule below).
+Native SBS applies only when exactly two views are selected, the frame carries
+no stereo side data or a temporally-separated / already side-by-side
+arrangement (full frames, not sub-images), and the view width is even; in
+every other case the previous behaviour is kept - selected views output
+interleaved in presentation order (base view first within each access unit):
+the unchanged delivery for single-eye selection, plain 2D / single-view H.264,
+more than two views, and top/bottom, checkerboard, lines or columns
+arrangements.
+
+Eye order: the left/right mapping is taken from the stereo arrangement
+(@code{AV_FRAME_DATA_STEREO3D}) on the frame (container or frame-packing SEI).
+An inverted kind (e.g. @code{block_rl}) makes view 0 (the base view, delivered
+first) the @emph{right} eye; otherwise - and when no arrangement information is
+present at all - view 0 is the @emph{left} eye. The emitted frame always
+carries a plain (non-inverted) side-by-side tag, since the left eye is placed
+physically on the left.
+
+The assembled frame carries no per-view @code{AV_FRAME_DATA_VIEW_ID} entry or
+per-eye arrangement metadata (the original per-eye tags are dropped), and
+inherits its presentation timestamp, flags, metadata, colour description and
+cropping from the @emph{dependent} half of the access unit; in particular
+@code{av_frame_copy_props} also transfers that half's decode-data private
+reference, which DR1 (@code{AV_CODEC_CAP_RECEIVE_FRAME} frame-threaded)
+decoders require every delivered frame to carry.
+
+The dependent view references a co-located picture of the base view: in the
+single-eye decode that anchor sits in the base view's delay queue when the
+dependent half parses its reference list; in the all-views decode it has
+already been committed and held for SBS assembly, and is not visible there.
+The inter-view anchor lookup therefore resolves the anchor from the per-view
+short-term reference and delay queues first and, on a miss, falls back to the
+decoded picture buffer matching the anchor's view ID and POC (preferring the
+most recently decoded frame number). Both modes resolve the same anchor, so
+the all-views decode of the dependent view matches the single-eye decode of
+it; the fallback is unreachable in single-eye (the anchor is always in the
+delay queue) and in single-view (2D) streams (no inter-view reference at
+all), so single-eye and 2D output stay byte-identical to the pre-fix
+behaviour.
+
+Known residual: for some streams the @emph{base} view of the all-views decode
+differs from the single-eye decode of the base view in delivery order and
+window priming only - the pixels are the same, but a few frames are delivered
+in a different order or at a shifted window boundary (most pronounced around
+POC-epoch restarts). Both halves of an assembled SBS frame come from the same
+access unit, so this reordering is not visible in the SBS output, and
+single-eye output stays byte-identical to the pre-SBS behaviour. This residual
+is documented rather than fixed: removing it would require reworking the frame
+commit/hold state machine that feeds the SBS assembly.
+
+Note that if you are using the @code{ffmpeg} CLI tool, you should be using view
+specifiers as documented in its manual, rather than the options documented here.
+
+@subsection Options
+
+@table @option
+
+@item view_ids (H.264/MVC)
+Specify a list of view IDs to decode and output; a single '-1' (or the option
+unset) decodes and outputs all views defined in the SPS.
+
+@item view_ids_available (H.264/MVC)
+Readable by the caller: the array of view IDs available in the active SPS,
+empty for single-view video. Guaranteed accurate when read from the
+@code{get_format()} callback; at other times informational only, and may be
+incorrect (e.g. when the stream contains multiple distinct SPSes).
+
+@item view_pos_available (H.264/MVC)
+Not populated for H.264/MVC: unlike MV-HEVC, the bitstream carries no view
+position (left/right) information, so the array is always empty; select views
+by ID or index instead.
+
+@end table
+
 @section rawvideo
 
 Raw video decoder.

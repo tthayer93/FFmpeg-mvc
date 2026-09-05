@@ -137,6 +137,15 @@ typedef struct InputFilterPriv {
 
     AVFifo             *frame_queue;
 
+    /* pts, in AV_TIME_BASE units, of the first frame that passes this
+     * input's trim start - the anchor the input trim uses for its
+     * relative duration (AV_NOPTS_VALUE until such a frame is seen).
+     * On graph reconfiguration the recreated trim would re-anchor the
+     * relative duration at the next frame, silently extending an
+     * input-side -t past the requested limit; configure_input_*_filter()
+     * uses this to rebuild the trim with an absolute end instead. */
+    int64_t             trim_first_pts_us;
+
     AVBufferRef        *hw_frames_ctx;
 
     int                 displaymatrix_present;
@@ -1002,6 +1011,7 @@ static InputFilter *ifilter_alloc(FilterGraph *fg)
 
     ifilter->index       = fg->nb_inputs - 1;
     ifp->format          = -1;
+    ifp->trim_first_pts_us = AV_NOPTS_VALUE;
     ifp->color_space     = AVCOL_SPC_UNSPECIFIED;
     ifp->color_range     = AVCOL_RANGE_UNSPECIFIED;
     ifp->alpha_mode      = AVALPHA_MODE_UNSPECIFIED;
@@ -1540,6 +1550,7 @@ int fg_finalise_bindings(void)
 }
 
 static int insert_trim(void *logctx, int64_t start_time, int64_t duration,
+                       int64_t end_time,
                        AVFilterContext **last_filter, int *pad_idx,
                        const char *filter_name)
 {
@@ -1550,7 +1561,8 @@ static int insert_trim(void *logctx, int64_t start_time, int64_t duration,
     const char *name = (type == AVMEDIA_TYPE_VIDEO) ? "trim" : "atrim";
     int ret = 0;
 
-    if (duration == INT64_MAX && start_time == AV_NOPTS_VALUE)
+    if (duration == INT64_MAX && end_time == INT64_MAX &&
+        start_time == AV_NOPTS_VALUE)
         return 0;
 
     trim = avfilter_get_by_name(name);
@@ -1564,7 +1576,13 @@ static int insert_trim(void *logctx, int64_t start_time, int64_t duration,
     if (!ctx)
         return AVERROR(ENOMEM);
 
-    if (duration != INT64_MAX) {
+    if (end_time != INT64_MAX) {
+        /* An absolute end time: fixed against the stream timestamps, so
+         * it survives a filtergraph reconfiguration that would otherwise
+         * re-anchor the relative duration at the next frame. */
+        ret = av_opt_set_int(ctx, "endi", end_time,
+                                AV_OPT_SEARCH_CHILDREN);
+    } else if (duration != INT64_MAX) {
         ret = av_opt_set_int(ctx, "durationi", duration,
                                 AV_OPT_SEARCH_CHILDREN);
     }
@@ -1732,7 +1750,7 @@ static int configure_output_video_filter(FilterGraphPriv *fgp, AVFilterGraph *gr
 
     snprintf(name, sizeof(name), "trim_out_%s", ofilter->output_name);
     ret = insert_trim(fgp, ofp->trim_start_us, ofp->trim_duration_us,
-                      &last_filter, &pad_idx, name);
+                      INT64_MAX, &last_filter, &pad_idx, name);
     if (ret < 0)
         return ret;
 
@@ -1813,7 +1831,7 @@ static int configure_output_audio_filter(FilterGraphPriv *fgp, AVFilterGraph *gr
 
     snprintf(name, sizeof(name), "trim for output %s", ofilter->output_name);
     ret = insert_trim(fgp, ofp->trim_start_us, ofp->trim_duration_us,
-                      &last_filter, &pad_idx, name);
+                      INT64_MAX, &last_filter, &pad_idx, name);
     if (ret < 0)
         goto fail;
 
@@ -1950,9 +1968,20 @@ static int configure_input_video_filter(FilterGraph *fg, AVFilterGraph *graph,
         ifp->displaymatrix_applied = 1;
     }
 
+    int64_t trim_end_us = INT64_MAX;
+
+    /* If the trim's window anchor (first frame that passes the trim
+     * start) is known, express the window end as an absolute stream
+     * time - on the initial configuration that is equivalent to the
+     * relative duration, but a reconfiguration cannot then re-anchor
+     * it at the next frame. If the anchor is not known yet, keep the
+     * relative duration, which the trim anchors at runtime. */
+    if (ifp->trim_first_pts_us != AV_NOPTS_VALUE &&
+        ifp->opts.trim_end_us != INT64_MAX)
+        trim_end_us = ifp->trim_first_pts_us + ifp->opts.trim_end_us;
     snprintf(name, sizeof(name), "trim_in_%s", ifp->opts.name);
     ret = insert_trim(fg, ifp->opts.trim_start_us, ifp->opts.trim_end_us,
-                      &last_filter, &pad_idx, name);
+                      trim_end_us, &last_filter, &pad_idx, name);
     if (ret < 0)
         return ret;
 
@@ -2004,9 +2033,21 @@ static int configure_input_audio_filter(FilterGraph *fg, AVFilterGraph *graph,
         return ret;
     last_filter = ifilter->filter;
 
+    int64_t trim_end_us = INT64_MAX;
+
+    /* As for the video input: once the window anchor is known, express
+     * the end as an absolute stream time, so a reconfiguration cannot
+     * re-anchor the relative duration at the next frame. Audio edge:
+     * the frame-pts anchor can differ from atrim's sample-accurate
+     * first_pts by <=1 frame (~21 ms), so the audio tail can be up to
+     * one frame longer than the relative cut; video is unaffected
+     * (atomic frames). */
+    if (ifp->trim_first_pts_us != AV_NOPTS_VALUE &&
+        ifp->opts.trim_end_us != INT64_MAX)
+        trim_end_us = ifp->trim_first_pts_us + ifp->opts.trim_end_us;
     snprintf(name, sizeof(name), "trim for input stream %s", ifp->opts.name);
     ret = insert_trim(fg, ifp->opts.trim_start_us, ifp->opts.trim_end_us,
-                      &last_filter, &pad_idx, name);
+                      trim_end_us, &last_filter, &pad_idx, name);
     if (ret < 0)
         return ret;
 
@@ -2273,6 +2314,15 @@ static int ifilter_parameters_from_frame(InputFilter *ifilter, const AVFrame *fr
         ret = av_frame_side_data_clone(&ifp->side_data,
                                        &ifp->nb_side_data,
                                        frame->side_data[i], 0);
+        if (ret == AVERROR(EEXIST)) {
+            /* A non-multi GLOBAL side data type appeared more than once
+             * on the frame. Keep the first occurrence and skip the
+             * duplicate rather than aborting the whole decode. */
+            av_log(ifp->ifilter.graph, AV_LOG_WARNING,
+                   "Duplicate GLOBAL side data '%s' on frame; keeping the first occurrence\n",
+                   desc->name);
+            continue;
+        }
         if (ret < 0)
             return ret;
     }
@@ -3143,6 +3193,23 @@ static int send_frame(FilterGraph *fg, FilterGraphThread *fgt,
             if (ret < 0)
                 return ret;
         }
+    }
+
+    /* Remember the pts of the first frame that passes this input's
+     * trim start (AV_TIME_BASE units) - the anchor the input trim uses
+     * for its relative duration. With an input-side -ss the first
+     * frame in is usually the keyframe before the seek point, which
+     * the trim start drops, so it must not set the anchor. Running
+     * this before the initial configuration is harmless;
+     * configure_input_*_filter() uses the anchor to keep the window
+     * fixed when the graph is reconfigured. */
+    if (ifp->trim_first_pts_us == AV_NOPTS_VALUE &&
+        frame->pts != AV_NOPTS_VALUE && frame->time_base.den) {
+        int64_t pts_us = av_rescale_q(frame->pts, frame->time_base,
+                                      AV_TIME_BASE_Q);
+        if (ifp->opts.trim_start_us == AV_NOPTS_VALUE ||
+            pts_us >= ifp->opts.trim_start_us)
+            ifp->trim_first_pts_us = pts_us;
     }
 
     /* (re)init the graph if possible, otherwise buffer the frame and return */

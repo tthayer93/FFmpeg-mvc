@@ -84,6 +84,11 @@ typedef struct DecoderPriv {
     // user specified decoder multiview options manually
     int                 multiview_user_config;
 
+    // multiview_setup() ran but the decoder had not exported its view
+    // list yet (in-band multiview SPS after the first format negotiation):
+    // "no list yet" is not "single view"; retried from get_buffer().
+    int                 multiview_pending;
+
     struct {
         ViewSpecifier   vs;
         unsigned        out_idx;
@@ -1157,6 +1162,35 @@ static int multiview_setup(DecoderPriv *dp, AVCodecContext *dec_ctx)
                 goto fail;
         }
     } else {
+        // no views exported yet - either a plain single-view stream
+        // (the "assume single view ID=0" fallback below is right), or
+        // the decoder has not reported its view list yet (in-band
+        // multiview SPS). If only the base view was requested the
+        // outcome is identical either way, so fall through; if a
+        // non-base view was requested, do not assume single view and do
+        // not hard-fail - defer completion to get_buffer() and let the
+        // decoder keep running (base view only) in the meantime.
+        int want_non_base = 0;
+
+        for (int i = 0; i < dp->nb_views_requested; i++) {
+            const ViewSpecifier *vs = &dp->views_requested[i].vs;
+
+            if ((vs->type == VIEW_SPECIFIER_TYPE_ID  && vs->val != 0) ||
+                (vs->type == VIEW_SPECIFIER_TYPE_IDX && vs->val != 0) ||
+                vs->type == VIEW_SPECIFIER_TYPE_POS ||
+                vs->type == VIEW_SPECIFIER_TYPE_ALL)
+                want_non_base = 1;
+        }
+
+        if (want_non_base) {
+            av_log(dp, AV_LOG_DEBUG,
+                   "Multiview decoding requested, but no views are "
+                   "exported by the decoder yet - deferring setup until "
+                   "the view list becomes available\n");
+            dp->multiview_pending = 1;
+            return 0;
+        }
+
         // assume there is a single view with ID=0
         nb_view_ids_av = 1;
         view_ids_av = av_calloc(nb_view_ids_av, sizeof(*view_ids_av));
@@ -1362,6 +1396,28 @@ static enum AVPixelFormat get_format(AVCodecContext *s, const enum AVPixelFormat
 static int get_buffer(AVCodecContext *dec_ctx, AVFrame *frame, int flags)
 {
     DecoderPriv *dp = dec_ctx->opaque;
+
+    // deferred multiview setup (see multiview_setup()): the decoder
+    // exports its view list only once it has seen the in-band
+    // multiview SPS; get_buffer runs per picture after those NALs are
+    // parsed, so it completes the setup the moment the list is ready.
+    if (dp->multiview_pending) {
+        unsigned nb_view_ids_av = 0;
+
+        if (av_opt_get_array_size(dec_ctx, "view_ids_available",
+                                  AV_OPT_SEARCH_CHILDREN, &nb_view_ids_av) == 0
+            && nb_view_ids_av) {
+            int ret = multiview_setup(dp, dec_ctx);
+
+            dp->multiview_pending = 0;
+            if (ret < 0) {
+                av_log(dp, AV_LOG_ERROR,
+                       "Error setting up multiview decoding: %s\n",
+                       av_err2str(ret));
+                return ret;
+            }
+        }
+    }
 
     // for multiview video, store the output mask in frame opaque
     if (dp->nb_view_map) {
