@@ -30,7 +30,8 @@
 int ff_h264_pred_weight_table(GetBitContext *gb, const SPS *sps,
                               const int *ref_count, int slice_type_nos,
                               H264PredWeightTable *pwt,
-                              int picture_structure, void *logctx)
+                              int picture_structure, void *logctx,
+                              int mvc_anchor, int *degenerate)
 {
     int list, i, j;
     int luma_def, chroma_def;
@@ -38,9 +39,15 @@ int ff_h264_pred_weight_table(GetBitContext *gb, const SPS *sps,
     pwt->use_weight             = 0;
     pwt->use_weight_chroma      = 0;
 
+    /* mvc_anchor: 2D+delta anchor slices of delta-only streams carry
+     * bit-level garbage in this table; clamp and mark @p degenerate so
+     * the decoder can drop the picture, keeping the parse in sync. */
     pwt->luma_log2_weight_denom = get_ue_golomb_31(gb);
     if (pwt->luma_log2_weight_denom > 7U) {
-        av_log(logctx, AV_LOG_ERROR, "luma_log2_weight_denom %d is out of range\n", pwt->luma_log2_weight_denom);
+        if (!mvc_anchor)
+            av_log(logctx, AV_LOG_ERROR, "luma_log2_weight_denom %d is out of range\n", pwt->luma_log2_weight_denom);
+        if (degenerate && mvc_anchor)
+            *degenerate = 1;
         pwt->luma_log2_weight_denom = 0;
     }
     luma_def = 1 << pwt->luma_log2_weight_denom;
@@ -48,7 +55,10 @@ int ff_h264_pred_weight_table(GetBitContext *gb, const SPS *sps,
     if (sps->chroma_format_idc) {
         pwt->chroma_log2_weight_denom = get_ue_golomb_31(gb);
         if (pwt->chroma_log2_weight_denom > 7U) {
-            av_log(logctx, AV_LOG_ERROR, "chroma_log2_weight_denom %d is out of range\n", pwt->chroma_log2_weight_denom);
+            if (!mvc_anchor)
+                av_log(logctx, AV_LOG_ERROR, "chroma_log2_weight_denom %d is out of range\n", pwt->chroma_log2_weight_denom);
+            if (degenerate && mvc_anchor)
+                *degenerate = 1;
             pwt->chroma_log2_weight_denom = 0;
         }
         chroma_def = 1 << pwt->chroma_log2_weight_denom;
@@ -65,8 +75,15 @@ int ff_h264_pred_weight_table(GetBitContext *gb, const SPS *sps,
                 pwt->luma_weight[i][list][0] = get_se_golomb(gb);
                 pwt->luma_weight[i][list][1] = get_se_golomb(gb);
                 if ((int8_t)pwt->luma_weight[i][list][0] != pwt->luma_weight[i][list][0] ||
-                    (int8_t)pwt->luma_weight[i][list][1] != pwt->luma_weight[i][list][1])
-                    goto out_range_weight;
+                    (int8_t)pwt->luma_weight[i][list][1] != pwt->luma_weight[i][list][1]) {
+                    if (mvc_anchor) { // see above
+                        if (degenerate)
+                            *degenerate = 1;
+                        pwt->luma_weight[i][list][0] = luma_def;
+                        pwt->luma_weight[i][list][1] = 0;
+                    } else
+                        goto out_range_weight;
+                }
                 if (pwt->luma_weight[i][list][0] != luma_def ||
                     pwt->luma_weight[i][list][1] != 0) {
                     pwt->use_weight             = 1;
@@ -86,9 +103,12 @@ int ff_h264_pred_weight_table(GetBitContext *gb, const SPS *sps,
                         pwt->chroma_weight[i][list][j][1] = get_se_golomb(gb);
                         if ((int8_t)pwt->chroma_weight[i][list][j][0] != pwt->chroma_weight[i][list][j][0] ||
                             (int8_t)pwt->chroma_weight[i][list][j][1] != pwt->chroma_weight[i][list][j][1]) {
+                            if (degenerate && mvc_anchor)
+                                *degenerate = 1;
                             pwt->chroma_weight[i][list][j][0] = chroma_def;
                             pwt->chroma_weight[i][list][j][1] = 0;
-                            goto out_range_weight;
+                            if (!mvc_anchor) // see above
+                                goto out_range_weight;
                         }
                         if (pwt->chroma_weight[i][list][j][0] != chroma_def ||
                             pwt->chroma_weight[i][list][j][1] != 0) {
@@ -221,7 +241,8 @@ int ff_h264_check_intra_pred_mode(void *logctx, int top_samples_available,
 
 int ff_h264_parse_ref_count(int *plist_count, int ref_count[2],
                             GetBitContext *gb, const PPS *pps,
-                            int slice_type_nos, int picture_structure, void *logctx)
+                            int slice_type_nos, int picture_structure,
+                            void *logctx, int mvc_anchor, int *degenerate)
 {
     int list_count;
     int num_ref_idx_active_override_flag;
@@ -251,6 +272,16 @@ int ff_h264_parse_ref_count(int *plist_count, int ref_count[2],
             list_count = 1;
 
         if (ref_count[0] - 1 > max[0] || (list_count == 2 && (ref_count[1] - 1 > max[1]))) {
+            if (mvc_anchor) {
+                /* 2D+delta anchor slices of delta-only streams carry a
+                 * degenerate num_ref_idx_active: keep the bitstream in
+                 * sync with an empty reference list, mark @p degenerate. */
+                if (degenerate)
+                    *degenerate = 1;
+                ref_count[0] = ref_count[1] = 0;
+                *plist_count = 0;
+                return 0;
+            }
             av_log(logctx, AV_LOG_ERROR, "reference overflow %u > %u or %u > %u\n",
                    ref_count[0] - 1, max[0], ref_count[1] - 1, max[1]);
             ref_count[0] = ref_count[1] = 0;
@@ -380,7 +411,11 @@ static int decode_extradata_ps(const uint8_t *data, int size, H264ParamSets *ps,
     for (i = 0; i < pkt.nb_nals; i++) {
         H2645NAL *nal = &pkt.nals[i];
         switch (nal->type) {
-        case H264_NAL_SPS: {
+        case H264_NAL_SPS:
+        case H264_NAL_SUB_SPS: {
+            /* Plain and multiview (subset) SPSs are decoded identically;
+             * extradata carries both, so the dependent view's PPS can
+             * resolve its subset SPS. */
             GetBitContext tmp_gb = nal->gb;
             ret = ff_h264_decode_seq_parameter_set(&tmp_gb, logctx, ps, 0);
             if (ret >= 0)

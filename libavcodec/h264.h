@@ -95,6 +95,12 @@ enum {
     // num_slice_groups_minus1 to be in [0, 7].
     H264_MAX_SLICE_GROUPS = 8,
 
+    // E.2: implementation bounds for the multiview (MVC) SPS extension.
+    // The view count also bounds view reference and target view lists.
+    H264_MAX_MVC_VIEWS  = 32,
+    H264_MAX_MVC_LEVELS = 16,
+    H264_MAX_MVC_OPS    = 16,
+
     // E.2.2: cpb_cnt_minus1 is in [0, 31].
     H264_MAX_CPB_CNT = 32,
 

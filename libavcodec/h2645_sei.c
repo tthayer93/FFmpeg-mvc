@@ -744,10 +744,14 @@ int ff_h2645_sei_to_frame(AVFrame *frame, H2645SEI *sei,
     H2645SEIFramePacking *fp = &sei->frame_packing;
     int ret;
 
+    /* A STEREO3D entry may already be present, mapped from the
+     * container's coded side data. It is a non-multi type, so a second
+     * entry could not be cloned (EEXIST) in a filtergraph: first-wins. */
     if (fp->present &&
         is_frame_packing_type_valid(fp->arrangement_type, codec_id) &&
         fp->content_interpretation_type > 0 &&
-        fp->content_interpretation_type < 3) {
+        fp->content_interpretation_type < 3 &&
+        !av_frame_get_side_data(frame, AV_FRAME_DATA_STEREO3D)) {
         AVStereo3D *stereo = av_stereo3d_create_side_data(frame);
 
         if (!stereo)

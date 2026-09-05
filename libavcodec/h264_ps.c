@@ -198,6 +198,227 @@ static inline int decode_vui_parameters(GetBitContext *gb, void *logctx,
     return 0;
 }
 
+static int mvc_sps_fail(void *logctx, const char *msg)
+{
+    av_log(logctx, AV_LOG_ERROR, "MVC SPS extension: %s\n", msg);
+    return AVERROR_INVALIDDATA;
+}
+
+static int mvc_sps_fail_list(void *logctx, const char *list, const char *what)
+{
+    av_log(logctx, AV_LOG_ERROR, "MVC SPS extension: invalid %s %s\n", list, what);
+    return AVERROR_INVALIDDATA;
+}
+
+static int skip_hrd_parameters(GetBitContext *gb)
+{
+    // Consume hrd_parameters (H.264 E.1.2) without storing it; the
+    // multiview VUI per-op HRD sets are unused but must keep the
+    // bitstream position exact.
+    int cpb_count, i;
+    int v = get_ue_golomb_31(gb);
+    if (v < 0)
+        return AVERROR_INVALIDDATA;
+    cpb_count = v + 1;
+    if ((unsigned)cpb_count > 32U)
+        return AVERROR_INVALIDDATA;
+    get_bits(gb, 8); /* bit_rate_scale + cpb_size_scale */
+    for (i = 0; i < cpb_count; i++) {
+        // Unbounded ue(v) fields (cpb_size_value / bit_rate_value): use
+        // get_ue_golomb_long, since the table-based get_ue_golomb_31()
+        // mis-reads codes with >= 9 leading zeros (length >= 19).
+        get_ue_golomb_long(gb);
+        get_ue_golomb_long(gb);
+        get_bits1(gb); /* cbr_flag */
+    }
+    get_bits(gb, 20);
+    return 0;
+}
+
+static int decode_mvc_sps_data(GetBitContext *gb, void *logctx, SPS *sps)
+{
+    H264MVCSPS *m = &sps->mvc;
+    int i, j, k;
+
+    // bit_equal_to_one
+    if (get_bits1(gb) != 1)
+        return mvc_sps_fail(logctx, "missing or corrupted");
+
+    i = get_ue_golomb_31(gb); // num_views_minus1
+    if (i < 0 || i >= H264_MAX_MVC_VIEWS)
+        return mvc_sps_fail(logctx, "invalid num_views_minus1");
+    m->num_views = i + 1;
+    for (i = 0; i < m->num_views; i++) {
+        int vid = get_ue_golomb_31(gb);
+        if (vid < 0 || vid > 1023)
+            return mvc_sps_fail(logctx, "invalid view_id");
+        m->view_id[i] = vid;
+    }
+
+    for (i = 1; i < m->num_views; i++) {
+        static const char *const list_names[4] = {
+            "anchor_refs_l0", "anchor_refs_l1",
+            "non_anchor_refs_l0", "non_anchor_refs_l1"
+        };
+        uint8_t *const nums[4] = {
+            &m->num_anchor_refs_l0[i], &m->num_anchor_refs_l1[i],
+            &m->num_non_anchor_refs_l0[i], &m->num_non_anchor_refs_l1[i]
+        };
+        uint8_t (*const ref_lists[4])[H264_MAX_MVC_VIEWS] = {
+            &m->anchor_refs_l0[i], &m->anchor_refs_l1[i],
+            &m->non_anchor_refs_l0[i], &m->non_anchor_refs_l1[i]
+        };
+        for (k = 0; k < 4; k++) {
+            int n = get_ue_golomb_31(gb);
+            // the lists hold indexes into the view_id array
+            if (n < 0 || n >= m->num_views)
+                return mvc_sps_fail_list(logctx, list_names[k], "count");
+            nums[k][0] = n;
+            for (j = 0; j < n; j++) {
+                int r = get_ue_golomb_31(gb);
+                if (r < 0 || r >= m->num_views)
+                        return mvc_sps_fail_list(logctx, list_names[k], "view index");
+                ref_lists[k][0][j] = r;
+            }
+        }
+    }
+
+    i = get_ue_golomb_31(gb); // num_level_values_signalled_minus1
+    if (i < 0 || i >= H264_MAX_MVC_LEVELS)
+        return mvc_sps_fail(logctx, "invalid num_level_values_signalled_minus1");
+    m->num_levels = i + 1;
+    for (i = 0; i < m->num_levels; i++) {
+        m->level_idc[i] = get_bits(gb, 8);
+        j = get_ue_golomb_31(gb); // num_applicable_ops_minus1
+        if (j < 0 || j >= H264_MAX_MVC_OPS)
+            return mvc_sps_fail(logctx, "invalid num_applicable_ops_minus1");
+        m->num_ops[i] = j + 1;
+        for (j = 0; j < m->num_ops[i]; j++) {
+            H264MVCOp *op = &m->ops[i][j];
+            op->temporal_id = get_bits(gb, 3);
+            k = get_ue_golomb_31(gb); // num_target_views_minus1
+            if (k < 0 || k >= m->num_views)
+                return mvc_sps_fail(logctx, "invalid num_target_views_minus1");
+            op->num_target_views = k + 1;
+            for (k = 0; k < op->num_target_views; k++) {
+                int tv = get_ue_golomb_31(gb);
+                if (tv < 0 || tv >= m->num_views)
+                    return mvc_sps_fail(logctx, "invalid applicable_op_target_view_id");
+                op->target_view[k] = tv;
+            }
+            k = get_ue_golomb_31(gb); // op_num_views_minus1
+            if (k < 0 || k >= H264_MAX_MVC_VIEWS)
+                return mvc_sps_fail(logctx, "invalid op_num_views_minus1");
+            op->num_views_in_op = k + 1;
+        }
+    }
+
+    m->mvc_vui_present = get_bits1(gb);
+    if (m->mvc_vui_present) {
+        int nops = get_ue_golomb_31(gb); // vui_mvc_num_ops_minus1
+        if (nops < 0 || nops >= H264_MAX_MVC_OPS)
+            return mvc_sps_fail(logctx, "invalid vui_mvc_num_ops_minus1");
+        m->vui_num_ops = nops + 1;
+        for (i = 0; i < m->vui_num_ops; i++) {
+            H264MVCVuiOp *vo = &m->vui_ops[i];
+            vo->temporal_id = get_bits(gb, 3);
+            j = get_ue_golomb_31(gb); // num_target_output_views_minus1
+            if (j < 0 || j >= m->num_views)
+                return mvc_sps_fail(logctx, "invalid num_target_output_views_minus1");
+            vo->num_target_output_views = j + 1;
+            for (k = 0; k < vo->num_target_output_views; k++) {
+                int vid, t, found = 0;
+                vid = get_ue_golomb_31(gb);
+                // identifies an entry of the view_id array by value
+                for (t = 0; vid >= 0 && t < m->num_views; t++)
+                    if (m->view_id[t] == vid)
+                        found = 1;
+                if (vid < 0 || !found)
+                    return mvc_sps_fail(logctx, "mvc VUI target output view not present in the stream");
+                vo->target_output_view[k] = vid;
+            }
+            vo->timing_present = get_bits1(gb);
+            if (vo->timing_present) {
+                // get_bits_long (not get_bits) for 32-bit fields: get_bits()
+                // with n > 25 loses the LSB on non-byte-aligned reads in
+                // this tree (observed: 1001 read as 1000).
+                vo->num_units_in_tick = get_bits_long(gb, 32);
+                vo->time_scale        = get_bits_long(gb, 32);
+                if (!vo->num_units_in_tick || !vo->time_scale) {
+                    av_log(logctx, AV_LOG_ERROR,
+                           "MVC SPS extension: mvc VUI timing "
+                           "num_units_in_tick/time_scale invalid or unsupported (%u/%u)\n",
+                           vo->time_scale, vo->num_units_in_tick);
+                    vo->timing_present = 0;
+                }
+                vo->fixed_frame_rate = get_bits1(gb);
+            }
+            vo->nal_hrd_present = get_bits1(gb);
+            if (vo->nal_hrd_present && skip_hrd_parameters(gb) < 0)
+                return mvc_sps_fail(logctx, "invalid mvc VUI nal hrd_parameters");
+            vo->vcl_hrd_present = get_bits1(gb);
+            if (vo->vcl_hrd_present && skip_hrd_parameters(gb) < 0)
+                return mvc_sps_fail(logctx, "invalid mvc VUI vcl hrd_parameters");
+            if (vo->nal_hrd_present || vo->vcl_hrd_present)
+                get_bits1(gb); // low_delay_hrd_flag
+            vo->pic_struct_present = get_bits1(gb);
+            if (vo->pic_struct_present)
+                get_bits1(gb); // pic_struct
+        }
+    }
+    av_log(logctx, AV_LOG_DEBUG,
+           "MVC SPS extension: %d views, %d level value(s) (first %d), "
+           "mvc vui ops %d, ext2 flag %d\n",
+           m->num_views, m->num_levels, m->level_idc[0], m->vui_num_ops,
+           m->additional_extension2_flag);
+    if (m->mvc_vui_present && m->vui_num_ops) {
+        const H264MVCVuiOp *vo = &m->vui_ops[0];
+        av_log(logctx, AV_LOG_DEBUG,
+               "MVC SPS extension: vui op0 targets %d view(s), "
+               "num_units_in_tick/time_scale %u/%u, fixed %d, "
+               "nal/vcl hrd %d/%d\n",
+               vo->num_target_output_views, vo->num_units_in_tick,
+               vo->time_scale, vo->fixed_frame_rate,
+               vo->nal_hrd_present, vo->vcl_hrd_present);
+    }
+
+    // additional_extension2_flag: the spec ends the extension here, but
+    // some 2D+delta encoders write non-spec reserved bits after the flag
+    // (or omit the flag itself, hence the > 8 bits guard), so consume a
+    // bounded tail to land on the rbsp stop bit.
+    m->additional_extension2_flag = 0;
+    if (get_bits_left(gb) > 8)
+        m->additional_extension2_flag = get_bits1(gb);
+    if (m->additional_extension2_flag)
+        av_log(logctx, AV_LOG_DEBUG,
+               "MVC SPS extension: additional_extension2 present, not parsed "
+               "(reserved)\n");
+    if (get_bits_left(gb) > 8) {
+        int reserved_tail = get_bits_left(gb) - 8;
+        if (reserved_tail > 1024)
+            return mvc_sps_fail(logctx,
+                                "implausible SPS reserved extension length");
+        av_log(logctx, AV_LOG_DEBUG,
+               "MVC SPS extension: consuming %d bits of non-spec reserved "
+               "data after additional_extension2_flag\n", reserved_tail);
+        skip_bits(gb, reserved_tail);
+    }
+
+    // The extension must end right before the rbsp stop bit: h2645_parse()
+    // strips the stop bit and padding (residual 0), the un-stripped retry
+    // contexts leave the stop bit plus up to 7 padding bits. Hence the
+    // valid residual band is 0..8.
+    int bits_left = get_bits_left(gb);
+    if (bits_left < 0 || bits_left > 8) {
+        av_log(logctx, AV_LOG_ERROR,
+               "MVC SPS extension: invalid extension length (%d bits left)\n",
+               bits_left);
+        return AVERROR_INVALIDDATA;
+    }
+
+    return 0;
+}
+
 static int decode_scaling_list(GetBitContext *gb, uint8_t *factors, int size,
                                const uint8_t *jvt_list, const uint8_t *fallback_list,
                                uint16_t *mask, int pos)
@@ -525,6 +746,29 @@ int ff_h264_decode_seq_parameter_set(GetBitContext *gb, AVCodecContext *avctx,
         ret = decode_vui_parameters(gb, avctx, sps);
         if (ret < 0)
             goto fail;
+    }
+
+    // Multiview (Annex E) SPSes carry mvc_sps_data after the VUI; for
+    // those profiles the extension is mandatory, so parse it unconditionally.
+    if (sps->profile_idc == 118 ||  // Stereo High profile (MVC)
+        sps->profile_idc == 128 ||  // Multiview High profile (MVC)
+        sps->profile_idc == 138) {  // Multiview Depth High profile (MVCD)
+        ret = decode_mvc_sps_data(gb, avctx, sps);
+        if (ret < 0)
+            goto fail;
+        av_log(avctx, AV_LOG_DEBUG,
+               "SPS %d: sequence_parameter_set_mvc_extension parsed "
+               "(%d views)\n",
+               sps_id, sps->mvc.num_views);
+        sps->mvc.present = 1;
+        if (avctx->debug & FF_DEBUG_PICT_INFO) {
+            av_log(avctx, AV_LOG_DEBUG,
+                   "sps:%u mvc: views=%d",
+                   sps_id, (int)sps->mvc.num_views);
+            for (i = 0; i < sps->mvc.num_views; i++)
+                av_log(avctx, AV_LOG_DEBUG, " %d", (int)sps->mvc.view_id[i]);
+            av_log(avctx, AV_LOG_DEBUG, "\n");
+        }
     }
 
     if (get_bits_left(gb) < 0) {

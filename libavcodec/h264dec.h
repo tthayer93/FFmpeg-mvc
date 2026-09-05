@@ -44,7 +44,11 @@
 #include "threadframe.h"
 #include "videodsp.h"
 
-#define H264_MAX_PICTURE_COUNT 36
+/* Multiview: the views accumulate an output backlog of one picture per
+ * access unit (the decode API delivers one frame per input packet) until
+ * stream end, so the DPB must hold a 60 s decode window (~1500 pictures)
+ * of pending frames on top of the usual reference frames. */
+#define H264_MAX_PICTURE_COUNT 2048
 
 /* Compiling in interlaced support reduces the speed
  * of progressive decoding by about 2%. */
@@ -162,6 +166,57 @@ typedef struct H264Picture {
     atomic_int *decode_error_flags;
 
     int gray;
+
+    /**
+     * Multiview (H.264 Annex E) view the picture belongs to: view_id is the
+     * stream-wide identifier from the SPS view list, view_idx indexes
+     * H264Context.views; both are 0 for non-multiview streams.
+     */
+    int view_id;
+    int view_idx;
+
+    /**
+     * Multiview: set once the picture's frame has been delivered
+     * (finalize_frame() succeeded). H264Picture objects are shared between
+     * frame-thread worker contexts, so a context sync can alias a
+     * committed-but-not-yet-emitted picture into a second context; the
+     * flag lets any context retire such a stale alias instead of
+     * re-delivering the frame. Must stay after f_grain:
+     * ff_h264_unref_picture() zeroes the struct tail from there on, and
+     * h264_frame_start() resets it explicitly.
+     */
+    int output_delivered;
+
+    /**
+     * Multiview: set on a queued (or parked) picture that is the reorder
+     * tail of a previous POC epoch when a deep POC-epoch wrap is detected
+     * (h264_select_output_frame()); the output picker and the park re-emit
+     * path deliver flush-flagged pictures in POC order ahead of the new
+     * epoch. Cleared on slot release (ff_h264_unref_picture() zeroes the
+     * tail from f_grain on) and at frame start. Never set for
+     * single-view streams.
+     */
+    int flush_old_epoch;
+
+    /**
+     * 2D+delta MVC output-band fix: the correct base-view output omits
+     * this picture (POC watermark untouched); dropped undelivered by
+     * h264_select_output_frame(). Set by the first-slice detector in
+     * ff_h264_build_ref_list(); multiview only.
+     */
+    int output_omit;
+
+    /**
+     * Output-band fix, dependent half: the correct output contains one
+     * extra frame before this picture - a duplicate of output_dup_src,
+     * captured at commit (h264_select_output_frame()) and emitted from
+     * h264_decode_frame(); output_dup_done latches it once delivered.
+     * output_dup_src is NOT marked delivered: it is delivered again at
+     * its own reorder slot.
+     */
+    int output_dup_before;
+    int output_dup_done;
+    struct H264Picture *output_dup_src;
 } H264Picture;
 
 typedef struct H264Ref {
@@ -175,9 +230,39 @@ typedef struct H264Ref {
     const H264Picture *parent;
 } H264Ref;
 
+/**
+ * Per-view decoding state (H.264 Annex E). A non-multiview stream uses a
+ * single view (views[0], cur_view == 0) so the code path is identical to
+ * plain H.264 decoding.
+ */
+typedef struct H264ViewState {
+    int view_id;                  ///< stream-wide view id, -1 if not yet registered
+
+    H264POCContext poc;
+    H264Ref default_ref[2];
+
+    H264Picture *short_ref[32];   ///< short term reference frames
+    int short_ref_count;          ///< number of actual short term references
+    H264Picture *long_ref[32];    ///< long term reference frames
+    int long_ref_count;           ///< number of actual long term references
+
+    /* Multiview: per-view decode-order backlog of decoded, not-yet-
+     * committed pictures (bounded by the reorder depth). Committed
+     * pictures are parked in parked_pic, not re-queued here. */
+    H264Picture *delayed_pic[H264_MAX_PICTURE_COUNT];
+    int last_pocs[H264_MAX_DPB_FRAMES];
+
+    H264Picture *next_output_pic; ///< picture committed for delayed output
+    H264Picture *parked_pic;      ///< committed picture waiting to be re-emitted
+    int next_outputed_poc;
+} H264ViewState;
+
 typedef struct H264SliceContext {
     const struct H264Context *h264;
     GetBitContext gb;
+    int nal_size;               ///< byte length of this slice's NAL (full
+                                 ///< buffer extent; see the dependent-CABAC
+                                 ///< copy bound in decode_slice())
     ERContext *er;
 
     int slice_num;
@@ -276,6 +361,16 @@ typedef struct H264SliceContext {
     } ref_modifications[2][32];
     int nb_ref_modifications[2];
 
+    /**
+     * Multiview (Annex E) inter-view reference list reordering state
+     * (modification_of_pic_nums_idc 4/5, see 8.2.4.2.3 as modified by E.2.1).
+     */
+    int mvc_anchor;         ///< slice NAL anchor_pic_flag (MV extension)
+    int mvc_view_cur[2];    ///< index cursor per list, starts at -1
+    int degenerate;         ///< slice header was non-conformant
+                            ///< (delta-only anchor slices); the picture
+                            ///< is dropped instead of decoded
+
     unsigned int pps_id;
 
     const uint8_t *intra_pcm_ptr;
@@ -353,6 +448,53 @@ typedef struct H264Context {
     int            nb_slice_ctx_queued;
 
     H2645Packet pkt;
+
+    /** dts of the packet currently being decoded. Multiview: captured
+     *  into each picture at frame start so pictures keep the dts of
+     *  their access unit. Single view: assigned to the delivered frame
+     *  in finalize_frame(), reproducing the baseline
+     *  frame->pkt_dts = pkt->dts behavior (suppressed by
+     *  FF_CODEC_CAP_SETS_PKT_DTS in the core) */
+    int64_t pkt_dts;
+
+    /** dts of the last input packet with a valid dts; keeps the latched
+     *  pkt_dts monotonic across non-monotonic demuxer dts; multiview
+     *  only */
+    int64_t last_in_dts;
+
+    /** dts of the last delivered frame; output dts must be strictly
+     *  increasing for the muxer, while two views of one access unit
+     *  (and the fields of a frame-coded picture) share one dts;
+     *  multiview only */
+    int64_t last_out_dts;
+
+    /** Shared multiview delivery watermark: one int64 instance
+     *  (AV_NOPTS_VALUE until first claim) that every delivery claims from,
+     *  since delivery order under frame threading is not decode order and
+     *  a late-delivered picture could otherwise carry a lower pkt_dts than
+     *  one delivered before it. Canonically stored in the first decoding
+     *  context (ff_thread_shared_priv_data); must NOT be copied by
+     *  ff_h264_update_thread_context() - the copies keep NULL and resolve
+     *  through the helper; the owning context (mvc_out_dts_owned) frees
+     *  the instance (h264_decode_end). NULL until the first multiview
+     *  delivery */
+    int64_t *mvc_out_dts;
+    int      mvc_out_dts_owned;
+
+    /** Base-view POC and timestamps of the current access unit, latched
+     *  in h264_field_start() once the base view's POC is finalized.
+     *  Scalars, not an H264Picture pointer: DPB slots are reused as soon
+     *  as unreferenced, so a held pointer can silently turn into a
+     *  different picture. Not cleared per packet: the base and dependent
+     *  views of one access unit may arrive in consecutive packets, so the
+     *  latch must survive until the dependent view's field start. Used by
+     *  h264_adopt_base_view_poc() (frame_num matching alone is unreliable
+     *  there: the dependent NALs' frame_num runs offset from the base) */
+    int au_base_poc;
+    int au_base_field_poc[2];
+    int64_t au_base_pts;
+    int64_t au_base_pkt_dts;
+    int au_base_valid;
 
     int pixel_shift;    ///< 0 for 8-bit H.264, 1 for high-bit-depth H.264
 
@@ -459,17 +601,66 @@ typedef struct H264Context {
 
     H264ParamSets ps;
 
+    /**
+     * Multiview (H.264 Annex E) state.
+     */
+    const SPS *mvc_sps;   ///< RefStruct reference to the first SPS carrying mvc_sps_data
+    int mv_view_id;       ///< view_id of the last seen slice extension NAL, or -1
+
+    /*
+     * View selection / export options, see h264_options in h264dec.c.
+     * The nb_xxx fields must directly follow the respective array
+     * pointers, that is how libavutil's array option machinery stores
+     * the element count.
+     */
+    /** Array of view IDs that should be decoded and output */
+    int *view_ids;
+    unsigned nb_view_ids;
+    /** Array of the available view IDs (exported) */
+    unsigned *view_ids_available;
+    unsigned nb_view_ids_available;
+    /**
+     * Array of the view positions for view_ids_available (exported).
+     * Not populated: H.264 MVC carries no view position information.
+     */
+    unsigned *view_pos_available;
+    unsigned nb_view_pos_available;
+
     uint16_t *slice_table_base;
 
-    H264POCContext poc;
+    /**
+     * Multiview view state. views[0] is the base view; for non-multiview
+     * streams view_count is 1 and cur_view is always 0.
+     */
+    H264ViewState views[H264_MAX_MVC_VIEWS];
+    int view_count;          ///< number of registered views
+    int cur_view;            ///< index into views[] of the picture being decoded
 
-    H264Ref default_ref[2];
-    H264Picture *short_ref[32];
-    H264Picture *long_ref[32];
-    H264Picture *delayed_pic[H264_MAX_DPB_FRAMES + 2]; // FIXME size?
-    int last_pocs[H264_MAX_DPB_FRAMES];
-    H264Picture *next_output_pic;
-    int next_outputed_poc;
+    /**
+     * Access-unit latch set when a picture is dropped because a view it
+     * references is missing (delta-only streams); the unit's remaining
+     * slice NALs are consumed without parsing. Reset per packet by
+     * decode_nal_units().
+     */
+    int drop_view_slices;
+
+    /** One-shot warning flag for the drop above. */
+    int mvc_missing_view_warned;
+
+    /** Per-packet latch set when a VCL NAL is skipped because its view is
+     *  not user-selected (view_ids option); lets the "no frame!" check in
+     *  h264_decode_frame() consume fully-deselected packets. Reset per
+     *  packet by decode_nal_units(). */
+    int view_sel_skipped;
+
+    /**
+     * Dependent-view "2D+delta" anchor completion (see h264_slice.c):
+     * first macroblock address of the region completed as skipped
+     * macroblocks, so error resilience accounts for it once per picture;
+     * -1 when not filled. Reset per picture by h264_frame_start().
+     */
+    int dep_fill_first;
+
     int poc_offset;         ///< PicOrderCnt_offset from SMPTE RDD-2006
 
     /**
@@ -479,9 +670,6 @@ typedef struct H264Context {
     int  nb_mmco;
     int mmco_reset;
     int explicit_ref_marking;
-
-    int long_ref_count;     ///< number of actual long term references
-    int short_ref_count;    ///< number of actual short term references
 
     /**
      * @name Members for slice based multithreading
@@ -676,6 +864,21 @@ static av_always_inline int get_chroma_qp(const PPS *pps, int t, int qscale)
 
 int ff_h264_field_end(H264Context *h, H264SliceContext *sl, int in_setup);
 
+/**
+ * Multiview: pick the output picture from a view's delayed picture queue
+ * (flag-free queues yield exactly the plain lowest-POC entry).
+ *
+ * @param v view whose queue is scanned (must be non-empty)
+ * @return index of the chosen entry in v->delayed_pic
+ */
+int ff_h264_mv_queue_pick(const H264ViewState *v);
+
+/**
+ * Remove all reference frames (short and long term) of one multiview view.
+ * ff_h264_remove_all_refs() does this for every registered view.
+ */
+void ff_h264_remove_view_refs(H264Context *h, int view);
+
 int ff_h264_ref_picture(H264Picture *dst, const H264Picture *src);
 int ff_h264_replace_picture(H264Picture *dst, const H264Picture *src);
 void ff_h264_unref_picture(H264Picture *pic);
@@ -692,6 +895,23 @@ void ff_h264_draw_horiz_band(const H264Context *h, H264SliceContext *sl, int y, 
  */
 int ff_h264_queue_decode_slice(H264Context *h, const H2645NAL *nal);
 int ff_h264_execute_decode_slices(H264Context *h);
+
+/**
+ * 2D+delta MVC: at picture end, detect the single contiguous run of
+ * macroblocks a truncated dependent slice NAL left undecoded (unaccounted
+ * entries in the error resilience state) and complete it as skipped
+ * macroblocks against the last slice's list 0 reference (the base view
+ * frame of the same POC).
+ *
+ * Safe to call after every picture: plain H.264 and base views never
+ * match the internal gate, and intact pictures leave no unaccounted run.
+ * Call before reading h->er.error_occurred: the path clears it when the
+ * picture ends fully decoded and accounted.
+ *
+ * Returns the number of completed macroblocks, 0 when nothing applied.
+ */
+int ff_h264_complete_truncated_region(H264Context *h);
+int h264_view_selected(const H264Context *h, int slot);
 int ff_h264_update_thread_context(AVCodecContext *dst,
                                   const AVCodecContext *src);
 int ff_h264_update_thread_context_for_user(AVCodecContext *dst,

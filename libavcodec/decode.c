@@ -652,6 +652,7 @@ static int decode_receive_frame_internal(AVCodecContext *avctx, AVFrame *frame,
 {
     AVCodecInternal *avci = avctx->internal;
     DecodeContext     *dc = decode_ctx(avci);
+    const FFCodec *const codec = ffcodec(avctx->codec);
     int ret, ok;
 
     if (avctx->active_thread_type & FF_THREAD_FRAME)
@@ -679,6 +680,9 @@ static int decode_receive_frame_internal(AVCodecContext *avctx, AVFrame *frame,
             av_frame_unref(frame);
             return ret;
         }
+
+        if (codec->post_receive_frame)
+            codec->post_receive_frame(avctx, frame);
 
         frame->best_effort_timestamp = guess_correct_pts(dc,
                                                          frame->pts,

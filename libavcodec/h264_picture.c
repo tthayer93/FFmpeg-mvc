@@ -103,6 +103,13 @@ static void h264_copy_picture_params(H264Picture *dst, const H264Picture *src)
     dst->mb_height     = src->mb_height;
     dst->mb_stride     = src->mb_stride;
     dst->needs_fg      = src->needs_fg;
+    dst->view_id       = src->view_id;
+    dst->view_idx      = src->view_idx;
+
+    /* A slot copy is an identity copy: the multiview delivered-once
+     * latch and old-epoch flush flag travel with the picture. */
+    dst->output_delivered = src->output_delivered;
+    dst->flush_old_epoch  = src->flush_old_epoch;
 }
 
 int ff_h264_ref_picture(H264Picture *dst, const H264Picture *src)
@@ -189,6 +196,7 @@ void ff_h264_set_erpic(ERPicture *dst, const H264Picture *src)
 int ff_h264_field_end(H264Context *h, H264SliceContext *sl, int in_setup)
 {
     AVCodecContext *const avctx = h->avctx;
+    H264ViewState *v = &h->views[h->cur_view];
     H264Picture *cur = h->cur_pic_ptr;
     int err = 0;
     h->mb_y = 0;
@@ -196,11 +204,11 @@ int ff_h264_field_end(H264Context *h, H264SliceContext *sl, int in_setup)
     if (in_setup || !(avctx->active_thread_type & FF_THREAD_FRAME)) {
         if (!h->droppable) {
             err = ff_h264_execute_ref_pic_marking(h);
-            h->poc.prev_poc_msb = h->poc.poc_msb;
-            h->poc.prev_poc_lsb = h->poc.poc_lsb;
+            v->poc.prev_poc_msb = v->poc.poc_msb;
+            v->poc.prev_poc_lsb = v->poc.poc_lsb;
         }
-        h->poc.prev_frame_num_offset = h->poc.frame_num_offset;
-        h->poc.prev_frame_num        = h->poc.frame_num;
+        v->poc.prev_frame_num_offset = v->poc.frame_num_offset;
+        v->poc.prev_frame_num        = v->poc.frame_num;
     }
 
     if (avctx->hwaccel) {
@@ -223,9 +231,13 @@ int ff_h264_field_end(H264Context *h, H264SliceContext *sl, int in_setup)
         }
     }
 
-    if (!in_setup && !h->droppable)
-        ff_thread_report_progress(&cur->tf, INT_MAX,
-                                  h->picture_structure == PICT_BOTTOM_FIELD);
+    if (!in_setup) {
+        // In multiview, a droppable picture may still be referenced across
+        // views, so it must signal completion like any other picture.
+        if (!h->droppable || h->view_count > 1)
+            ff_thread_report_progress(&cur->tf, INT_MAX,
+                                      h->picture_structure == PICT_BOTTOM_FIELD);
+    }
     emms_c();
 
     h->current_slice = 0;

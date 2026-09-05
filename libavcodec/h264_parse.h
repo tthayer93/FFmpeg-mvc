@@ -95,7 +95,8 @@ typedef struct H264POCContext {
 int ff_h264_pred_weight_table(GetBitContext *gb, const SPS *sps,
                               const int *ref_count, int slice_type_nos,
                               H264PredWeightTable *pwt,
-                              int picture_structure, void *logctx);
+                              int picture_structure, void *logctx,
+                              int mvc_anchor, int *degenerate);
 
 /**
  * Check if the top & left blocks are available if needed & change the
@@ -114,7 +115,8 @@ int ff_h264_check_intra_pred_mode(void *logctx, int top_samples_available,
 
 int ff_h264_parse_ref_count(int *plist_count, int ref_count[2],
                             GetBitContext *gb, const PPS *pps,
-                            int slice_type_nos, int picture_structure, void *logctx);
+                            int slice_type_nos, int picture_structure,
+                            void *logctx, int mvc_anchor, int *degenerate);
 
 int ff_h264_init_poc(int pic_field_poc[2], int *pic_poc,
                      const SPS *sps, H264POCContext *poc,
