@@ -658,6 +658,14 @@ int opt_default(void *optctx, const char *opt, const char *arg)
     }
 #endif
 
+    // multiview decoders (H.264 MVC, MV-HEVC) select the views to decode
+    // via the decoder-private view_ids array option; route it to the codec
+    // layer (the decoder validates the IDs once the parameter sets arrive)
+    if (!consumed && !strcmp(opt_stripped, "view_ids")) {
+        av_dict_set(&codec_opts, opt, arg, FLAGS);
+        consumed = 1;
+    }
+
     if (consumed)
         return 0;
     return AVERROR_OPTION_NOT_FOUND;
