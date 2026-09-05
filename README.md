@@ -18,6 +18,8 @@ for 2D+delta streams.
   selected is delivered as one native side-by-side frame per access unit
   with a single `AV_FRAME_DATA_STEREO3D` side data entry; select a single
   eye with a view specifier on `-map` (e.g. `-map 0:v:view:0`).
+- Hardware acceleration is not supported for MVC streams: requests for
+  hardware acceleration fall back to software decoding with a warning.
 
 See the "Multiview video (H.264/MVC)" section of the ffmpeg docs
 (doc/ffmpeg.texi) and the h264 decoder entry (doc/decoders.texi).

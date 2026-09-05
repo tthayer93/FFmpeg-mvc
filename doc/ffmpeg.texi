@@ -3275,6 +3275,10 @@ all views, delivered as one native side-by-side frame on a re-packable
 two-view stream); and the bitstream carries no view position information, so
 the @code{vpos:} specifier does not apply.
 
+MVC decoding is performed in software. Hardware acceleration is not
+supported; if a hardware accelerator is requested, decoding falls back
+to software with a warning.
+
 On a two-view stream the all-views default is delivered natively as one
 side-by-side (SBS) frame per access unit (twice the view width, a single
 stereo side data entry) instead of two interleaved full-size frames.
