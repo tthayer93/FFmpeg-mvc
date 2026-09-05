@@ -197,6 +197,8 @@ FATE_H264  := $(FATE_H264:%=fate-h264-conformance-%)                    \
               fate-h264-lossless                                        \
               fate-h264-3386                                            \
               fate-h264-missing-frame                                   \
+              fate-h264-mvc-2view                                       \
+              fate-h264-mvc-2view-view1                                 \
               fate-h264-ref-pic-mod-overflow                            \
               fate-h264-timecode                                        \
 
@@ -475,6 +477,15 @@ fate-h264-unescaped-extradata:                    CMD = framecrc -i $(TARGET_SAM
 fate-h264-3386:                                   CMD = framecrc -i $(TARGET_SAMPLES)/h264/bbc2.sample.h264
 fate-h264-missing-frame:                          CMD = framecrc -i $(TARGET_SAMPLES)/h264/nondeterministic_cut.h264
 fate-h264-timecode:                               CMD = framecrc -i $(TARGET_SAMPLES)/h264/crew_cif_timecode-2.h264
+
+# Minimal two-view H.264/MVC stream (base view 0, dependent view 1): Annex E
+# mvc extension in a subset SPS (NAL 15), dependent-view slice NALs (NAL 19
+# with the 24-bit mvc header extension). Decodes to four flat 16x16 frames;
+# -view_ids 1 selects the dependent view only (two frames). The samples are
+# crafted minimal streams kept in-tree (tests/fate/h264-mvc/), not on the
+# FATE sample server yet, so the gate stages them into $(SAMPLES) (.ci/gate.sh).
+fate-h264-mvc-2view:                              CMD = framecrc -i $(TARGET_SAMPLES)/h264-mvc/2view-p128.h264
+fate-h264-mvc-2view-view1:                        CMD = framecrc -view_ids 1 -i $(TARGET_SAMPLES)/h264-mvc/2view-p128.h264
 
 fate-h264-reinit-%:                               CMD = framecrc -i $(TARGET_SAMPLES)/h264/$(@:fate-h264-%=%).h264 -vf scale,format=yuv444p10le,scale=w=352:h=288
 
