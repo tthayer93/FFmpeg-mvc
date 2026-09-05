@@ -32,6 +32,11 @@
 #include "parser.h"
 #include "parser_internal.h"
 
+/* Limit of the pending-frame buffer in ff_combine_frame(); unbounded
+ * accumulation (e.g. no frame-start NAL at all) must not overflow the
+ * int size arithmetic into a negative realloc size. */
+#define MAX_PENDING_FRAME_SIZE (128 * 1024 * 1024)
+
 av_cold AVCodecParserContext *av_parser_init(enum AVCodecID codec_id)
 {
     AVCodecParserContext *s = NULL;
@@ -235,12 +240,24 @@ int ff_combine_frame(ParseContext *pc, int next,
 
     /* copy into buffer end return */
     if (next == END_NOT_FOUND) {
+        int new_size = *buf_size + pc->index +
+                       AV_INPUT_BUFFER_PADDING_SIZE;
+
+        /* A non-positive or implausibly large size means the pending frame
+         * index overflowed or its end will never be found; drop the state. */
+        if (new_size <= 0 || new_size > MAX_PENDING_FRAME_SIZE) {
+            av_log(NULL, AV_LOG_ERROR,
+                   "implausible parser buffer size %d, resetting pending frame\n",
+                   new_size);
+            pc->index = 0;
+            return AVERROR_INVALIDDATA;
+        }
+
         void *new_buffer = av_fast_realloc(pc->buffer, &pc->buffer_size,
-                                           *buf_size + pc->index +
-                                           AV_INPUT_BUFFER_PADDING_SIZE);
+                                           new_size);
 
         if (!new_buffer) {
-            av_log(NULL, AV_LOG_ERROR, "Failed to reallocate parser buffer to %d\n", *buf_size + pc->index + AV_INPUT_BUFFER_PADDING_SIZE);
+            av_log(NULL, AV_LOG_ERROR, "Failed to reallocate parser buffer to %d\n", new_size);
             pc->index = 0;
             return AVERROR(ENOMEM);
         }
@@ -258,11 +275,24 @@ int ff_combine_frame(ParseContext *pc, int next,
 
     /* append to buffer */
     if (pc->index) {
+        int new_size = next + pc->index + AV_INPUT_BUFFER_PADDING_SIZE;
+
+        /* Defensive: the pending frame accumulated above must still fit in
+         * a positive buffer; otherwise drop the pending state. */
+        if (new_size <= 0) {
+            av_log(NULL, AV_LOG_ERROR,
+                   "implausible parser buffer size %d, resetting pending frame\n",
+                   new_size);
+            *buf_size =
+            pc->overread_index =
+            pc->index = 0;
+            return AVERROR_INVALIDDATA;
+        }
+
         void *new_buffer = av_fast_realloc(pc->buffer, &pc->buffer_size,
-                                           next + pc->index +
-                                           AV_INPUT_BUFFER_PADDING_SIZE);
+                                           new_size);
         if (!new_buffer) {
-            av_log(NULL, AV_LOG_ERROR, "Failed to reallocate parser buffer to %d\n", next + pc->index + AV_INPUT_BUFFER_PADDING_SIZE);
+            av_log(NULL, AV_LOG_ERROR, "Failed to reallocate parser buffer to %d\n", new_size);
             *buf_size =
             pc->overread_index =
             pc->index = 0;

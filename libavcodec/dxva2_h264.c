@@ -55,6 +55,7 @@ void ff_dxva2_h264_fill_picture_parameters(const AVCodecContext *avctx, AVDXVACo
     const H264Picture *current_picture = h->cur_pic_ptr;
     const SPS *sps = h->ps.sps;
     const PPS *pps = h->ps.pps;
+    const H264ViewState *v = &h->views[h->cur_view];
     int i, j;
 
     memset(pp, 0, sizeof(*pp));
@@ -63,12 +64,12 @@ void ff_dxva2_h264_fill_picture_parameters(const AVCodecContext *avctx, AVDXVACo
     pp->NonExistingFrameFlags  = 0;
     for (i = 0, j = 0; i < FF_ARRAY_ELEMS(pp->RefFrameList); i++) {
         const H264Picture *r;
-        if (j < h->short_ref_count) {
-            r = h->short_ref[j++];
+        if (j < v->short_ref_count) {
+            r = v->short_ref[j++];
         } else {
             r = NULL;
-            while (!r && j < h->short_ref_count + 16)
-                r = h->long_ref[j++ - h->short_ref_count];
+            while (!r && j < v->short_ref_count + 16)
+                r = v->long_ref[j++ - v->short_ref_count];
         }
         if (r) {
             fill_picture_entry(&pp->RefFrameList[i],
@@ -146,7 +147,7 @@ void ff_dxva2_h264_fill_picture_parameters(const AVCodecContext *avctx, AVDXVACo
     pp->num_ref_idx_l0_active_minus1  = pps->ref_count[0] - 1;
     pp->num_ref_idx_l1_active_minus1  = pps->ref_count[1] - 1;
     pp->Reserved8BitsA                = 0;
-    pp->frame_num                     = h->poc.frame_num;
+    pp->frame_num                     = v->poc.frame_num;
     pp->log2_max_frame_num_minus4     = sps->log2_max_frame_num - 4;
     pp->pic_order_cnt_type            = sps->poc_type;
     if (sps->poc_type == 0)

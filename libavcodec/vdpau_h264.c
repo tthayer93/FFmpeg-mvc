@@ -76,9 +76,11 @@ static void vdpau_h264_set_reference_frames(AVCodecContext *avctx)
     VdpReferenceFrameH264 *rf = &info->referenceFrames[0];
 #define H264_RF_COUNT FF_ARRAY_ELEMS(info->referenceFrames)
 
+    H264ViewState *v = &h->views[h->cur_view];
+
     for (list = 0; list < 2; ++list) {
-        H264Picture **lp = list ? h->long_ref : h->short_ref;
-        int i, ls    = list ? 16          : h->short_ref_count;
+        H264Picture **lp = list ? v->long_ref : v->short_ref;
+        int i, ls    = list ? 16          : v->short_ref_count;
 
         for (i = 0; i < ls; ++i) {
             H264Picture *pic = lp[i];
@@ -122,6 +124,7 @@ static int vdpau_h264_start_frame(AVCodecContext *avctx,
                                   const uint8_t *buffer, uint32_t size)
 {
     H264Context * const h = avctx->priv_data;
+    H264ViewState *v = &h->views[h->cur_view];
     const PPS *pps = h->ps.pps;
     const SPS *sps = h->ps.sps;
     H264Picture *pic = h->cur_pic_ptr;
@@ -136,7 +139,7 @@ static int vdpau_h264_start_frame(AVCodecContext *avctx,
     info->field_order_cnt[0]                     = h264_foc(pic->field_poc[0]);
     info->field_order_cnt[1]                     = h264_foc(pic->field_poc[1]);
     info->is_reference                           = h->nal_ref_idc != 0;
-    info->frame_num                              = h->poc.frame_num;
+    info->frame_num                              = v->poc.frame_num;
     info->field_pic_flag                         = h->picture_structure != PICT_FRAME;
     info->bottom_field_flag                      = h->picture_structure == PICT_BOTTOM_FIELD;
     info->num_ref_frames                         = sps->ref_frame_count;

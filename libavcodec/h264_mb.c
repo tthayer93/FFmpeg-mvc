@@ -63,15 +63,17 @@ static inline void get_lowest_part_y(const H264Context *h, H264SliceContext *sl,
         int ref_n = sl->ref_cache[0][scan8[n]];
         H264Ref *ref = &sl->ref_list[0][ref_n];
 
-        // Error resilience puts the current picture in the ref list.
-        // Don't try to wait on these as it will cause a deadlock.
-        // Fields can wait on each other, though.
-        if (ref->parent->tf.progress != h->cur_pic.tf.progress ||
-            (ref->reference & 3) != h->picture_structure) {
-            my = get_lowest_part_list_y(sl, n, height, y_offset, 0);
-            if (refs[0][ref_n] < 0)
-                nrefs[0] += 1;
-            refs[0][ref_n] = FFMAX(refs[0][ref_n], my);
+        if (ref->parent) {
+            // Error resilience puts the current picture in the ref list.
+            // Don't try to wait on these as it will cause a deadlock.
+            // Fields can wait on each other, though.
+            if (ref->parent->tf.progress != h->cur_pic.tf.progress ||
+                (ref->reference & 3) != h->picture_structure) {
+                my = get_lowest_part_list_y(sl, n, height, y_offset, 0);
+                if (refs[0][ref_n] < 0)
+                    nrefs[0] += 1;
+                refs[0][ref_n] = FFMAX(refs[0][ref_n], my);
+            }
         }
     }
 
@@ -79,12 +81,14 @@ static inline void get_lowest_part_y(const H264Context *h, H264SliceContext *sl,
         int ref_n    = sl->ref_cache[1][scan8[n]];
         H264Ref *ref = &sl->ref_list[1][ref_n];
 
-        if (ref->parent->tf.progress != h->cur_pic.tf.progress ||
-            (ref->reference & 3) != h->picture_structure) {
-            my = get_lowest_part_list_y(sl, n, height, y_offset, 1);
-            if (refs[1][ref_n] < 0)
-                nrefs[1] += 1;
-            refs[1][ref_n] = FFMAX(refs[1][ref_n], my);
+        if (ref->parent) {
+            if (ref->parent->tf.progress != h->cur_pic.tf.progress ||
+                (ref->reference & 3) != h->picture_structure) {
+                my = get_lowest_part_list_y(sl, n, height, y_offset, 1);
+                if (refs[1][ref_n] < 0)
+                    nrefs[1] += 1;
+                refs[1][ref_n] = FFMAX(refs[1][ref_n], my);
+            }
         }
     }
 }
@@ -214,6 +218,36 @@ static av_always_inline void mc_dir_part(const H264Context *h, H264SliceContext 
                                          h264_chroma_mc_func chroma_op,
                                          int pixel_shift, int chroma_idc)
 {
+    if (!pic->parent || !pic->data[0]) {
+        /* A reference slot without a picture means a damaged or
+         * non-conformant reference list: substitute the first valid
+         * reference of the list, else leave the block untouched. */
+        int start = (unsigned)(pic - sl->ref_list[list]);
+        if (start >= sl->ref_count[list])
+            start = 0;
+        for (int k = 1; k < sl->ref_count[list]; k++) {
+            int j = (start + k) % sl->ref_count[list];
+            if (sl->ref_list[list][j].parent &&
+                sl->ref_list[list][j].data[0]) {
+                pic = &sl->ref_list[list][j];
+                break;
+            }
+        }
+        if (!pic->parent || !pic->data[0]) {
+            /* One-shot: a single damaged frame can skip thousands of
+             * 16x16 blocks and would otherwise flood the log. */
+            static int missing_ref_logged;
+
+            if (!missing_ref_logged) {
+                missing_ref_logged = 1;
+                av_log(h->avctx, AV_LOG_ERROR,
+                       "Motion compensation against a missing reference, "
+                       "skipping block; further occurrences stay silent\n");
+            }
+            return;
+        }
+    }
+
     const int mx      = sl->mv_cache[list][scan8[n]][0] + src_x_offset * 8;
     int my            = sl->mv_cache[list][scan8[n]][1] + src_y_offset * 8;
     const int luma_xy = (mx & 3) + ((my & 3) << 2);
@@ -488,7 +522,7 @@ static av_always_inline void prefetch_motion(const H264Context *h, H264SliceCont
     /* fetch pixels for estimated mv 4 macroblocks ahead
      * optimized for 64byte cache lines */
     const int refn = sl->ref_cache[list][scan8[0]];
-    if (refn >= 0) {
+    if (refn >= 0 && sl->ref_list[list][refn].data[0]) {
         const int mx  = (sl->mv_cache[list][scan8[0]][0] >> 2) + 16 * sl->mb_x + 8;
         const int my  = (sl->mv_cache[list][scan8[0]][1] >> 2) + 16 * sl->mb_y;
         uint8_t **src = sl->ref_list[list][refn].data;

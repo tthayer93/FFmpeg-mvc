@@ -449,15 +449,55 @@ static int h264_parse_nal_header(H2645NAL *nal, void *logctx)
 {
     GetBitContext *gb = &nal->gb;
 
+    // NAL slots are reused, so clear the extension fields on every call
+    nal->mv_ext_parsed = 0;
+    nal->mv_non_idr    = 0;
+    nal->mv_priority_id = 0;
+    nal->mv_view_id    = 0;
+    nal->mv_anchor_pic = 0;
+    nal->mv_inter_view = 0;
+    nal->temporal_id   = 0;
+
     if (get_bits1(gb) != 0)
         return AVERROR_INVALIDDATA;
 
     nal->ref_idc = get_bits(gb, 2);
     nal->type    = get_bits(gb, 5);
 
+    /* Slice extension NAL units (types 19-23) carry a 24-bit
+     * nal_unit_header_mvc_extension() after the 8-bit header (7.3.1);
+     * consume it so nal->data starts after the complete 32-bit header. */
+    if (nal->type == H264_NAL_AUXILIARY_SLICE ||
+        nal->type == H264_NAL_EXTEN_SLICE ||
+        nal->type == H264_NAL_DEPTH_EXTEN_SLICE ||
+        nal->type == H264_NAL_RESERVED22 ||
+        nal->type == H264_NAL_RESERVED23) {
+        if (get_bits_left(gb) < 24)
+            return AVERROR_INVALIDDATA;
+        if (!get_bits1(gb)) { // svc_extension_flag
+            nal->mv_non_idr    = get_bits1(gb);
+            nal->mv_priority_id = get_bits(gb, 6);
+            nal->mv_view_id    = get_bits(gb, 10);
+            nal->temporal_id   = get_bits(gb, 3);
+            nal->mv_anchor_pic = get_bits1(gb);
+            nal->mv_inter_view = get_bits1(gb);
+            if (get_bits1(gb) != 1) // reserved_one_bit
+                av_log(logctx, AV_LOG_WARNING,
+                       "MVC NAL header: reserved_one_bit not set\n");
+            nal->mv_ext_parsed = 1;
+        }
+        // else svc_extension_flag set: a SVC extension follows, out of scope.
+    }
+
     av_log(logctx, AV_LOG_DEBUG,
            "nal_unit_type: %d(%s), nal_ref_idc: %d\n",
            nal->type, h264_nal_unit_name(nal->type), nal->ref_idc);
+    if (nal->mv_ext_parsed)
+        av_log(logctx, AV_LOG_DEBUG,
+               "MVC NAL header: non_idr=%d priority_id=%d view_id=%d "
+               "temporal_id=%d anchor=%d inter_view=%d\n",
+               nal->mv_non_idr, nal->mv_priority_id, nal->mv_view_id,
+               nal->temporal_id, nal->mv_anchor_pic, nal->mv_inter_view);
 
     return 0;
 }

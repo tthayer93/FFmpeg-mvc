@@ -142,14 +142,16 @@ static int fill_vaapi_ReferenceFrames(VAPictureParameterBufferH264 *pic_param,
     for (i = 0; i < dpb.max_size; i++)
         init_vaapi_pic(&dpb.va_pics[i]);
 
-    for (i = 0; i < h->short_ref_count; i++) {
-        const H264Picture *pic = h->short_ref[i];
+    const H264ViewState *v = &h->views[h->cur_view];
+
+    for (i = 0; i < v->short_ref_count; i++) {
+        const H264Picture *pic = v->short_ref[i];
         if (pic && pic->reference && dpb_add(&dpb, pic) < 0)
             return -1;
     }
 
     for (i = 0; i < 16; i++) {
-        const H264Picture *pic = h->long_ref[i];
+        const H264Picture *pic = v->long_ref[i];
         if (pic && pic->reference && dpb_add(&dpb, pic) < 0)
             return -1;
     }
@@ -237,6 +239,7 @@ static int vaapi_h264_start_frame(AVCodecContext          *avctx,
                                   av_unused uint32_t       size)
 {
     const H264Context *h = avctx->priv_data;
+    const H264ViewState *v = &h->views[h->cur_view];
     VAAPIDecodePicture *pic = h->cur_pic_ptr->hwaccel_picture_private;
     const PPS *pps = h->ps.pps;
     const SPS *sps = h->ps.sps;
@@ -281,7 +284,7 @@ static int vaapi_h264_start_frame(AVCodecContext          *avctx,
             .redundant_pic_cnt_present_flag         = pps->redundant_pic_cnt_present,
             .reference_pic_flag                     = h->nal_ref_idc != 0,
         },
-        .frame_num                                  = h->poc.frame_num,
+        .frame_num                                  = v->poc.frame_num,
     };
 
     fill_vaapi_pic(&pic_param.CurrPic, h->cur_pic_ptr, h->picture_structure);
