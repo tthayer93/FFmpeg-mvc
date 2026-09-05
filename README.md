@@ -1,45 +1,37 @@
-# FFmpeg README
+# FFmpeg-mvc README
 
-FFmpeg is a collection of libraries and tools to process multimedia content
-such as audio, video, subtitles and related metadata.
+FFmpeg-mvc is a fork of FFmpeg, a collection of libraries and tools to
+process multimedia content such as audio, video, subtitles and related
+metadata. In addition to the upstream codebase, this fork adds
+H.264/MVC (ITU-T H.264 / ISO/IEC 14496-10, Annex E) multiview decoding
+for 2D+delta streams.
 
-## Libraries
+## H.264/MVC support
 
-* `libavcodec` provides implementation of a wider range of codecs.
-* `libavformat` implements streaming protocols, container formats and basic I/O access.
-* `libavutil` includes hashers, decompressors and miscellaneous utility functions.
-* `libavfilter` provides means to alter decoded audio and video through a directed graph of connected filters.
-* `libavdevice` provides an abstraction to access capture and playback devices.
-* `libswresample` implements audio mixing and resampling routines.
-* `libswscale` implements color conversion and scaling routines.
+- Parses the Annex E `sequence_parameter_set_mvc_extension` carried in
+  subset SPSes (NAL unit type 15): view list, anchor and non-anchor
+  reference lists, operations, and mvc VUI. Supported profiles:
+  Stereo High (118) and Multiview High (128).
+- Decodes dependent-view slices (NAL unit types 19-23) with their 24-bit
+  NAL unit header extension.
+- All views are decoded by default. A two-view stream with all views
+  selected is delivered as one native side-by-side frame per access unit
+  with a single `AV_FRAME_DATA_STEREO3D` side data entry; select a single
+  eye with a view specifier on `-map` (e.g. `-map 0:v:view:0`).
 
-## Tools
+See the "Multiview video (H.264/MVC)" section of the ffmpeg docs
+(doc/ffmpeg.texi) and the h264 decoder entry (doc/decoders.texi).
 
-* [ffmpeg](https://ffmpeg.org/ffmpeg.html) is a command line toolbox to
-  manipulate, convert and stream multimedia content.
-* [ffplay](https://ffmpeg.org/ffplay.html) is a minimalistic multimedia player.
-* [ffprobe](https://ffmpeg.org/ffprobe.html) is a simple analysis tool to inspect
-  multimedia content.
-* Additional small tools such as `aviocat`, `ismindex` and `qt-faststart`.
+### Tests
 
-## Documentation
+FATE tests for this support are `h264-mvc-*` and `cbs-h264-mvc-*`
+(tests/fate/h264.mak, tests/fate/cbs.mak). Their three sample streams are
+kept in-tree under `tests/fate/h264-mvc/`; run with the samples staged:
 
-The offline documentation is available in the **doc/** directory.
-
-The online documentation is available in the main [website](https://ffmpeg.org)
-and in the [wiki](https://trac.ffmpeg.org).
-
-### Examples
-
-Coding examples are available in the **doc/examples** directory.
+    cp -r tests/fate/h264-mvc "$SAMPLES"/
+    make fate-h264 fate-cbs SAMPLES="$SAMPLES"
 
 ## License
 
 FFmpeg codebase is mainly LGPL-licensed with optional components licensed under
 GPL. Please refer to the LICENSE file for detailed information.
-
-## Contributing
-
-Patches should be submitted to the ffmpeg-devel mailing list using
-`git format-patch` or `git send-email`. Github pull requests should be
-avoided because they are not part of our review process and will be ignored.
