@@ -90,7 +90,28 @@ FATE_CBS_H264_SAMPLES = \
 $(foreach N,$(FATE_CBS_H264_CONFORMANCE_SAMPLES),$(eval $(call FATE_CBS_TEST,h264,$(basename $(N)),h264,h264-conformance/$(N),h264)))
 $(foreach N,$(FATE_CBS_H264_SAMPLES),$(eval $(call FATE_CBS_TEST,h264,$(basename $(N)),h264,h264/$(N),h264)))
 
-FATE_CBS_H264-$(call FATE_CBS_DEPS, H264, H264, H264, H264, H264) = $(FATE_CBS_h264)
+# Multiview (MVC) SPS/PPS syntax coverage, decoder-based on purpose: the
+# h264_metadata BSF cannot round-trip multiview streams (cbs_h264_read_nal_unit()
+# rejects the subset SPS (NAL 15) and dependent-view slice NALs (19-23) with
+# ENOSYS, and the CBS slice header template has no MVC fields). The fixtures
+# carry the Annex E mvc extension in a subset SPS (view list, reference
+# lists, operations, mvc VUI) plus a dependent-view slice (NAL 19); both
+# profiles decode to flat 16x16 frames.
+FATE_CBS_H264_MVC := fate-cbs-h264-mvc-sps-pps-p128   \
+                     fate-cbs-h264-mvc-sps-pps-p118   \
+                     fate-cbs-h264-mvc-sps-reservedtail-reject
+FATE_CBS_H264-$(call FATE_CBS_DEPS, H264, H264, H264, H264, H264) = $(FATE_CBS_h264) $(FATE_CBS_H264_MVC)
+fate-cbs-h264-mvc-sps-pps-p128:                   CMD = framecrc -i $(TARGET_SAMPLES)/h264-mvc/2view-p128.h264
+fate-cbs-h264-mvc-sps-pps-p118:                   CMD = framecrc -i $(TARGET_SAMPLES)/h264-mvc/2view-p118.h264
+
+# Some 2D+delta MVC streams write non-spec reserved data after the mvc
+# extension's additional_extension2_flag; tails over 1024 bits must be
+# rejected. The fixture's 2000-bit tail must fail with "implausible SPS
+# reserved extension length" and the decode must error out (hence the
+# '; true': the test greps the message on stderr).
+fate-cbs-h264-mvc-sps-reservedtail-reject:        CMD = run $(FFMPEG) -nostdin -hide_banner -i $(TARGET_SAMPLES)/h264-mvc/sps-reservedtail-reject.h264 -f null - ; true
+fate-cbs-h264-mvc-sps-reservedtail-reject:        CMP = grep
+fate-cbs-h264-mvc-sps-reservedtail-reject:        REF = implausible SPS reserved extension length
 
 FATE_CBS_DISCARD_TYPES = \
     nonref   \
