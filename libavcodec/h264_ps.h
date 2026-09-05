@@ -39,6 +39,59 @@
 #define MAX_LOG2_MAX_FRAME_NUM    (12 + 4)
 
 /**
+ * Multiview operating point (H.264 E.2.2)
+ */
+typedef struct H264MVCOp {
+    uint8_t temporal_id;            ///< view_temporal_id_minus0
+    uint8_t num_target_views;       ///< num_target_views + 1
+    uint8_t target_view[H264_MAX_MVC_VIEWS]; ///< indexes into H264MVCSPS.view_id
+    uint8_t num_views_in_op;        ///< op_num_views + 1
+} H264MVCOp;
+
+/**
+ * Multiview VUI operating point (H.264 E.2.3). The per-op HRD parameter
+ * sets are parsed for stream conformity but their values are not stored.
+ */
+typedef struct H264MVCVuiOp {
+    uint8_t temporal_id;
+    uint8_t num_target_output_views; ///< num_target_output_views + 1
+    uint8_t target_output_view[H264_MAX_MVC_VIEWS]; ///< H264MVCSPS.view_id values
+    uint8_t timing_present;
+    uint32_t num_units_in_tick;
+    uint32_t time_scale;
+    uint8_t fixed_frame_rate;
+    uint8_t nal_hrd_present;         ///< present in the stream (values not stored)
+    uint8_t vcl_hrd_present;         ///< present in the stream (values not stored)
+    uint8_t pic_struct_present;
+} H264MVCVuiOp;
+
+/**
+ * Multiview data from the SPS extension (H.264 Annex E, mvc_sps_data)
+ */
+typedef struct H264MVCSPS {
+    uint8_t present;                 ///< mvc_sps_data was present in this SPS
+    uint8_t num_views;               ///< num_views + 1
+    uint16_t view_id[H264_MAX_MVC_VIEWS];
+    /* per non-base view i (1..num_views-1); lists hold indexes into view_id */
+    uint8_t num_anchor_refs_l0[H264_MAX_MVC_VIEWS];
+    uint8_t anchor_refs_l0[H264_MAX_MVC_VIEWS][H264_MAX_MVC_VIEWS];
+    uint8_t num_anchor_refs_l1[H264_MAX_MVC_VIEWS];
+    uint8_t anchor_refs_l1[H264_MAX_MVC_VIEWS][H264_MAX_MVC_VIEWS];
+    uint8_t num_non_anchor_refs_l0[H264_MAX_MVC_VIEWS];
+    uint8_t non_anchor_refs_l0[H264_MAX_MVC_VIEWS][H264_MAX_MVC_VIEWS];
+    uint8_t num_non_anchor_refs_l1[H264_MAX_MVC_VIEWS];
+    uint8_t non_anchor_refs_l1[H264_MAX_MVC_VIEWS][H264_MAX_MVC_VIEWS];
+    uint8_t num_levels;              ///< num_level_values_signalled + 1
+    uint8_t level_idc[H264_MAX_MVC_LEVELS];
+    uint8_t num_ops[H264_MAX_MVC_LEVELS]; ///< per level, applicable op count
+    H264MVCOp ops[H264_MAX_MVC_LEVELS][H264_MAX_MVC_OPS];
+    uint8_t mvc_vui_present;
+    uint8_t vui_num_ops;
+    H264MVCVuiOp vui_ops[H264_MAX_MVC_OPS];
+    uint8_t additional_extension2_flag;
+} H264MVCSPS;
+
+/**
  * Sequence parameter set
  */
 typedef struct SPS {
@@ -100,6 +153,7 @@ typedef struct SPS {
     int bit_depth_chroma;                 ///< bit_depth_chroma_minus8 + 8
     int residual_color_transform_flag;    ///< residual_colour_transform_flag
     int constraint_set_flags;             ///< constraint_set[0-3]_flag
+    H264MVCSPS mvc;                       ///< multiview SPS extension data (zeroed, present == 0 for non-MVC SPSes)
     uint8_t data[4096];
     size_t data_size;
 } SPS;

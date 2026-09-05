@@ -38,6 +38,7 @@
 #include "avcodec.h"
 #include "h264.h"
 #include "h264dec.h"
+#include "h264_mvpred.h"
 #include "h264data.h"
 #include "h264chroma.h"
 #include "h264_ps.h"
@@ -114,6 +115,41 @@ static const uint8_t zigzag_scan8x8_cavlc[64+1] = {
     5 + 5 * 8, 6 + 5 * 8, 6 + 6 * 8, 7 + 7 * 8,
 };
 
+/* a picture held for delayed output of any view (delayed list,
+ * next_output_pic, parked_pic) must survive until output, even without
+ * its own reference marking */
+static int h264_pic_held_for_output(const H264Context *h, const H264Picture *pic)
+{
+    for (int vs = 0; vs < h->view_count; vs++) {
+        const H264ViewState *v = &h->views[vs];
+
+        if (v->next_output_pic == pic || v->parked_pic == pic)
+            return 1;
+        for (int i = 0; v->delayed_pic[i]; i++)
+            if (v->delayed_pic[i] == pic)
+                return 1;
+    }
+    return 0;
+}
+
+/**
+ * View selection (view_ids option): selected when no specific view is
+ * requested (or -1), or the view's id appears in h->view_ids (validated
+ * against the SPS view list by h264_mvc_export()). Single-view streams
+ * always select their only view.
+ */
+int h264_view_selected(const H264Context *h, int slot)
+{
+    if (h->view_count <= 1)
+        return 1;
+    if (!h->nb_view_ids || (h->nb_view_ids == 1 && h->view_ids[0] == -1))
+        return 1;
+    for (unsigned i = 0; i < h->nb_view_ids; i++)
+        if (h->views[slot].view_id == h->view_ids[i])
+            return 1;
+    return 0;
+}
+
 static void release_unused_pictures(H264Context *h, int remove_current)
 {
     int i;
@@ -121,7 +157,8 @@ static void release_unused_pictures(H264Context *h, int remove_current)
     /* release non reference frames */
     for (i = 0; i < H264_MAX_PICTURE_COUNT; i++) {
         if (h->DPB[i].f->buf[0] && !h->DPB[i].reference &&
-            (remove_current || &h->DPB[i] != h->cur_pic_ptr)) {
+            (remove_current || &h->DPB[i] != h->cur_pic_ptr) &&
+            !h264_pic_held_for_output(h, &h->DPB[i])) {
             ff_h264_unref_picture(&h->DPB[i]);
         }
     }
@@ -195,6 +232,20 @@ static int alloc_picture(H264Context *h, H264Picture *pic)
         ret = ff_frame_new_side_data_from_buf(h->avctx, pic->f, AV_FRAME_DATA_LCEVC, &h->sei.common.itut_t35.lcevc);
         if (ret < 0)
             return ret;
+    }
+
+    /* Multiview: tag every view's picture with its stream-wide view id
+     * as side data before buffer allocation, so get_buffer()
+     * implementations can route frames per view (like the HEVC decoder);
+     * pic->view_id is set in h264_frame_start() */
+    if (h->view_count > 1) {
+        AVFrameSideData *sd = av_frame_side_data_new(&pic->f->side_data,
+                                                     &pic->f->nb_side_data,
+                                                     AV_FRAME_DATA_VIEW_ID,
+                                                     sizeof(int), 0);
+        if (!sd)
+            goto fail;
+        *(int*)sd->data = pic->view_id;
     }
 
     pic->tf.f = pic->f;
@@ -373,6 +424,9 @@ int ff_h264_update_thread_context(AVCodecContext *dst,
     av_refstruct_replace(&h->ps.pps, h1->ps.pps);
     h->ps.sps = h1->ps.sps;
 
+    // multiview SPS (RefStruct reference)
+    av_refstruct_replace(&h->mvc_sps, h1->mvc_sps);
+
     if (need_reinit || !inited) {
         h->width     = h1->width;
         h->height    = h1->height;
@@ -420,28 +474,100 @@ int ff_h264_update_thread_context(AVCodecContext *dst,
     h->is_avc = h1->is_avc;
     h->nal_length_size = h1->nal_length_size;
 
-    memcpy(&h->poc,        &h1->poc,        sizeof(h->poc));
+    h->view_count = h1->view_count;
+    h->cur_view   = h1->cur_view;
+    /* view_ids is an option that can change after the workers exist (the
+     * stream-specifier view setup writes it into the master on the first
+     * SPS, long after av_opt_copy); without this diff-copy a worker would
+     * select with a stale (empty) list. Mirror the HEVC diff-copy. */
+    if (h->nb_view_ids != h1->nb_view_ids ||
+        (h->nb_view_ids &&
+         memcmp(h->view_ids, h1->view_ids,
+                sizeof(*h->view_ids) * h->nb_view_ids))) {
+        av_freep(&h->view_ids);
+        h->nb_view_ids = 0;
 
-    memcpy(h->short_ref,   h1->short_ref,   sizeof(h->short_ref));
-    memcpy(h->long_ref,    h1->long_ref,    sizeof(h->long_ref));
-    memcpy(h->delayed_pic, h1->delayed_pic, sizeof(h->delayed_pic));
-    memcpy(h->last_pocs,   h1->last_pocs,   sizeof(h->last_pocs));
+        if (h1->nb_view_ids) {
+            h->view_ids = av_memdup(h1->view_ids,
+                                    h1->nb_view_ids *
+                                    sizeof(*h1->view_ids));
+            if (!h->view_ids)
+                return AVERROR(ENOMEM);
+            h->nb_view_ids = h1->nb_view_ids;
+        }
+    }
+    /* Mirror the exported view list too: written only by the context that
+     * parses the multiview SPS, but read by whichever context runs the
+     * format negotiation, so a worker that did not parse the SPS itself
+     * would otherwise see a stale (empty) list. */
+    if (h->nb_view_ids_available != h1->nb_view_ids_available ||
+        (h->nb_view_ids_available &&
+         memcmp(h->view_ids_available, h1->view_ids_available,
+                sizeof(*h->view_ids_available) *
+                h->nb_view_ids_available))) {
+        av_freep(&h->view_ids_available);
+        h->nb_view_ids_available = 0;
 
-    h->next_output_pic   = h1->next_output_pic;
-    h->next_outputed_poc = h1->next_outputed_poc;
+        if (h1->nb_view_ids_available) {
+            h->view_ids_available = av_memdup(h1->view_ids_available,
+                                              h1->nb_view_ids_available *
+                                              sizeof(*h1->view_ids_available));
+            if (!h->view_ids_available)
+                return AVERROR(ENOMEM);
+            h->nb_view_ids_available = h1->nb_view_ids_available;
+        }
+    }
+    /* Only the first view_count slots carry state (registration only
+     * appends; every consumer bounds itself by view_count).
+     *
+     * next_output_pic and parked_pic are owned by the context that
+     * committed the picture and must NOT be cloned: multiview emit defers
+     * delivery, so a context sync in between would clone the pointer into
+     * a sibling worker, whose later emit would finalize the same picture a
+     * second time (the multiview over-delivery). All other per-view fields
+     * are shared output-ordering state and keep cloning as before. The
+     * destination worker is idle here, so preserving its own pointers is
+     * race free. */
+    for (i = 0; i < h->view_count; i++) {
+        H264Picture *local_next   = h->views[i].next_output_pic;
+        H264Picture *local_parked = h->views[i].parked_pic;
+
+        h->views[i] = h1->views[i];
+        h->views[i].next_output_pic = local_next;
+        h->views[i].parked_pic      = local_parked;
+    }
+
     h->poc_offset        = h1->poc_offset;
+
+    /* AU and packet latches: written only by h264_decode_frame() and
+     * h264_field_start(), never re-derived, so a frame-thread worker must
+     * inherit them - without the au_base_* values the dependent-view
+     * worker loses the base view's POC/pts of the access unit and falls
+     * back to the unreliable frame_num matching. */
+    h->pkt_dts           = h1->pkt_dts;
+    h->last_in_dts       = h1->last_in_dts;
+    h->last_out_dts      = h1->last_out_dts;
+    h->au_base_poc       = h1->au_base_poc;
+    memcpy(h->au_base_field_poc, h1->au_base_field_poc,
+           sizeof(h->au_base_field_poc));
+    h->au_base_pts       = h1->au_base_pts;
+    h->au_base_pkt_dts   = h1->au_base_pkt_dts;
+    h->au_base_valid     = h1->au_base_valid;
 
     memcpy(h->mmco, h1->mmco, sizeof(h->mmco));
     h->nb_mmco         = h1->nb_mmco;
     h->mmco_reset      = h1->mmco_reset;
     h->explicit_ref_marking = h1->explicit_ref_marking;
-    h->long_ref_count  = h1->long_ref_count;
-    h->short_ref_count = h1->short_ref_count;
 
-    copy_picture_range(h->short_ref, h1->short_ref, 32, h, h1);
-    copy_picture_range(h->long_ref, h1->long_ref, 32, h, h1);
-    copy_picture_range(h->delayed_pic, h1->delayed_pic,
-                       FF_ARRAY_ELEMS(h->delayed_pic), h, h1);
+    for (i = 0; i < h->view_count; i++) {
+        copy_picture_range(h->views[i].short_ref, h1->views[i].short_ref, 32, h, h1);
+        copy_picture_range(h->views[i].long_ref, h1->views[i].long_ref, 32, h, h1);
+        copy_picture_range(h->views[i].delayed_pic, h1->views[i].delayed_pic,
+                           FF_ARRAY_ELEMS(h->views[i].delayed_pic), h, h1);
+        /* next_output_pic and parked_pic are deliberately NOT cloned or
+         * rebased: only the context that committed a picture can emit it
+         * (see the view-copy loop above). */
+    }
 
     h->frame_recovered       = h1->frame_recovered;
 
@@ -456,11 +582,14 @@ int ff_h264_update_thread_context(AVCodecContext *dst,
 
     if (!h->droppable) {
         err = ff_h264_execute_ref_pic_marking(h);
-        h->poc.prev_poc_msb = h->poc.poc_msb;
-        h->poc.prev_poc_lsb = h->poc.poc_lsb;
     }
-    h->poc.prev_frame_num_offset = h->poc.frame_num_offset;
-    h->poc.prev_frame_num        = h->poc.frame_num;
+    {
+        H264ViewState *v = &h->views[h->cur_view];
+        v->poc.prev_poc_msb = v->poc.poc_msb;
+        v->poc.prev_poc_lsb = v->poc.poc_lsb;
+        v->poc.prev_frame_num_offset = v->poc.frame_num_offset;
+        v->poc.prev_frame_num        = v->poc.frame_num;
+    }
 
     h->recovery_frame        = h1->recovery_frame;
     h->non_gray              = h1->non_gray;
@@ -501,9 +630,22 @@ static int h264_frame_start(H264Context *h)
     }
     pic = &h->DPB[i];
 
+    H264ViewState *v = &h->views[h->cur_view];
+
     pic->reference              = h->droppable ? 0 : h->picture_structure;
     pic->field_picture          = h->picture_structure != PICT_FRAME;
-    pic->frame_num               = h->poc.frame_num;
+    pic->frame_num               = v->poc.frame_num;
+    pic->view_id                 = v->view_id;
+    pic->view_idx                = h->cur_view;
+    /* The picture slot was re-used from the DPB: reset the multiview
+     * output latches a previous occupant may have left (the tail unref
+     * does not clear them). */
+    pic->output_delivered        = 0;
+    pic->flush_old_epoch         = 0;
+    pic->output_omit             = 0;
+    pic->output_dup_before       = 0;
+    pic->output_dup_done         = 0;
+    pic->output_dup_src          = NULL;
     /*
      * Zero key_frame here; IDR markings per slice in frame or fields are ORed
      * in later.
@@ -531,7 +673,15 @@ static int h264_frame_start(H264Context *h)
     if ((ret = alloc_picture(h, pic)) < 0)
         return ret;
 
+    /* Multiview: capture the dts of the access unit this picture was
+     * decoded from so it survives until the (possibly much later) output
+     * of the picture. Single view: leave pkt_dts unset - finalize_frame()
+     * reproduces the baseline decode.c behavior (frame->pkt_dts = pkt->dts). */
+    if (h->view_count > 1)
+        pic->f->pkt_dts = h->pkt_dts;
+
     h->cur_pic_ptr = pic;
+
     ff_h264_unref_picture(&h->cur_pic);
     if (CONFIG_ERROR_RESILIENCE) {
         ff_h264_set_erpic(&h->er.cur_pic, NULL);
@@ -570,9 +720,10 @@ static int h264_frame_start(H264Context *h)
 
     h->cur_pic_ptr->field_poc[0] = h->cur_pic_ptr->field_poc[1] = INT_MAX;
 
-    h->next_output_pic = NULL;
+    v->next_output_pic = NULL;
 
     h->postpone_filter = 0;
+    h->dep_fill_first  = -1;
 
     h->mb_aff_frame = h->ps.sps->mb_aff && (h->picture_structure == PICT_FRAME);
 
@@ -1299,9 +1450,51 @@ static int h264_export_frame_props(H264Context *h)
     return 0;
 }
 
+/* Inter-view anchor queue depth for user-unselected views: their most
+ * recent pictures stay in delayed_pic so the dependent half of the same
+ * access unit can still resolve its Annex E inter-view anchor. */
+#define H264_MVC_IV_QUEUE_DEPTH 4
+
+/**
+ * Multiview: pick the output picture from a view's delayed picture queue:
+ * the candidates are the entries preceding the first AV_FRAME_FLAG_KEY /
+ * mmco_reset barrier; within them, pictures flagged flush_old_epoch (the
+ * reorder tail of a previous POC epoch, set on a deep wrap by
+ * h264_select_output_frame()) win over the new epoch's pictures and are
+ * delivered in POC order ahead of it, and within each class the lowest
+ * POC wins. A flag-free queue yields the plain lowest-POC entry, so
+ * unflagged behaviour stays bit-identical to the original picker.
+ *
+ * @param v view whose queue is scanned (must be non-empty)
+ * @return  index of the chosen entry in v->delayed_pic
+ */
+int ff_h264_mv_queue_pick(const H264ViewState *v)
+{
+    int out_idx  = 0;
+    int out_rank = v->delayed_pic[0]->flush_old_epoch ? 0 : 1;
+    int out_poc  = v->delayed_pic[0]->poc;
+    int i;
+
+    for (i = 1; v->delayed_pic[i] &&
+                !(v->delayed_pic[i]->f->flags & AV_FRAME_FLAG_KEY) &&
+                !v->delayed_pic[i]->mmco_reset;
+         i++) {
+        int rank = v->delayed_pic[i]->flush_old_epoch ? 0 : 1;
+
+        if (rank < out_rank ||
+            (rank == out_rank && v->delayed_pic[i]->poc < out_poc)) {
+            out_idx  = i;
+            out_rank = rank;
+            out_poc  = v->delayed_pic[i]->poc;
+        }
+    }
+    return out_idx;
+}
+
 static int h264_select_output_frame(H264Context *h)
 {
     const SPS *sps = h->ps.sps;
+    H264ViewState *v = &h->views[h->cur_view];
     H264Picture *out = h->cur_pic_ptr;
     H264Picture *cur = h->cur_pic_ptr;
     int i, pics, out_of_order, out_idx;
@@ -1309,29 +1502,62 @@ static int h264_select_output_frame(H264Context *h)
     cur->mmco_reset = h->mmco_reset;
     h->mmco_reset = 0;
 
+    /* Pictures of an unselected view (view_ids) are never output: park
+     * them pinned in the view's delayed queue (bounded by
+     * H264_MVC_IV_QUEUE_DEPTH) so the inter-view anchor lookup (Annex E,
+     * h264_find_inter_view_ref) can still find the unmarked base picture
+     * of the same access unit when the dependent half starts decoding.
+     * Reference-marked members survive in the short-term reference list
+     * regardless; delivery is unaffected - the output loop skips
+     * unselected views. */
+    if (h->view_count > 1 && !h264_view_selected(h, h->cur_view)) {
+        int count = 0, queued = 0;
+
+        while (v->delayed_pic[count]) {
+            if (v->delayed_pic[count] == cur)
+                queued = 1;
+            count++;
+        }
+        if (!queued) {
+            while (count >= H264_MVC_IV_QUEUE_DEPTH) {
+                H264Picture *old = v->delayed_pic[0];
+
+                old->reference &= ~DELAYED_PIC_REF;
+                for (i = 0; v->delayed_pic[i]; i++)
+                    v->delayed_pic[i] = v->delayed_pic[i + 1];
+                count--;
+            }
+            v->delayed_pic[count]     = cur;
+            v->delayed_pic[count + 1] = NULL;
+        }
+        if (cur->reference == 0)
+            cur->reference = DELAYED_PIC_REF;
+        return 0;
+    }
+
     if (sps->bitstream_restriction_flag ||
         h->avctx->strict_std_compliance >= FF_COMPLIANCE_STRICT) {
         h->avctx->has_b_frames = FFMAX(h->avctx->has_b_frames, sps->num_reorder_frames);
     }
 
     for (i = 0; 1; i++) {
-        if(i == H264_MAX_DPB_FRAMES || cur->poc < h->last_pocs[i]){
+        if(i == H264_MAX_DPB_FRAMES || cur->poc < v->last_pocs[i]){
             if(i)
-                h->last_pocs[i-1] = cur->poc;
+                v->last_pocs[i-1] = cur->poc;
             break;
         } else if(i) {
-            h->last_pocs[i-1]= h->last_pocs[i];
+            v->last_pocs[i-1]= v->last_pocs[i];
         }
     }
     out_of_order = H264_MAX_DPB_FRAMES - i;
     if(   cur->f->pict_type == AV_PICTURE_TYPE_B
-       || (h->last_pocs[H264_MAX_DPB_FRAMES-2] > INT_MIN && h->last_pocs[H264_MAX_DPB_FRAMES-1] - (int64_t)h->last_pocs[H264_MAX_DPB_FRAMES-2] > 2))
+       || (v->last_pocs[H264_MAX_DPB_FRAMES-2] > INT_MIN && v->last_pocs[H264_MAX_DPB_FRAMES-1] - (int64_t)v->last_pocs[H264_MAX_DPB_FRAMES-2] > 2))
         out_of_order = FFMAX(out_of_order, 1);
     if (out_of_order == H264_MAX_DPB_FRAMES) {
-        av_log(h->avctx, AV_LOG_VERBOSE, "Invalid POC %d<%d\n", cur->poc, h->last_pocs[0]);
+        av_log(h->avctx, AV_LOG_VERBOSE, "Invalid POC %d<%d\n", cur->poc, v->last_pocs[0]);
         for (i = 1; i < H264_MAX_DPB_FRAMES; i++)
-            h->last_pocs[i] = INT_MIN;
-        h->last_pocs[0] = cur->poc;
+            v->last_pocs[i] = INT_MIN;
+        v->last_pocs[0] = cur->poc;
         cur->mmco_reset = 1;
     } else if(h->avctx->has_b_frames < out_of_order && !sps->bitstream_restriction_flag){
         int loglevel = h->avctx->frame_num > 1 ? AV_LOG_WARNING : AV_LOG_VERBOSE;
@@ -1339,62 +1565,331 @@ static int h264_select_output_frame(H264Context *h)
         h->avctx->has_b_frames = out_of_order;
     }
 
-    pics = 0;
-    while (h->delayed_pic[pics])
-        pics++;
+    {
+        int queued = 0;
 
-    av_assert0(pics <= H264_MAX_DPB_FRAMES);
-
-    h->delayed_pic[pics++] = cur;
-    if (cur->reference == 0)
-        cur->reference = DELAYED_PIC_REF;
-
-    out     = h->delayed_pic[0];
-    out_idx = 0;
-    for (i = 1; h->delayed_pic[i] &&
-                !(h->delayed_pic[i]->f->flags & AV_FRAME_FLAG_KEY) &&
-                !h->delayed_pic[i]->mmco_reset;
-         i++)
-        if (h->delayed_pic[i]->poc < out->poc) {
-            out     = h->delayed_pic[i];
-            out_idx = i;
+        pics = 0;
+        while (pics < FF_ARRAY_ELEMS(v->delayed_pic) && v->delayed_pic[pics]) {
+            if (v->delayed_pic[pics] == cur)
+                queued = 1;
+            pics++;
         }
-    if (h->avctx->has_b_frames == 0 &&
-        ((h->delayed_pic[0]->f->flags & AV_FRAME_FLAG_KEY) || h->delayed_pic[0]->mmco_reset))
-        h->next_outputed_poc = INT_MIN;
-    out_of_order = out->poc < h->next_outputed_poc;
+        if (pics == FF_ARRAY_ELEMS(v->delayed_pic)) {
+            /* A non-terminated queue means the list lost its NULL
+             * terminator (corruption); recover by resetting it. */
+            static int corrupt_queue_logged;
 
-    if (out_of_order || pics > h->avctx->has_b_frames) {
-        out->reference &= ~DELAYED_PIC_REF;
-        for (i = out_idx; h->delayed_pic[i]; i++)
-            h->delayed_pic[i] = h->delayed_pic[i + 1];
+            if (!corrupt_queue_logged) {
+                corrupt_queue_logged = 1;
+                av_log(h->avctx, AV_LOG_WARNING,
+                       "multiview view %d: delayed picture queue lost "
+                       "its terminator; resetting it\n", h->cur_view);
+            }
+            for (int k = 0; k < FF_ARRAY_ELEMS(v->delayed_pic); k++)
+                v->delayed_pic[k] = NULL;
+            pics = 0;
+        }
+        if (queued) {
+            /* The queue already names this DPB slot: inserting a second
+             * entry would commit (and deliver) the picture twice. Still
+             * pin the slot - it belongs to this picture's occupancy. */
+            static int dup_queue_slot_logged;
+
+            if (!dup_queue_slot_logged) {
+                dup_queue_slot_logged = 1;
+                av_log(h->avctx, AV_LOG_INFO,
+                       "multiview view %d: picture already queued in the "
+                       "delay list (poc %d); skipping duplicate entry\n",
+                       h->cur_view, cur->poc);
+            }
+        } else {
+            v->delayed_pic[pics++] = cur;
+        }
+        if (cur->reference == 0)
+            cur->reference = DELAYED_PIC_REF;
     }
-    if (!out_of_order && pics > h->avctx->has_b_frames) {
-        h->next_output_pic = out;
-        if (out_idx == 0 && h->delayed_pic[0] && ((h->delayed_pic[0]->f->flags & AV_FRAME_FLAG_KEY) || h->delayed_pic[0]->mmco_reset)) {
-            h->next_outputed_poc = INT_MIN;
-        } else
-            h->next_outputed_poc = out->poc;
 
-        // We have reached an recovery point and all frames after it in
-        // display order are "recovered".
-        h->frame_recovered |= out->recovered;
+    out_idx = ff_h264_mv_queue_pick(v);
+    out     = v->delayed_pic[out_idx];
+    if (h->avctx->has_b_frames == 0 &&
+        ((v->delayed_pic[0]->f->flags & AV_FRAME_FLAG_KEY) || v->delayed_pic[0]->mmco_reset))
+        v->next_outputed_poc = INT_MIN;
+    /* Multiview: a new POC epoch (wrap) cannot be expressed against the
+     * previous epoch's watermark; without a reset, a view whose anchors
+     * carry no AV_FRAME_FLAG_KEY (dependent views of these 3D files)
+     * would drop its entire new epoch against the stale watermark.
+     * Triggers: the queued minimum sits far below the watermark (the
+     * observed wrap gap at stream starts, far above any legal B-frame
+     * reorder), or the just-arrived picture is itself the queued minimum
+     * and older than the watermark (only a new epoch's first picture can
+     * sort that low). */
+    {
+        /* Wrap depth, measured against the watermark BEFORE the reset: it
+         * decides whether the queued pictures are the reorder tail of a
+         * previous POC epoch (flush) or ordinary in-epoch reorder. */
+        unsigned wrap_gap   = 0;
+        int wrap_flushed    = 0;
+        if (h->view_count > 1 && v->next_outputed_poc != INT_MIN &&
+            out->poc < v->next_outputed_poc &&
+            (out == cur ||
+             (unsigned)(v->next_outputed_poc - out->poc) >
+             (unsigned)H264_MAX_DPB_FRAMES * 8)) {
+            wrap_gap        = (unsigned)(v->next_outputed_poc - out->poc);
+            v->next_outputed_poc = INT_MIN;
+            /* A previous-epoch picture still queued behind the new epoch's
+             * minimum would sort above every new-epoch picture and stay
+             * committed before the new POC overtakes it. Two cases trip
+             * the wrap test: a true epoch restart (gap far above any
+             * legal reorder) and a mid-epoch reorder dip (bounded by the
+             * reorder depth). Only in the first case are the queued
+             * pictures above the new minimum the old epoch's reorder
+             * tail: flag them - ff_h264_mv_queue_pick delivers
+             * flush-flagged pictures in POC order ahead of the new epoch -
+             * instead of dropping real decoded content; in the second
+             * case they belong to the current epoch and stay unflagged. */
+            if (wrap_gap > (unsigned)h->avctx->has_b_frames + 1) {
+                int j = 0;
 
-        out->recovered |= h->frame_recovered & FRAME_RECOVERED_SEI;
+                while (v->delayed_pic[j]) {
+                    H264Picture *p = v->delayed_pic[j];
 
-        if (!out->recovered) {
-            if (!(h->avctx->flags & AV_CODEC_FLAG_OUTPUT_CORRUPT) &&
-                !(h->avctx->flags2 & AV_CODEC_FLAG2_SHOW_ALL)) {
-                h->next_output_pic = NULL;
-            } else {
-                out->f->flags |= AV_FRAME_FLAG_CORRUPT;
+                    if (p != out && p->poc > out->poc)
+                        p->flush_old_epoch = 1;
+                    j++;
+                }
+                /* A parked picture from the previous POC epoch would never
+                 * be re-emitted by the plain condition (and the next park
+                 * overwrite would drop it): flag it - the re-emit path
+                 * honours the flag. */
+                if (v->parked_pic && v->parked_pic->poc > out->poc)
+                    v->parked_pic->flush_old_epoch = 1;
+                wrap_flushed = 1;
             }
         }
-    } else {
-        av_log(h->avctx, AV_LOG_DEBUG, "no picture %s\n", out_of_order ? "ooo" : "");
+        if (wrap_flushed) {
+            /* The flush flags were just raised, so the entry that now
+             * sorts first is the old epoch's tail, not the pre-flag pick:
+             * re-pick so the tail is committed (and emitted) at this field
+             * end, ahead of every new-epoch picture (the pre-flag pick
+             * would deliver out of pts order). */
+            out_idx = ff_h264_mv_queue_pick(v);
+            out     = v->delayed_pic[out_idx];
+        }
+        if (h->view_count > 1 && out->output_delivered) {
+            /* Already delivered (from this context or a sibling
+             * frame-thread context via the context-sync copy): committing
+             * again would deliver the picture twice. Drop the stale entry;
+             * the POC was accounted for at first commit, so the watermark
+             * stays untouched. */
+            static int committed_delivered_logged;
+
+            if (!committed_delivered_logged) {
+                committed_delivered_logged = 1;
+                av_log(h->avctx, AV_LOG_INFO,
+                       "multiview view %d: dropped a queued entry for an "
+                       "already delivered picture (poc %d)\n",
+                       h->cur_view, out->poc);
+            }
+            out->reference &= ~DELAYED_PIC_REF;
+            for (i = out_idx; v->delayed_pic[i]; i++)
+                v->delayed_pic[i] = v->delayed_pic[i + 1];
+            return 0;
+        }
+
+        if (h->view_count > 1 && out->output_omit) {
+            /* Output-band fix: the correct output leaves this base picture
+             * out. Retire it without delivering it and without advancing
+             * the watermark, so the pictures behind it commit normally.
+             * Marking it delivered keeps any stale alias of the queue entry
+             * from resurrecting it (the gate decision is logged in
+             * ff_h264_build_ref_list). */
+            out->reference &= ~DELAYED_PIC_REF;
+            out->output_delivered = 1;
+            for (i = out_idx; v->delayed_pic[i]; i++)
+                v->delayed_pic[i] = v->delayed_pic[i + 1];
+            return 0;
+        }
+
+        out_of_order = out->poc < v->next_outputed_poc;
+
+        if (out_of_order) {
+            av_log(h->avctx, AV_LOG_DEBUG, "no picture ooo\n");
+            out->reference &= ~DELAYED_PIC_REF;
+            for (i = out_idx; v->delayed_pic[i]; i++)
+                v->delayed_pic[i] = v->delayed_pic[i + 1];
+        } else if (pics > h->avctx->has_b_frames) {
+            if (v->parked_pic && v->parked_pic->output_delivered) {
+                /* Stale alias: this views[] copy of the parked pointer
+                 * predates another worker's delivery; re-emitting would
+                 * deliver the picture twice. Retire it; log the desync
+                 * once. */
+                static int delivered_parked_logged;
+
+                if (!delivered_parked_logged) {
+                    delivered_parked_logged = 1;
+                    av_log(h->avctx, AV_LOG_INFO,
+                           "multiview view %d: retired the parked picture "
+                           "(poc %d); it was already delivered from another "
+                           "frame-thread context\n",
+                           h->cur_view, v->parked_pic->poc);
+                }
+                v->parked_pic->reference &= ~DELAYED_PIC_REF;
+                v->parked_pic = NULL;
+            }
+            if (v->parked_pic &&
+                (v->parked_pic->poc <= out->poc ||
+                 v->parked_pic->flush_old_epoch)) {
+                /* A picture of this view was already committed, emitted
+                 * and parked pending emission from a later access unit: it
+                 * sorts at or below the current minimum (or is a
+                 * flush-old-epoch tail that must reach the caller ahead of
+                 * the new epoch), so re-emit it. The watermark already
+                 * reflects its POC, so it stays untouched. */
+                v->next_output_pic = v->parked_pic;
+                v->next_output_pic->reference &= ~DELAYED_PIC_REF;
+                v->parked_pic = NULL;
+            } else {
+                /* A parked picture (if any) sorts above every pending
+                 * picture: it belongs to a POC epoch the queue no longer
+                 * reaches, and is flushed at end of stream. */
+                v->next_output_pic = out;
+                out->reference &= ~DELAYED_PIC_REF;
+                for (i = out_idx; v->delayed_pic[i]; i++)
+                    v->delayed_pic[i] = v->delayed_pic[i + 1];
+                if (out_idx == 0 && v->delayed_pic[0] && ((v->delayed_pic[0]->f->flags & AV_FRAME_FLAG_KEY) || v->delayed_pic[0]->mmco_reset)) {
+                    v->next_outputed_poc = INT_MIN;
+                } else if (!out->flush_old_epoch) {
+                    /* A flush-old-epoch picture must not advance the
+                     * watermark: its POC belongs to the old epoch's ladder,
+                     * and leaving that old maximum in place would make the
+                     * new epoch's in-flight pictures look out-of-order (and
+                     * trigger a spurious second deep wrap). The new epoch's
+                     * own commits advance the watermark. */
+                    v->next_outputed_poc = out->poc;
+                }
+
+                if (out->output_dup_before && !out->output_dup_done &&
+                    h->cur_pic_ptr && h->cur_pic_ptr != out &&
+                    h->cur_pic_ptr->f && h->cur_pic_ptr->f->data[0]) {
+                    /* Output-band fix: duplicate the picture currently
+                     * being decoded once, immediately before `out`; the
+                     * output block of h264_decode_frame() emits it ahead of
+                     * `out` (the picture is fully decoded - same access
+                     * unit) and the original is still delivered at its own
+                     * reorder slot. */
+                    out->output_dup_src = h->cur_pic_ptr;
+                }
+
+                // We have reached an recovery point and all frames after it in
+                // display order are "recovered".
+                h->frame_recovered |= out->recovered;
+
+                out->recovered |= h->frame_recovered & FRAME_RECOVERED_SEI;
+
+                if (!out->recovered) {
+                    if (!(h->avctx->flags & AV_CODEC_FLAG_OUTPUT_CORRUPT) &&
+                        !(h->avctx->flags2 & AV_CODEC_FLAG2_SHOW_ALL)) {
+                        v->next_output_pic = NULL;
+                    } else {
+                        out->f->flags |= AV_FRAME_FLAG_CORRUPT;
+                    }
+                }
+            }
+        } else {
+            av_log(h->avctx, AV_LOG_DEBUG, "no picture %s\n", out_of_order ? "ooo" : "");
+        }
+        return 0;
+    }
+}
+
+/**
+ * MVC quirk of some 3D streams: dependent-view slices carry a
+ * pic_order_cnt_lsb whose per-view MSB/LSB unwrap lands on a POC offset
+ * from the matching base-view frame, which the standard per-view unwrap
+ * cannot recover. Annex E view references resolve on exact POC equality
+ * and the cross-view output picker compares POCs across views, so the
+ * picture is relocated to the base-view POC of the base picture at the
+ * same frame_num (the per-view unwrap state is left untouched, so the
+ * following slices of the same view still unwrap as before).
+ *
+ * @return 1 if a matching base-view picture was found, 0 otherwise
+ */
+static int h264_adopt_base_view_poc(H264Context *h, const H264SliceContext *sl)
+{
+    const H264MVCSPS *mvc = &h->ps.sps->mvc;
+    const int base_view_id = mvc->view_id[0];
+    const H264Picture *base = NULL;
+    int b_poc = 0, b_fpoc[2] = { 0, 0 }, have_base = 0;
+    int64_t b_pts = AV_NOPTS_VALUE, b_pdts = AV_NOPTS_VALUE;
+
+    if (!h->cur_pic_ptr || h->views[h->cur_view].view_id == base_view_id)
+        return 0;
+
+    /* Prefer the access-unit latch from h264_field_start(): in these files
+     * the dependent NALs' frame_num counter runs offset from the base one,
+     * so the frame_num match below could pick a neighbouring base picture. */
+    if (h->au_base_valid) {
+        b_poc  = h->au_base_poc;
+        b_fpoc[0] = h->au_base_field_poc[0];
+        b_fpoc[1] = h->au_base_field_poc[1];
+        b_pts  = h->au_base_pts;
+        b_pdts = h->au_base_pkt_dts;
+        have_base = 1;
     }
 
-    return 0;
+    for (int vs = 0; vs < h->view_count && !have_base; vs++) {
+        const H264ViewState *sv = &h->views[vs];
+        if (sv->view_id != base_view_id)
+            continue;
+        for (int i = 0; i < sv->short_ref_count && !have_base; i++) {
+            const H264Picture *p = sv->short_ref[i];
+            if (p && p->view_idx == 0 && p->frame_num == sl->frame_num &&
+                p->f && p->f->data[0])
+                base = p;
+        }
+        for (int i = 0; sv->delayed_pic[i] && !have_base; i++) {
+            const H264Picture *p = sv->delayed_pic[i];
+            if (p && p->view_idx == 0 && p->frame_num == sl->frame_num &&
+                p->f && p->f->data[0])
+                base = p;
+        }
+        if (!have_base && sv->parked_pic &&
+            sv->parked_pic->view_idx == 0 &&
+            sv->parked_pic->frame_num == sl->frame_num &&
+            sv->parked_pic->f && sv->parked_pic->f->data[0])
+            base = sv->parked_pic;
+        if (base) {
+            b_poc  = base->poc;
+            b_fpoc[0] = base->field_poc[0];
+            b_fpoc[1] = base->field_poc[1];
+            b_pts  = base->f->pts;
+            b_pdts = base->f->pkt_dts;
+            have_base = 1;
+        }
+    }
+
+    if (!have_base)
+        return 0;
+
+    if (h->cur_pic_ptr->poc != b_poc) {
+        h->cur_pic_ptr->field_poc[0] = b_fpoc[0];
+        h->cur_pic_ptr->field_poc[1] = b_fpoc[1];
+        h->cur_pic_ptr->poc          = b_poc;
+    }
+
+    /* The demuxer hands the access unit's pts/dts to the first fragment
+     * only; the split-off dependent part arrives with AV_NOPTS_VALUE. The
+     * views of one access unit are displayed at the same instant, so adopt
+     * the base picture's timestamps when the dependent has none of its own
+     * (without this, pts-driven output never sees valid timestamps). */
+    if (h->cur_pic_ptr->f->pts == AV_NOPTS_VALUE &&
+        b_pts != AV_NOPTS_VALUE)
+        h->cur_pic_ptr->f->pts = b_pts;
+    if (h->cur_pic_ptr->f->pkt_dts == AV_NOPTS_VALUE &&
+        b_pdts != AV_NOPTS_VALUE)
+        h->cur_pic_ptr->f->pkt_dts = b_pdts;
+
+    return 1;
 }
 
 /* This function is called right after decoding the slice header for a first
@@ -1425,11 +1920,13 @@ static int h264_field_start(H264Context *h, const H264SliceContext *sl,
     h->droppable         = (nal->ref_idc == 0);
     h->picture_structure = sl->picture_structure;
 
-    h->poc.frame_num        = sl->frame_num;
-    h->poc.poc_lsb          = sl->poc_lsb;
-    h->poc.delta_poc_bottom = sl->delta_poc_bottom;
-    h->poc.delta_poc[0]     = sl->delta_poc[0];
-    h->poc.delta_poc[1]     = sl->delta_poc[1];
+    H264ViewState *v = &h->views[h->cur_view];
+
+    v->poc.frame_num        = sl->frame_num;
+    v->poc.poc_lsb          = sl->poc_lsb;
+    v->poc.delta_poc_bottom = sl->delta_poc_bottom;
+    v->poc.delta_poc[0]     = sl->delta_poc[0];
+    v->poc.delta_poc[1]     = sl->delta_poc[1];
 
     if (nal->type == H264_NAL_IDR_SLICE)
         h->poc_offset = sl->idr_pic_id;
@@ -1438,19 +1935,19 @@ static int h264_field_start(H264Context *h, const H264SliceContext *sl,
 
     /* Shorten frame num gaps so we don't have to allocate reference
      * frames just to throw them away */
-    if (h->poc.frame_num != h->poc.prev_frame_num) {
-        int unwrap_prev_frame_num = h->poc.prev_frame_num;
+    if (v->poc.frame_num != v->poc.prev_frame_num) {
+        int unwrap_prev_frame_num = v->poc.prev_frame_num;
         int max_frame_num         = 1 << sps->log2_max_frame_num;
 
-        if (unwrap_prev_frame_num > h->poc.frame_num)
+        if (unwrap_prev_frame_num > v->poc.frame_num)
             unwrap_prev_frame_num -= max_frame_num;
 
-        if ((h->poc.frame_num - unwrap_prev_frame_num) > sps->ref_frame_count) {
-            unwrap_prev_frame_num = (h->poc.frame_num - sps->ref_frame_count) - 1;
+        if ((v->poc.frame_num - unwrap_prev_frame_num) > sps->ref_frame_count) {
+            unwrap_prev_frame_num = (v->poc.frame_num - sps->ref_frame_count) - 1;
             if (unwrap_prev_frame_num < 0)
                 unwrap_prev_frame_num += max_frame_num;
 
-            h->poc.prev_frame_num = unwrap_prev_frame_num;
+            v->poc.prev_frame_num = unwrap_prev_frame_num;
         }
     }
 
@@ -1479,7 +1976,7 @@ static int h264_field_start(H264Context *h, const H264SliceContext *sl,
                                           last_pic_structure == PICT_TOP_FIELD);
             }
         } else {
-            if (h->cur_pic_ptr->frame_num != h->poc.frame_num) {
+            if (h->cur_pic_ptr->frame_num != v->poc.frame_num) {
                 /* This and previous field were reference, but had
                  * different frame_nums. Consider this field first in
                  * pair. Throw away previous field except for reference
@@ -1511,23 +2008,23 @@ static int h264_field_start(H264Context *h, const H264SliceContext *sl,
         }
     }
 
-    while (h->poc.frame_num != h->poc.prev_frame_num && !h->first_field &&
-           h->poc.frame_num != (h->poc.prev_frame_num + 1) % (1 << sps->log2_max_frame_num)) {
-        const H264Picture *prev = h->short_ref_count ? h->short_ref[0] : NULL;
+    while (v->poc.frame_num != v->poc.prev_frame_num && !h->first_field &&
+           v->poc.frame_num != (v->poc.prev_frame_num + 1) % (1 << sps->log2_max_frame_num)) {
+        const H264Picture *prev = v->short_ref_count ? v->short_ref[0] : NULL;
         av_log(h->avctx, AV_LOG_DEBUG, "Frame num gap %d %d\n",
-               h->poc.frame_num, h->poc.prev_frame_num);
+               v->poc.frame_num, v->poc.prev_frame_num);
         if (!sps->gaps_in_frame_num_allowed_flag)
-            for(i=0; i<FF_ARRAY_ELEMS(h->last_pocs); i++)
-                h->last_pocs[i] = INT_MIN;
+            for(i=0; i<FF_ARRAY_ELEMS(v->last_pocs); i++)
+                v->last_pocs[i] = INT_MIN;
         ret = h264_frame_start(h);
         if (ret < 0) {
             h->first_field = 0;
             return ret;
         }
 
-        h->poc.prev_frame_num++;
-        h->poc.prev_frame_num        %= 1 << sps->log2_max_frame_num;
-        h->cur_pic_ptr->frame_num = h->poc.prev_frame_num;
+        v->poc.prev_frame_num++;
+        v->poc.prev_frame_num        %= 1 << sps->log2_max_frame_num;
+        h->cur_pic_ptr->frame_num = v->poc.prev_frame_num;
         h->cur_pic_ptr->invalid_gap = !sps->gaps_in_frame_num_allowed_flag;
         ff_thread_report_progress(&h->cur_pic_ptr->tf, INT_MAX, 0);
         ff_thread_report_progress(&h->cur_pic_ptr->tf, INT_MAX, 1);
@@ -1543,7 +2040,7 @@ static int h264_field_start(H264Context *h, const H264SliceContext *sl,
          * FIXME: This does not copy padding for out-of-frame motion
          * vectors.  Given we are concealing a lost frame, this probably
          * is not noticeable by comparison, but it should be fixed. */
-        if (h->short_ref_count) {
+        if (v->short_ref_count) {
             int c[4] = {
                 1<<(h->ps.sps->bit_depth_luma-1),
                 1<<(h->ps.sps->bit_depth_chroma-1),
@@ -1552,28 +2049,28 @@ static int h264_field_start(H264Context *h, const H264SliceContext *sl,
             };
 
             if (prev &&
-                h->short_ref[0]->f->width == prev->f->width &&
-                h->short_ref[0]->f->height == prev->f->height &&
-                h->short_ref[0]->f->format == prev->f->format) {
+                v->short_ref[0]->f->width == prev->f->width &&
+                v->short_ref[0]->f->height == prev->f->height &&
+                v->short_ref[0]->f->format == prev->f->format) {
                 ff_thread_await_progress(&prev->tf, INT_MAX, 0);
                 if (prev->field_picture)
                     ff_thread_await_progress(&prev->tf, INT_MAX, 1);
-                ff_thread_release_ext_buffer(&h->short_ref[0]->tf);
-                h->short_ref[0]->tf.f = h->short_ref[0]->f;
-                ret = ff_thread_ref_frame(&h->short_ref[0]->tf, &prev->tf);
+                ff_thread_release_ext_buffer(&v->short_ref[0]->tf);
+                v->short_ref[0]->tf.f = v->short_ref[0]->f;
+                ret = ff_thread_ref_frame(&v->short_ref[0]->tf, &prev->tf);
                 if (ret < 0)
                     return ret;
-                h->short_ref[0]->poc = prev->poc + 2U;
-                h->short_ref[0]->gray = prev->gray;
-                ff_thread_report_progress(&h->short_ref[0]->tf, INT_MAX, 0);
-                if (h->short_ref[0]->field_picture)
-                    ff_thread_report_progress(&h->short_ref[0]->tf, INT_MAX, 1);
+                v->short_ref[0]->poc = prev->poc + 2U;
+                v->short_ref[0]->gray = prev->gray;
+                ff_thread_report_progress(&v->short_ref[0]->tf, INT_MAX, 0);
+                if (v->short_ref[0]->field_picture)
+                    ff_thread_report_progress(&v->short_ref[0]->tf, INT_MAX, 1);
             } else if (!h->frame_recovered) {
                 if (!h->avctx->hwaccel)
-                    color_frame(h->short_ref[0]->f, c);
-                h->short_ref[0]->gray = 1;
+                    color_frame(v->short_ref[0]->f, c);
+                v->short_ref[0]->gray = 1;
             }
-            h->short_ref[0]->frame_num = h->poc.prev_frame_num;
+            v->short_ref[0]->frame_num = v->poc.prev_frame_num;
         }
     }
 
@@ -1594,7 +2091,7 @@ static int h264_field_start(H264Context *h, const H264SliceContext *sl,
             h->first_field = FIELD_PICTURE(h);
         } else {
             h->missing_fields = 0;
-            if (h->cur_pic_ptr->frame_num != h->poc.frame_num) {
+            if (h->cur_pic_ptr->frame_num != v->poc.frame_num) {
                 ff_thread_report_progress(&h->cur_pic_ptr->tf, INT_MAX,
                                           h->picture_structure==PICT_BOTTOM_FIELD);
                 /* This and the previous field had different frame_nums.
@@ -1639,9 +2136,35 @@ static int h264_field_start(H264Context *h, const H264SliceContext *sl,
     }
 
     ret = ff_h264_init_poc(h->cur_pic_ptr->field_poc, &h->cur_pic_ptr->poc,
-                     h->ps.sps, &h->poc, h->picture_structure, nal->ref_idc);
+                      h->ps.sps, &v->poc, h->picture_structure, nal->ref_idc);
     if (ret < 0)
         return ret;
+
+    /* Multiview: once the base view's POC is finalized, latch its POC and
+     * the access unit's timestamps as scalars for the dependent view's
+     * field start to adopt (a pointer would be unreliable: the base
+     * picture's DPB slot can be reused first). The base view is always
+     * slot 0; its slice references the compatibility SPS (mvc.present ==
+     * 0), so the latch must not be conditioned on the active SPS's mvc
+     * extension. */
+    if (h->cur_pic_ptr && h->view_count > 1 && h->cur_view == 0) {
+        h->au_base_poc          = h->cur_pic_ptr->poc;
+        h->au_base_field_poc[0] = h->cur_pic_ptr->field_poc[0];
+        h->au_base_field_poc[1] = h->cur_pic_ptr->field_poc[1];
+        h->au_base_pts          = h->cur_pic_ptr->f->pts;
+        h->au_base_pkt_dts      = h->cur_pic_ptr->f->pkt_dts;
+        h->au_base_valid        = 1;
+    }
+
+    /* Every dependent-view slice must carry the POC of its co-located
+     * base-view frame: some 3D streams write the dependent view's
+     * pic_order_cnt_lsb with a per-view offset the standard per-view
+     * unwrap cannot reconcile, and both the Annex E inter-view references
+     * (exact POC equality) and the cross-view output ordering (lowest POC
+     * across all views) require dependent views to track the base POC. */
+    if (h->cur_pic_ptr && h->cur_view > 0 &&
+        h->view_count > 1 && h->ps.sps->mvc.present)
+        h264_adopt_base_view_poc(h, sl);
 
     memcpy(h->mmco, sl->mmco, sl->nb_mmco * sizeof(*h->mmco));
     h->nb_mmco = sl->nb_mmco;
@@ -1652,15 +2175,15 @@ static int h264_field_start(H264Context *h, const H264SliceContext *sl,
     if (h->sei.recovery_point.recovery_frame_cnt >= 0) {
         const int sei_recovery_frame_cnt = h->sei.recovery_point.recovery_frame_cnt;
 
-        if (h->poc.frame_num != sei_recovery_frame_cnt || sl->slice_type_nos != AV_PICTURE_TYPE_I)
+        if (v->poc.frame_num != sei_recovery_frame_cnt || sl->slice_type_nos != AV_PICTURE_TYPE_I)
             h->valid_recovery_point = 1;
 
         if (   h->recovery_frame < 0
-            || av_zero_extend(h->recovery_frame - h->poc.frame_num, h->ps.sps->log2_max_frame_num) > sei_recovery_frame_cnt) {
-            h->recovery_frame = av_zero_extend(h->poc.frame_num + sei_recovery_frame_cnt, h->ps.sps->log2_max_frame_num);
+            || av_zero_extend(h->recovery_frame - v->poc.frame_num, h->ps.sps->log2_max_frame_num) > sei_recovery_frame_cnt) {
+            h->recovery_frame = av_zero_extend(v->poc.frame_num + sei_recovery_frame_cnt, h->ps.sps->log2_max_frame_num);
 
             if (!h->valid_recovery_point)
-                h->recovery_frame = h->poc.frame_num;
+                h->recovery_frame = v->poc.frame_num;
         }
     }
 
@@ -1673,9 +2196,19 @@ static int h264_field_start(H264Context *h, const H264SliceContext *sl,
         h->frame_recovered |= FRAME_RECOVERED_IDR;
     }
 
-    if (h->recovery_frame == h->poc.frame_num && nal->ref_idc) {
+    if (h->recovery_frame == v->poc.frame_num && nal->ref_idc) {
         h->recovery_frame = -1;
         h->cur_pic_ptr->recovered |= FRAME_RECOVERED_SEI;
+        /* A recovery point makes every later frame recovered, but the
+         * commit path only propagates that for the view carrying the
+         * recovery point: dependent views never carry it, and an
+         * unselected base view is not even committed, so the dependent
+         * view's output gate would stay closed until the next IDR (after
+         * a seek: every frame between seek and refresh lost). Propagate
+         * to the whole context at the recovery point itself so every view
+         * opens its gate at the same stream position. */
+        if (h->view_count > 1)
+            h->frame_recovered |= FRAME_RECOVERED_SEI;
     }
 
 #if 1
@@ -1683,6 +2216,42 @@ static int h264_field_start(H264Context *h, const H264SliceContext *sl,
 #else
     h->cur_pic_ptr->recovered |= !!(h->frame_recovered & FRAME_RECOVERED_IDR);
 #endif
+
+    /* Multiview: grant the co-located base-view picture's recovery bits to
+     * the dependent picture. The dependent half is inter-coded, so the
+     * unmarked-RAP heuristic in ff_h264_execute_ref_pic_marking() never
+     * fires for it, and an unselected base view is never committed, so
+     * frame_recovered is never promoted from it: after a mid-stream seek
+     * on an unmarked base RAP the dependent view would lose every frame up
+     * to its own next IDR. Locate the base picture by the adopted POC in
+     * the base view's delayed queue (pinned until its own commit, which
+     * cannot precede this field start; on no-B streams the state instead
+     * arrives via the context-level frame_recovered bit ORed in above).
+     * Pictures whose base pair is itself not yet recovered get nothing,
+     * keeping both views' output grids aligned. */
+    if (h->view_count > 1 && h->cur_view > 0 &&
+        h->ps.sps && h->ps.sps->mvc.present && h->cur_pic_ptr &&
+        h264_view_selected(h, h->cur_view)) {
+        const H264MVCSPS *mvc = &h->ps.sps->mvc;
+        const int base_view_id = mvc->view_id[0];
+
+        for (int vs = 0; vs < h->view_count; vs++) {
+            const H264ViewState *bv = &h->views[vs];
+
+            if (bv->view_id != base_view_id)
+                continue;
+            for (int i = 0; bv->delayed_pic[i] &&
+                            bv->delayed_pic[i] != h->cur_pic_ptr; i++) {
+                const H264Picture *bp = bv->delayed_pic[i];
+
+                if (bp->view_idx == vs && bp->poc == h->cur_pic_ptr->poc) {
+                    h->cur_pic_ptr->recovered |= bp->recovered;
+                    break;
+                }
+            }
+            break;
+        }
+    }
 
     /* Set the frame properties/side data. Only done for the second field in
      * field coded frames, since some SEI information is present for each field
@@ -1714,6 +2283,7 @@ static int h264_slice_header_parse(const H264Context *h, H264SliceContext *sl,
     if (first_slice)
         av_assert0(!h->setup_finished);
 
+    sl->degenerate = 0;
     sl->first_mb_addr = get_ue_golomb_long(&sl->gb);
 
     slice_type = get_ue_golomb_31(&sl->gb);
@@ -1755,9 +2325,9 @@ static int h264_slice_header_parse(const H264Context *h, H264SliceContext *sl,
 
     sl->frame_num = get_bits(&sl->gb, sps->log2_max_frame_num);
     if (!first_slice) {
-        if (h->poc.frame_num != sl->frame_num) {
+        if (h->views[h->cur_view].poc.frame_num != sl->frame_num) {
             av_log(h->avctx, AV_LOG_ERROR, "Frame num change from %d to %d\n",
-                   h->poc.frame_num, sl->frame_num);
+                   h->views[h->cur_view].poc.frame_num, sl->frame_num);
             return AVERROR_INVALIDDATA;
         }
     }
@@ -1790,7 +2360,14 @@ static int h264_slice_header_parse(const H264Context *h, H264SliceContext *sl,
         sl->max_pic_num  = 1 << (sps->log2_max_frame_num + 1);
     }
 
-    if (nal->type == H264_NAL_IDR_SLICE) {
+    /* idr_pic_id is present for IDR-coded slices; for slice extension NALs
+     * the IDR-ness is signaled by the extension header's non_idr_flag (read
+     * iff non_idr_flag==0). Some 3D streams' dependent-view anchor pictures
+     * use exactly that combination (type 20, non_idr=0, ref_idc=3); missing
+     * the read shifts every later header field and desynchronizes the anchor. */
+    if (nal->type == H264_NAL_IDR_SLICE ||
+        (nal->type == H264_NAL_EXTEN_SLICE && nal->mv_ext_parsed &&
+         !nal->mv_non_idr)) {
         unsigned idr_pic_id = get_ue_golomb_long(&sl->gb);
         if (idr_pic_id < 65536) {
             sl->idr_pic_id = idr_pic_id;
@@ -1822,20 +2399,25 @@ static int h264_slice_header_parse(const H264Context *h, H264SliceContext *sl,
     if (sl->slice_type_nos == AV_PICTURE_TYPE_B)
         sl->direct_spatial_mv_pred = get_bits1(&sl->gb);
 
+    /* The anchor flag of the (multiview) NAL header selects which of the
+     * SPS inter-view reference lists applies to this slice. */
+    sl->mvc_anchor = (nal->mv_ext_parsed && nal->mv_anchor_pic);
+
     ret = ff_h264_parse_ref_count(&sl->list_count, sl->ref_count,
                                   &sl->gb, pps, sl->slice_type_nos,
-                                  picture_structure, h->avctx);
+                                  picture_structure, h->avctx,
+                                  sl->mvc_anchor && sps->mvc.present,
+                                  &sl->degenerate);
     if (ret < 0)
         return ret;
 
     if (sl->slice_type_nos != AV_PICTURE_TYPE_I) {
-       ret = ff_h264_decode_ref_pic_list_reordering(sl, h->avctx);
-       if (ret < 0) {
-           sl->ref_count[1] = sl->ref_count[0] = 0;
-           return ret;
-       }
+        ret = ff_h264_decode_ref_pic_list_reordering(sl, h->avctx);
+        if (ret < 0) {
+            sl->ref_count[1] = sl->ref_count[0] = 0;
+            return ret;
+        }
     }
-
     sl->pwt.use_weight = 0;
     for (i = 0; i < 2; i++) {
         sl->pwt.luma_weight_flag[i]   = 0;
@@ -1846,7 +2428,9 @@ static int h264_slice_header_parse(const H264Context *h, H264SliceContext *sl,
          sl->slice_type_nos == AV_PICTURE_TYPE_B)) {
         ret = ff_h264_pred_weight_table(&sl->gb, sps, sl->ref_count,
                                   sl->slice_type_nos, &sl->pwt,
-                                  picture_structure, h->avctx);
+                                  picture_structure, h->avctx,
+                                  sl->mvc_anchor && sps->mvc.present,
+                                  &sl->degenerate);
         if (ret < 0)
             return ret;
     }
@@ -1858,11 +2442,64 @@ static int h264_slice_header_parse(const H264Context *h, H264SliceContext *sl,
             return AVERROR_INVALIDDATA;
     }
 
+    /* Some 2D+delta MVC streams under-deliver dependent anchor slices:
+     * the NAL carries the complete slice header but a degenerate
+     * near-empty slice data region (up to ~124 bits); healthy anchor
+     * bands keep at least ~8x the 1024-bit floor below. The floor is
+     * fixed per NAL - dependent anchors are split into row-band slices,
+     * one NAL per band, so a per-picture floor would misclassify
+     * legitimate low-motion bands. Do NOT extend this to non-anchor
+     * dependent slices: their small bands are complete all-skip
+     * payloads and must be parsed normally. The defaults set below are
+     * only initial values: the real header reads always run and the
+     * anchor tolerances clamp out-of-range values without skipping
+     * bits, so the bit reader lands at the CABAC payload start. */
+    {
+        int remain = get_bits_left(&sl->gb);
+        const int floor = 1024;
+
+        if (sl->mvc_anchor && pps->sps->mvc.present && remain < floor) {
+            static int degenerate_anchor_logged; /* one-shot debug log */
+
+            if (!degenerate_anchor_logged) {
+                degenerate_anchor_logged = 1;
+                av_log(h->avctx, AV_LOG_DEBUG,
+                       "dependent anchor slice keeps %d bits after the "
+                        "slice header (truncation floor %d); treating it "
+                        "as a degenerate anchor\n", remain, floor);
+            }
+            sl->degenerate = 1;
+            sl->last_qscale_diff = 0;
+            sl->cabac_init_idc   = 2;
+            sl->qscale           = pps->init_qp;
+            sl->chroma_qp[0]     = get_chroma_qp(pps, 0, sl->qscale);
+            sl->chroma_qp[1]     = get_chroma_qp(pps, 1, sl->qscale);
+            sl->deblocking_filter     = 1;
+            sl->slice_alpha_c0_offset = 0;
+            sl->slice_beta_offset     = 0;
+
+            /* Do NOT return here: this class's slice data region is a
+             * complete self-contained CABAC payload, so fall through and
+             * parse the fields below for real (the defaults above are
+             * just their initial values). Returning here left the bit
+             * reader mid-header and misaligned the CABAC start. */
+        }
+    }
+
+    /* Degenerate anchor slices (see above) may place bit-level garbage
+     * in the fields below the picture marking: fall back to defaults
+     * without reporting and mark the picture degenerate so it is dropped
+     * as a whole instead of decoded from misaligned bits. */
     if (sl->slice_type_nos != AV_PICTURE_TYPE_I && pps->cabac) {
         tmp = get_ue_golomb_31(&sl->gb);
         if (tmp > 2) {
-            av_log(h->avctx, AV_LOG_ERROR, "cabac_init_idc %u overflow\n", tmp);
-            return AVERROR_INVALIDDATA;
+            if (sl->mvc_anchor && sps->mvc.present) {
+                sl->degenerate = 1;
+                tmp = 2;
+            } else {
+                av_log(h->avctx, AV_LOG_ERROR, "cabac_init_idc %u overflow\n", tmp);
+                return AVERROR_INVALIDDATA;
+            }
         }
         sl->cabac_init_idc = tmp;
     }
@@ -1870,8 +2507,13 @@ static int h264_slice_header_parse(const H264Context *h, H264SliceContext *sl,
     sl->last_qscale_diff = 0;
     tmp = pps->init_qp + (unsigned)get_se_golomb(&sl->gb);
     if (tmp > 51 + 6 * (sps->bit_depth_luma - 8)) {
-        av_log(h->avctx, AV_LOG_ERROR, "QP %u out of range\n", tmp);
-        return AVERROR_INVALIDDATA;
+        if (sl->mvc_anchor && sps->mvc.present) {
+            sl->degenerate = 1;
+            tmp = pps->init_qp;
+        } else {
+            av_log(h->avctx, AV_LOG_ERROR, "QP %u out of range\n", tmp);
+            return AVERROR_INVALIDDATA;
+        }
     }
     sl->qscale       = tmp;
     sl->chroma_qp[0] = get_chroma_qp(pps, 0, sl->qscale);
@@ -1889,9 +2531,14 @@ static int h264_slice_header_parse(const H264Context *h, H264SliceContext *sl,
     if (pps->deblocking_filter_parameters_present) {
         tmp = get_ue_golomb_31(&sl->gb);
         if (tmp > 2) {
-            av_log(h->avctx, AV_LOG_ERROR,
-                   "deblocking_filter_idc %u out of range\n", tmp);
-            return AVERROR_INVALIDDATA;
+            if (sl->mvc_anchor && sps->mvc.present) { // see above
+                sl->degenerate = 1;
+                tmp = 2;
+            } else {
+                av_log(h->avctx, AV_LOG_ERROR,
+                       "deblocking_filter_idc %u out of range\n", tmp);
+                return AVERROR_INVALIDDATA;
+            }
         }
         sl->deblocking_filter = tmp;
         if (sl->deblocking_filter < 2)
@@ -1904,10 +2551,15 @@ static int h264_slice_header_parse(const H264Context *h, H264SliceContext *sl,
                 slice_alpha_c0_offset_div2 < -6 ||
                 slice_beta_offset_div2 >  6     ||
                 slice_beta_offset_div2 < -6) {
-                av_log(h->avctx, AV_LOG_ERROR,
-                       "deblocking filter parameters %d %d out of range\n",
-                       slice_alpha_c0_offset_div2, slice_beta_offset_div2);
-                return AVERROR_INVALIDDATA;
+                if (sl->mvc_anchor && sps->mvc.present) { // see above
+                    sl->degenerate = 1;
+                    slice_alpha_c0_offset_div2 = slice_beta_offset_div2 = 0;
+                } else {
+                    av_log(h->avctx, AV_LOG_ERROR,
+                           "deblocking filter parameters %d %d out of range\n",
+                           slice_alpha_c0_offset_div2, slice_beta_offset_div2);
+                    return AVERROR_INVALIDDATA;
+                }
             }
             sl->slice_alpha_c0_offset = slice_alpha_c0_offset_div2 * 2;
             sl->slice_beta_offset     = slice_beta_offset_div2 * 2;
@@ -1922,6 +2574,7 @@ static int h264_slice_header_parse(const H264Context *h, H264SliceContext *sl,
 static int h264_slice_init(H264Context *h, H264SliceContext *sl,
                            const H2645NAL *nal)
 {
+    H264ViewState *v = &h->views[h->cur_view];
     int i, j, ret = 0;
 
     if (h->picture_idr && nal->type != H264_NAL_IDR_SLICE) {
@@ -2012,14 +2665,14 @@ static int h264_slice_init(H264Context *h, H264SliceContext *sl,
                 sl->ref_list[j][i].parent->f->buf[0]) {
                 int k;
                 const AVBuffer *buf = sl->ref_list[j][i].parent->f->buf[0]->buffer;
-                for (k = 0; k < h->short_ref_count; k++)
-                    if (h->short_ref[k]->f->buf[0]->buffer == buf) {
+                for (k = 0; k < v->short_ref_count; k++)
+                    if (v->short_ref[k]->f->buf[0]->buffer == buf) {
                         id_list[i] = k;
                         break;
                     }
-                for (k = 0; k < h->long_ref_count; k++)
-                    if (h->long_ref[k] && h->long_ref[k]->f->buf[0]->buffer == buf) {
-                        id_list[i] = h->short_ref_count + k;
+                for (k = 0; k < v->long_ref_count; k++)
+                    if (v->long_ref[k] && v->long_ref[k]->f->buf[0]->buffer == buf) {
+                        id_list[i] = v->short_ref_count + k;
                         break;
                     }
             }
@@ -2056,9 +2709,9 @@ static int h264_slice_init(H264Context *h, H264SliceContext *sl,
                (h->picture_structure == PICT_FRAME ? 'F' : h->picture_structure == PICT_TOP_FIELD ? 'T' : 'B'),
                sl->mb_y * h->mb_width + sl->mb_x,
                av_get_picture_type_char(sl->slice_type),
-               sl->slice_type_fixed ? " fix" : "",
-               nal->type == H264_NAL_IDR_SLICE ? " IDR" : "",
-               h->poc.frame_num,
+                sl->slice_type_fixed ? " fix" : "",
+                nal->type == H264_NAL_IDR_SLICE ? " IDR" : "",
+                v->poc.frame_num,
                h->cur_pic_ptr->field_poc[0],
                h->cur_pic_ptr->field_poc[1],
                sl->ref_count[0], sl->ref_count[1],
@@ -2075,15 +2728,133 @@ static int h264_slice_init(H264Context *h, H264SliceContext *sl,
 
 int ff_h264_queue_decode_slice(H264Context *h, const H2645NAL *nal)
 {
-    H264SliceContext *sl = h->slice_ctx + h->nb_slice_ctx_queued;
-    int first_slice = sl == h->slice_ctx && !h->current_slice;
-    int ret;
+    H264SliceContext *sl;
+    int first_slice, ret;
+
+    {
+        /* Multiview (Annex E): a slice extension NAL carries a picture of
+         * the view named by its NAL header, plain slice NALs belong to
+         * the base view. Access units contain both views back to back, so
+         * a view change mid-packet finalizes the picture in progress and
+         * starts the next view's picture from scratch. */
+        int slot = 0;
+
+        if (nal->type >= H264_NAL_AUXILIARY_SLICE &&
+            nal->type <= H264_NAL_RESERVED23) {
+            slot = -1;
+            for (int i = 0; i < h->view_count; i++)
+                if (h->views[i].view_id == nal->mv_view_id) {
+                    slot = i;
+                    break;
+                }
+            if (slot < 0) {
+                av_log(h->avctx, AV_LOG_ERROR,
+                       "Multiview NAL unit carries unregistered view id %d\n",
+                       nal->mv_view_id);
+                return 0; // skip the slice
+            }
+        }
+
+        /* View selection: VCL of a non-base view the user did not request
+         * is not decoded at all; the base view (slot 0) is always decoded
+         * because dependent slices resolve inter-view references through
+         * it. Skipping before the view switch leaves h->cur_view (and the
+         * picture in progress) untouched.
+         *
+         * 2-view limitation: correct only for base + one dependent view.
+         * In a 3+ view reference chain, deselecting an intermediate view
+         * leaves the next view's slices pointing at never-decoded
+         * inter-view references (the missing-view drop path covers views
+         * absent from the bitstream, not user-deselected ones). */
+        if (slot > 0 && !h264_view_selected(h, slot)) {
+            h->view_sel_skipped = 1;
+            return 0;
+        }
+
+        if (slot != h->cur_view) {
+            /* current_slice is only set while a picture's slices are
+             * queued but not finished: at packet start the previous
+             * picture already went through ff_h264_field_end() */
+            if (h->current_slice) {
+                /* flush the queued slices of the previous view's picture */
+                if (h->nb_slice_ctx_queued) {
+                    ret = ff_h264_execute_decode_slices(h);
+                    if (ret < 0 && (h->avctx->err_recognition & AV_EF_EXPLODE))
+                        return ret;
+                }
+                if (h->cur_pic_ptr) {
+                    ret = ff_h264_field_end(h, h->slice_ctx, 1);
+                    if (ret < 0)
+                        return ret;
+                    ff_thread_report_progress(&h->cur_pic_ptr->tf, INT_MAX, 0);
+                    ff_thread_report_progress(&h->cur_pic_ptr->tf, INT_MAX, 1);
+                    h->cur_pic_ptr = NULL;
+                }
+            }
+            h->current_slice  = 0;
+            h->first_field    = 0;
+            h->droppable      = 0;
+            h->cur_view       = slot;
+        }
+    }
+
+    sl = h->slice_ctx + h->nb_slice_ctx_queued;
+    first_slice = sl == h->slice_ctx && !h->current_slice;
 
     sl->gb = nal->gb;
+    sl->nal_size = nal->size;
 
     ret = h264_slice_header_parse(h, sl, nal);
     if (ret < 0)
         return ret;
+
+    /* An inter slice of this view whose own reference material has all
+     * vanished from the DPB (preceding pictures dropped): mark
+     * degenerate; the handling below decides drop vs decode. */
+    if (!sl->degenerate && h->view_count > 1 && h->cur_view > 0 &&
+        sl->slice_type_nos != AV_PICTURE_TYPE_I) {
+        const H264ViewState *v = &h->views[h->cur_view];
+        if (!v->short_ref_count && !v->long_ref_count &&
+            !v->delayed_pic[0] && !v->parked_pic)
+            sl->degenerate = 1;
+    }
+
+    /* Degenerate slices (see h264_slice_header_parse) are dropped as a
+     * whole when decoding could not possibly succeed: either the needed
+     * reference material is genuinely absent from the stream (delta-only
+     * distribution, where decoding would only yield a fully concealed,
+     * suppressed picture), or the header tolerances ended with an empty
+     * reference list for a non-intra slice (decoding a non-empty payload
+     * would drive motion compensation against zeroed slots and crash).
+     * In both cases the remaining slices of the access unit are consumed
+     * by the latch. Anchors in streams where every view IS present must
+     * not be dropped: their near-empty payload decodes against the real
+     * base-view material and is already normalized by the header
+     * tolerances. */
+    if (sl->degenerate && h->view_count > 1 && h->cur_view > 0) {
+        const H264ViewState *base = &h->views[0];
+        if ((!base->short_ref_count && !base->long_ref_count &&
+             !base->delayed_pic[0] && !base->parked_pic) ||
+             (sl->list_count == 0 &&
+              sl->slice_type_nos != AV_PICTURE_TYPE_I)) {
+            h->drop_view_slices = 1;
+            if (h->current_slice) {
+                /* A picture is already in progress: abandon it without
+                 * executing the queued slices, so no part of the
+                 * undecodable payload is decoded. The view's POC state is
+                 * deliberately left untouched (unlike ff_h264_field_end())
+                 * so the next picture's POC prediction stays correct. */
+                ff_h264_unref_picture(&h->cur_pic);
+                ff_h264_unref_picture(h->cur_pic_ptr);
+                h->cur_pic_ptr         = NULL;
+                h->nb_slice_ctx_queued = 0;
+                h->current_slice       = 0;
+                h->first_field         = 0;
+                h->droppable           = 0;
+            }
+            return 0;
+        }
+    }
 
     // discard redundant pictures
     if (sl->redundant_pic_count > 0) {
@@ -2549,7 +3320,12 @@ static void decode_finish_row(const H264Context *h, H264SliceContext *sl)
 
     ff_h264_draw_horiz_band(h, sl, top, height);
 
-    if (h->droppable || h->er.error_occurred)
+    // Droppable pictures need no progress reports in single-view streams,
+    // but in multiview a droppable picture may still be referenced across
+    // views, so it must report like any other picture.
+    if (h->er.error_occurred)
+        return;
+    if (h->droppable && h->view_count <= 1)
         return;
 
     ff_thread_report_progress(&h->cur_pic_ptr->tf, top + height - 1,
@@ -2568,6 +3344,227 @@ static void er_add_slice(H264SliceContext *sl,
     }
 }
 
+/**
+ * 2D+delta MVC: may this slice be completed as skipped macroblocks
+ * against reference list 0? Runtime fallback for a dependent slice whose
+ * payload genuinely fails to decode; the correct output is essentially a
+ * copy of the base view reference of the same POC, so skipping against
+ * list 0 reference 0 reproduces the undamaged picture instead of a
+ * concealed one.
+ *
+ * Guarded to progressive P slices of dependent MVC views with a valid
+ * reference (plain H.264 and the base view never take this path); slice
+ * threading is excluded: the fill re-decodes to the end of the picture
+ * and would race the other slice contexts.
+ */
+static int dependent_slice_fillable(const H264Context *h, H264SliceContext *sl)
+{
+    return h->view_count > 1 && h->cur_view > 0 &&
+           !(h->avctx->active_thread_type & FF_THREAD_SLICE) &&
+           h->ps.sps && h->ps.sps->mvc.present &&
+           !FIELD_OR_MBAFF_PICTURE(h) &&
+           sl->slice_type_nos == AV_PICTURE_TYPE_P &&
+           sl->ref_count[0] > 0 &&
+           sl->ref_list[0][0].parent != NULL &&
+           sl->ref_list[0][0].data[0] != NULL;
+}
+
+/**
+ * Is this slice's macroblock region already covered by a dependent
+ * anchor fill earlier in the picture (see dependent_fill_account())?
+ * The fill re-decoded those macroblocks and accounted for the whole
+ * region, so the slice's own ER_MB_END bookkeeping must be suppressed -
+ * or ff_er_frame_end() would see a negative error count and conceal an
+ * undamaged picture.
+ */
+static int dependent_fill_covers(const H264Context *h,
+                                 const H264SliceContext *sl)
+{
+    return h->dep_fill_first >= 0 && h->dep_fill_first < sl->first_mb_addr;
+}
+
+/**
+ * Decode the picture region [start_addr, end_addr) as skipped
+ * (PART_P_SKIP) macroblocks against reference list 0 entry 0. Used by
+ * the 2D+delta dependent view paths: those pictures decode as an
+ * (essentially) empty delta - a copy of the base view reference frame
+ * of the same POC - and the motion prediction resolves to reference 0
+ * with a zero MV, so the macroblocks are exact copies.
+ *
+ * Per macroblock the fill leaves precisely the state a normally decoded
+ * skipped macroblock leaves, advancing mb_x/mb_y like decode_slice();
+ * each completed row is filtered in full from column 0 (the macroblocks
+ * before the region never received their row filter pass). On return
+ * sl->mb_x/sl->mb_y sit at or beyond end_addr and *lf_x_start has no
+ * pending work.
+ */
+static void fill_dep_region_as_skip(const H264Context *h,
+                                    H264SliceContext *sl,
+                                    int start_addr, int end_addr,
+                                    int *lf_x_start)
+{
+    sl->mb_x        = start_addr % h->mb_width;
+    sl->mb_y        = start_addr / h->mb_width;
+    *lf_x_start     = 0;
+    sl->mb_skip_run = -1;
+    while (sl->mb_x + sl->mb_y * h->mb_width < end_addr) {
+        sl->mb_xy = sl->mb_x + sl->mb_y * h->mb_stride;
+        h->cbp_table[sl->mb_xy] = 0;
+        h->chroma_pred_mode_table[sl->mb_xy] = 0;
+        sl->last_qscale_diff = 0;
+        decode_mb_skip(h, sl);
+        ff_h264_hl_decode_mb(h, sl);
+
+        if (++sl->mb_x >= h->mb_width) {
+            loop_filter(h, sl, *lf_x_start, sl->mb_x);
+            sl->mb_x = 0;
+            *lf_x_start = 0;
+            decode_finish_row(h, sl);
+            ++sl->mb_y;
+            if (sl->mb_y >= h->mb_height)
+                break;
+        }
+    }
+}
+
+/**
+ * Complete a dependent slice whose payload failed to decode (see
+ * dependent_slice_fillable).
+ *
+ * Re-decodes from the failing slice's *first* macroblock, not the
+ * failing one: macroblocks consumed before the failure may hold garbage
+ * from the truncated/desynced entropy stream, and in the sequential
+ * single-slice-context setup these streams use that region extends to
+ * the end of the picture (later slices decode over the filled
+ * macroblocks, their payloads intact).
+ *
+ * Do NOT preserve the prefix macroblocks of a fully failed slice: the
+ * bands are plain self-contained CABAC payloads, so the prefixes are
+ * reads of a misaligned stream, not genuine content - whole-band base
+ * copies are pixel-identical to the expected output, keeping the
+ * prefixes regresses the frames that reference them.
+ */
+static void fill_dependent_anchor_slice_as_skip(const H264Context *h,
+                                                H264SliceContext *sl,
+                                                int *lf_x_start)
+{
+    static int fill_logged;
+    if (!fill_logged) {
+        fill_logged = 1;
+        av_log(h->avctx, AV_LOG_WARNING,
+               "dependent slice decode failure at MB %d %d; completing the "
+               "picture as skipped macroblocks against the base view "
+               "reference\n", sl->resync_mb_x, sl->resync_mb_y);
+    }
+    fill_dep_region_as_skip(h, sl, sl->first_mb_addr, h->mb_num, lf_x_start);
+}
+
+/**
+ * Account for the region covered by the dependent anchor fill in the
+ * error-resilience state. Runs only the first time the picture gets
+ * filled: every macroblock from the filling slice's first to the
+ * picture's last is marked error-free and the error count is deducted
+ * for exactly that region; later in-region slices suppress their own
+ * accounting (dependent_fill_covers()), so the picture reaches
+ * ff_er_frame_end() with an error count of zero and is not concealed.
+ * The region ends at the picture's last macroblock: ff_er_add_slice()
+ * treats end_i == s->mb_num as a hard error.
+ */
+static void dependent_fill_account(H264Context *h, H264SliceContext *sl)
+{
+    if (h->dep_fill_first < 0) {
+        h->dep_fill_first = sl->first_mb_addr;
+        er_add_slice(sl, sl->resync_mb_x, sl->resync_mb_y,
+                     h->mb_width - 1, h->mb_height - 1, ER_MB_END);
+    }
+}
+
+/**
+ * 2D+delta MVC, at picture end: complete the macroblocks that a
+ * truncated dependent slice NAL left undecoded.
+ *
+ * These streams also carry slice NALs whose CABAC payload ends before
+ * the slice region is complete; the decoder "completes" the slice on
+ * the entropy terminator, leaving a contiguous run of unaccounted
+ * macroblocks that ff_er_frame_end() would conceal as garbage. The
+ * correct output reads the exhausted payload as zeros: skipped copies
+ * of the base view reference over the whole region.
+ *
+ * Detects that situation from the error-resilience state (one
+ * contiguous untouched run whose size matches the remaining error
+ * count, no other error) and completes it the same way as the in-slice
+ * fill, with the ER_MB_END accounting restricted to the region and a
+ * passing error_occurred cleared.
+ *
+ * Returns the number of completed macroblocks, 0 when nothing applied;
+ * safe to call unconditionally (plain H.264 and base views cannot match
+ * the gate, intact pictures leave no untouched run).
+ */
+int ff_h264_complete_truncated_region(H264Context *h)
+{
+    H264SliceContext *const sl = h->slice_ctx;
+    const uint8_t *const tab = h->er.error_status_table;
+    const int *const xy_of_mb = h->er.mb_index2xy;
+    const int err_bits = ER_AC_ERROR | ER_DC_ERROR | ER_MV_ERROR;
+    const int mb_num = h->mb_num;
+    int ec, i, g0 = -1, g1 = 0;
+    int in_run = 0, second_run = 0;
+
+    /* The table holds the state of the picture currently being decoded
+     * only while at least one of its slices was queued; an access unit
+     * without slices would otherwise see the previous picture's state. */
+    if (!h->cur_pic_ptr || !h->current_slice)
+        return 0;
+
+    if (!tab || !xy_of_mb || !dependent_slice_fillable(h, sl))
+        return 0;
+
+    ec = (int) atomic_load(&h->er.error_count);
+    if (ec <= 0 || ec % 3)
+        return 0;
+
+    /* The table is a padded mb_stride-wide array (stride > mb_width), so
+     * macroblocks are addressed through mb_index2xy, like the rest of
+     * the error-resilience code. */
+    for (i = 0; i < mb_num; i++) {
+        if (tab[xy_of_mb[i]] & err_bits) {
+            if (in_run)
+                g1 = i + 1;
+            else {
+                in_run = 1;
+                if (g0 >= 0)
+                    second_run = 1;
+                g0 = i;
+                g1 = i + 1;
+            }
+        } else if (in_run)
+            in_run = 0;
+    }
+    if (g0 < 0 || second_run || ec / 3 != g1 - g0)
+        return 0;
+
+    static int region_logged;
+    if (!region_logged) {
+        region_logged = 1;
+        av_log(h->avctx, AV_LOG_WARNING,
+               "truncated dependent slice left %d macroblocks undecoded "
+               "from MB %d %d; completing the region as skipped "
+               "macroblocks against the base view reference\n",
+               g1 - g0, g0 % h->mb_width, g0 / h->mb_width);
+    }
+
+    {
+        int lf_x_start;
+        fill_dep_region_as_skip(h, sl, g0, g1, &lf_x_start);
+        er_add_slice(sl, g0 % h->mb_width, g0 / h->mb_width,
+                     (g1 - 1) % h->mb_width, (g1 - 1) / h->mb_width,
+                     ER_MB_END);
+    }
+    h->er.error_occurred = 0;
+
+    return g1 - g0;
+}
+
 static int decode_slice(struct AVCodecContext *avctx, void *arg)
 {
     H264SliceContext *sl = arg;
@@ -2575,6 +3572,10 @@ static int decode_slice(struct AVCodecContext *avctx, void *arg)
     int lf_x_start = sl->mb_x;
     int orig_deblock = sl->deblocking_filter;
     int ret;
+    /* Bit-exact CABAC payload copy for the dependent view (NULL for the
+     * base view and for CAVLC; freed on finish and early CABAC errors). */
+    uint8_t *dep_cabac_buf = NULL;
+    int dep_cabac_bytes = 0;
 
     sl->linesize   = h->cur_pic_ptr->f->linesize[0];
     sl->uvlinesize = h->cur_pic_ptr->f->linesize[1];
@@ -2593,7 +3594,12 @@ static int decode_slice(struct AVCodecContext *avctx, void *arg)
     sl->is_complex = FRAME_MBAFF(h) || h->picture_structure != PICT_FRAME ||
                      (CONFIG_GRAY && (h->flags & AV_CODEC_FLAG_GRAY));
 
-    if (!(h->avctx->active_thread_type & FF_THREAD_SLICE) && h->picture_structure == PICT_FRAME && sl->er->error_status_table) {
+    /* Also suppressed inside a dependent anchor fill region
+     * (dependent_fill_covers()): the fill marks the whole region
+     * error-free in one shot, so the boundary macroblocks left behind
+     * carry no ER_MB_END and would flag every later slice as an error. */
+    if (!(h->avctx->active_thread_type & FF_THREAD_SLICE) && h->picture_structure == PICT_FRAME && sl->er->error_status_table &&
+        !dependent_fill_covers(h, sl)) {
         const int start_i  = av_clip(sl->resync_mb_x + sl->resync_mb_y * h->mb_width, 0, h->mb_num - 1);
         if (start_i) {
             int prev_status = sl->er->error_status_table[sl->er->mb_index2xy[start_i - 1]];
@@ -2604,25 +3610,98 @@ static int decode_slice(struct AVCodecContext *avctx, void *arg)
     }
 
     if (h->ps.pps->cabac) {
-        /* realign */
-        align_get_bits(&sl->gb);
+        /* 2D+delta MVC dependent anchor bands: the correct decode drops
+         * the 1-7 bits after the slice-header end, so the CABAC payload
+         * starts at the first byte boundary at or after the header end -
+         * the same start the stock aligned handoff below computes. The
+         * private copy exists to keep the +2/+4 end-of-slice over-reads
+         * in bounds via the +8 zero pad and to drive the band-boundary
+         * finish logic below (verified byte-exact on the affected
+         * streams). In-epoch dependent slices keep the stock aligned
+         * handoff. */
+        if (h->view_count > 1 && h->cur_view > 0 && h->ps.sps->mvc.present &&
+            sl->mvc_anchor) {
+            int e    = get_bits_count(&sl->gb);
+            int bits = get_bits_left(&sl->gb);
+            int start = (e - 32 + 7) >> 3; /* type-20: 4-byte NAL header */
+            int i;
+
+            /* Buffer layout / bound. sl->gb is init'd on the NAL itself
+             * (h2645_parse.c), so gb.buffer points at the NAL's first
+             * byte (the 4-byte type-20 header is its first part).
+             * The copy length is the UNALIGNED bound - ceil(bits/8)
+             * with bits measured from the UNALIGNED header end
+             * (get_bits_left at e) - clamped to the NAL's byte extent.
+             * The stock aligned bound ((size_in_bits - FFALIGN(e,8) +
+             * 7) / 8) is exactly one byte shorter for 0x80-terminated
+             * NALs with a misaligned header end (it stops at the
+             * stop-bit byte, never reaching the NAL's last byte); A/B
+             * verification shows the unaligned bound is the correct
+             * one - still inside the NAL extent, with the NAL-extent
+             * clamp, the 3-byte guard below and the +8 zero pad
+             * unchanged. Clamping below the 3-byte guard defers to the
+             * stock aligned handoff (the only state a pathologically
+             * short NAL could produce). */
+            dep_cabac_bytes = (bits + 7) / 8;
+            dep_cabac_bytes = FFMIN(dep_cabac_bytes,
+                                     sl->nal_size - 4 - start);
+            /* Need the 3 bytes ff_init_cabac_decoder() may fetch ahead;
+             * the +8 zero pad keeps renormalizing over-reads near the
+             * logical end in bounds, as the +2/+4 checks expect. */
+            dep_cabac_buf = dep_cabac_bytes >= 3 ?
+                av_mallocz(dep_cabac_bytes + 8) : NULL;
+            if (dep_cabac_buf) {
+                const uint8_t *raw = sl->gb.buffer + 4 + start;
+
+                for (i = 0; i < dep_cabac_bytes; i++)
+                    dep_cabac_buf[i] = raw[i];
+            }
+        }
 
         /* init cabac */
-        ret = ff_init_cabac_decoder(&sl->cabac,
-                              sl->gb.buffer + get_bits_count(&sl->gb) / 8,
-                              (get_bits_left(&sl->gb) + 7) / 8);
-        if (ret < 0)
+        if (dep_cabac_buf)
+            ret = ff_init_cabac_decoder(&sl->cabac, dep_cabac_buf,
+                                         dep_cabac_bytes);
+        else {
+            /* realign */
+            align_get_bits(&sl->gb);
+
+            ret = ff_init_cabac_decoder(&sl->cabac,
+                                  sl->gb.buffer + get_bits_count(&sl->gb) / 8,
+                                  (get_bits_left(&sl->gb) + 7) / 8);
+        }
+        if (ret < 0) {
+            av_free(dep_cabac_buf);
             return ret;
+        }
 
         ff_h264_init_cabac_states(h, sl);
 
         for (;;) {
             int ret, eos;
             if (sl->mb_x + sl->mb_y * h->mb_width >= sl->next_slice_idx) {
+                if (dep_cabac_buf &&
+                    sl->cabac.bytestream <= sl->cabac.bytestream_end + 2) {
+                    /* A dependent band finished all of its macroblocks
+                     * at the band boundary with the payload intact (the
+                     * +2 allowance matches the stock over-read threshold:
+                     * the boundary's own end-of-slice renorm may pull the
+                     * final 2-byte pair one step past the logical end,
+                     * while a truncated/corrupt band keeps running past
+                     * +4). Finish like the EOS path instead of flagging
+                     * a slice overlap. */
+                    if (!dependent_fill_covers(h, sl))
+                        er_add_slice(sl, sl->resync_mb_x, sl->resync_mb_y,
+                                     sl->mb_x - 1, sl->mb_y, ER_MB_END);
+                    if (sl->mb_x > lf_x_start)
+                        loop_filter(h, sl, lf_x_start, sl->mb_x);
+                    goto finish;
+                }
                 av_log(h->avctx, AV_LOG_ERROR, "Slice overlaps with next at %d\n",
                        sl->next_slice_idx);
                 er_add_slice(sl, sl->resync_mb_x, sl->resync_mb_y, sl->mb_x,
                              sl->mb_y, ER_MB_ERROR);
+                av_free(dep_cabac_buf);
                 return AVERROR_INVALIDDATA;
             }
 
@@ -2643,6 +3722,42 @@ static int decode_slice(struct AVCodecContext *avctx, void *arg)
             }
             eos = get_cabac_terminate(&sl->cabac);
 
+            /* Dependent anchor bands occasionally close their CABAC
+             * payload with the end-of-slice state unset and no payload
+             * left; the correct decode reads the zero padding there,
+             * the overrun macroblocks falling inside the next band
+             * slice's region, where they are re-decoded. Decoding one
+             * macroblock further would hard-fail and trip the fill
+             * gate, repainting the band's genuine rows and poisoning
+             * reference frames, so the exhausted payload is treated as
+             * end-of-slice (a genuinely truncated last band is
+             * completed as skipped macroblocks by
+             * ff_h264_complete_truncated_region()).
+             * bytestream >= bytestream_end + 1 means the range coder's
+             * last refill pair already straddled the logical end, so
+             * every further refill is zero-only; +0 is excluded (its
+             * in-flight state still holds the last two real payload
+             * bytes). Both thresholds fire ONLY at a row end outside
+             * the picture's last row (mb_x == mb_width - 1, mb_y <
+             * mb_height - 1): a +1 tail in the final row is a genuine
+             * continuation, and a mid-row fire (+1, or +2 only
+             * reachable on a truncated NAL) leaves an undecoded row
+             * tail no later NAL of this picture covers. Band
+             * boundaries in the affected streams are row-aligned, so
+             * the genuine handoff completions keep firing;
+             * sl->next_slice_idx is NOT used as the handoff test (it
+             * reads the picture end on per-NAL-packetized streams). A
+             * healthy band at +1 with the end-of-slice state set is
+             * excluded by the !eos guard. */
+            if (!eos && ret >= 0 && sl->mvc_anchor && dep_cabac_buf &&
+                sl->mb_x == h->mb_width - 1 &&
+                (sl->cabac.bytestream >= sl->cabac.bytestream_end + 2 ||
+                 (sl->cabac.bytestream == sl->cabac.bytestream_end + 1 &&
+                  sl->mb_y < h->mb_height - 1 &&
+                  sl->mb_x == h->mb_width - 1)))
+                eos = (int) (sl->cabac.bytestream -
+                             sl->cabac.bytestream_start);
+
             if ((h->workaround_bugs & FF_BUG_TRUNCATED) &&
                 sl->cabac.bytestream > sl->cabac.bytestream_end + 2) {
                 er_add_slice(sl, sl->resync_mb_x, sl->resync_mb_y, sl->mb_x - 1,
@@ -2654,12 +3769,18 @@ static int decode_slice(struct AVCodecContext *avctx, void *arg)
             if (sl->cabac.bytestream > sl->cabac.bytestream_end + 2 )
                 av_log(h->avctx, AV_LOG_DEBUG, "bytestream overread %td\n", sl->cabac.bytestream_end - sl->cabac.bytestream);
             if (ret < 0 || sl->cabac.bytestream > sl->cabac.bytestream_end + 4) {
+                if (dependent_slice_fillable(h, sl)) {
+                    fill_dependent_anchor_slice_as_skip(h, sl, &lf_x_start);
+                    dependent_fill_account((H264Context *) sl->h264, sl);
+                    goto finish;
+                }
                 av_log(h->avctx, AV_LOG_ERROR,
                        "error while decoding MB %d %d, bytestream %td\n",
                        sl->mb_x, sl->mb_y,
                        sl->cabac.bytestream_end - sl->cabac.bytestream);
                 er_add_slice(sl, sl->resync_mb_x, sl->resync_mb_y, sl->mb_x,
                              sl->mb_y, ER_MB_ERROR);
+                av_free(dep_cabac_buf);
                 return AVERROR_INVALIDDATA;
             }
 
@@ -2678,8 +3799,9 @@ static int decode_slice(struct AVCodecContext *avctx, void *arg)
             if (eos || sl->mb_y >= h->mb_height) {
                 ff_tlog(h->avctx, "slice end %d %d\n",
                         get_bits_count(&sl->gb), sl->gb.size_in_bits);
-                er_add_slice(sl, sl->resync_mb_x, sl->resync_mb_y, sl->mb_x - 1,
-                             sl->mb_y, ER_MB_END);
+                if (!dependent_fill_covers(h, sl))
+                    er_add_slice(sl, sl->resync_mb_x, sl->resync_mb_y,
+                                 sl->mb_x - 1, sl->mb_y, ER_MB_END);
                 if (sl->mb_x > lf_x_start)
                     loop_filter(h, sl, lf_x_start, sl->mb_x);
                 goto finish;
@@ -2713,6 +3835,11 @@ static int decode_slice(struct AVCodecContext *avctx, void *arg)
             }
 
             if (ret < 0) {
+                if (dependent_slice_fillable(h, sl)) {
+                    fill_dependent_anchor_slice_as_skip(h, sl, &lf_x_start);
+                    dependent_fill_account((H264Context *) sl->h264, sl);
+                    goto finish;
+                }
                 av_log(h->avctx, AV_LOG_ERROR,
                        "error while decoding MB %d %d\n", sl->mb_x, sl->mb_y);
                 er_add_slice(sl, sl->resync_mb_x, sl->resync_mb_y, sl->mb_x,
@@ -2736,8 +3863,11 @@ static int decode_slice(struct AVCodecContext *avctx, void *arg)
 
                     if (   get_bits_left(&sl->gb) == 0
                         || get_bits_left(&sl->gb) > 0 && !(h->avctx->err_recognition & AV_EF_AGGRESSIVE)) {
-                        er_add_slice(sl, sl->resync_mb_x, sl->resync_mb_y,
-                                     sl->mb_x - 1, sl->mb_y, ER_MB_END);
+                        if (!dependent_fill_covers(h, sl))
+                            er_add_slice(sl, sl->resync_mb_x,
+                                         sl->resync_mb_y,
+                                         sl->mb_x - 1, sl->mb_y,
+                                         ER_MB_END);
 
                         goto finish;
                     } else {
@@ -2754,8 +3884,9 @@ static int decode_slice(struct AVCodecContext *avctx, void *arg)
                         get_bits_count(&sl->gb), sl->gb.size_in_bits);
 
                 if (get_bits_left(&sl->gb) == 0) {
-                    er_add_slice(sl, sl->resync_mb_x, sl->resync_mb_y,
-                                 sl->mb_x - 1, sl->mb_y, ER_MB_END);
+                    if (!dependent_fill_covers(h, sl))
+                        er_add_slice(sl, sl->resync_mb_x, sl->resync_mb_y,
+                                     sl->mb_x - 1, sl->mb_y, ER_MB_END);
                     if (sl->mb_x > lf_x_start)
                         loop_filter(h, sl, lf_x_start, sl->mb_x);
 
@@ -2771,6 +3902,7 @@ static int decode_slice(struct AVCodecContext *avctx, void *arg)
     }
 
 finish:
+    av_free(dep_cabac_buf);
     sl->deblocking_filter = orig_deblock;
     return 0;
 }

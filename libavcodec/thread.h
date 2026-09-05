@@ -87,4 +87,12 @@ enum ThreadingStatus {
  */
 enum ThreadingStatus ff_thread_sync_ref(AVCodecContext *avctx, size_t offset);
 
+/**
+ * Private data of the frame-thread context shared by all worker threads
+ * (the first decoding thread, which seeds the others, when frame
+ * threading is in use, else the context itself); for sharing one scalar
+ * among workers. ff_thread_sync_ref() is the RefStruct variant.
+ */
+void *ff_thread_shared_priv_data(AVCodecContext *avctx);
+
 #endif /* AVCODEC_THREAD_H */

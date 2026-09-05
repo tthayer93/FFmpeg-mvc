@@ -377,6 +377,7 @@ static int vk_h264_start_frame(AVCodecContext          *avctx,
     int err;
     int dpb_slot_index = 0;
     H264Context *h = avctx->priv_data;
+    H264ViewState *v = &h->views[h->cur_view];
 
     H264Picture *pic = h->cur_pic_ptr;
     H264VulkanDecodePicture *hp = pic->hwaccel_picture_private;
@@ -400,17 +401,17 @@ static int vk_h264_start_frame(AVCodecContext          *avctx,
         return err;
 
     /* Fill in short-term references */
-    for (int i = 0; i < h->short_ref_count; i++) {
+    for (int i = 0; i < v->short_ref_count; i++) {
         dpb_slot_index = 0;
         for (unsigned slot = 0; slot < H264_MAX_PICTURE_COUNT; slot++) {
-            if (h->short_ref[i] == &h->DPB[slot]) {
+            if (v->short_ref[i] == &h->DPB[slot]) {
                 dpb_slot_index = slot;
                 break;
             }
         }
         err = vk_h264_fill_pict(avctx, &hp->ref_src[i], &vp->ref_slots[i],
                                 &vp->refs[i], &hp->vkh264_refs[i],
-                                &hp->h264_refs[i], h->short_ref[i], 0,
+                                &hp->h264_refs[i], v->short_ref[i], 0,
                                 h->DPB[dpb_slot_index].field_picture,
                                 h->DPB[dpb_slot_index].reference,
                                 dpb_slot_index);
@@ -419,21 +420,21 @@ static int vk_h264_start_frame(AVCodecContext          *avctx,
     }
 
     /* Fill in long-term refs */
-    for (int r = 0, i = h->short_ref_count; r < H264_MAX_DPB_FRAMES &&
-         i < h->short_ref_count + h->long_ref_count; r++) {
-        if (!h->long_ref[r])
+    for (int r = 0, i = v->short_ref_count; r < H264_MAX_DPB_FRAMES &&
+         i < v->short_ref_count + v->long_ref_count; r++) {
+        if (!v->long_ref[r])
             continue;
 
         dpb_slot_index = 0;
         for (unsigned slot = 0; slot < 16; slot++) {
-            if (h->long_ref[r] == &h->DPB[slot]) {
+            if (v->long_ref[r] == &h->DPB[slot]) {
                 dpb_slot_index = slot;
                 break;
             }
         }
         err = vk_h264_fill_pict(avctx, &hp->ref_src[i], &vp->ref_slots[i],
                                 &vp->refs[i], &hp->vkh264_refs[i],
-                                &hp->h264_refs[i], h->long_ref[r], 0,
+                                &hp->h264_refs[i], v->long_ref[r], 0,
                                 h->DPB[dpb_slot_index].field_picture,
                                 h->DPB[dpb_slot_index].reference,
                                 dpb_slot_index);
@@ -470,7 +471,7 @@ static int vk_h264_start_frame(AVCodecContext          *avctx,
         .pNext = &hp->h264_pic_info,
         .flags = 0x0,
         .pSetupReferenceSlot = &vp->ref_slot,
-        .referenceSlotCount = h->short_ref_count + h->long_ref_count,
+        .referenceSlotCount = v->short_ref_count + v->long_ref_count,
         .pReferenceSlots = vp->ref_slots,
         .dstPictureResource = (VkVideoPictureResourceInfoKHR) {
             .sType = VK_STRUCTURE_TYPE_VIDEO_PICTURE_RESOURCE_INFO_KHR,

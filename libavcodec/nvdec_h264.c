@@ -55,6 +55,7 @@ static int nvdec_h264_start_frame(AVCodecContext *avctx,
     const H264Context *h = avctx->priv_data;
     const PPS *pps = h->ps.pps;
     const SPS *sps = h->ps.sps;
+    const H264ViewState *v = &h->views[h->cur_view];
 
     NVDECContext       *ctx = avctx->internal->hwaccel_priv_data;
     CUVIDPICPARAMS      *pp = &ctx->pic_params;
@@ -109,7 +110,7 @@ static int nvdec_h264_start_frame(AVCodecContext *avctx,
             .chroma_qp_index_offset                 = pps->chroma_qp_index_offset[0],
             .second_chroma_qp_index_offset          = pps->chroma_qp_index_offset[1],
             .ref_pic_flag                           = h->nal_ref_idc != 0,
-            .frame_num                              = h->poc.frame_num,
+            .frame_num                              = v->poc.frame_num,
             .CurrFieldOrderCnt[0]                   = h->cur_pic_ptr->field_poc[0],
             .CurrFieldOrderCnt[1]                   = h->cur_pic_ptr->field_poc[1],
         },
@@ -120,11 +121,11 @@ static int nvdec_h264_start_frame(AVCodecContext *avctx,
     memcpy(ppc->WeightScale8x8[1], pps->scaling_matrix8[3], sizeof(ppc->WeightScale8x8[0]));
 
     dpb_size = 0;
-    for (i = 0; i < h->short_ref_count; i++)
-        dpb_add(h, &ppc->dpb[dpb_size++], h->short_ref[i], h->short_ref[i]->frame_num);
+    for (i = 0; i < v->short_ref_count; i++)
+        dpb_add(h, &ppc->dpb[dpb_size++], v->short_ref[i], v->short_ref[i]->frame_num);
     for (i = 0; i < 16; i++) {
-        if (h->long_ref[i])
-            dpb_add(h, &ppc->dpb[dpb_size++], h->long_ref[i], i);
+        if (v->long_ref[i])
+            dpb_add(h, &ppc->dpb[dpb_size++], v->long_ref[i], i);
     }
 
     for (i = dpb_size; i < FF_ARRAY_ELEMS(ppc->dpb); i++)

@@ -1091,6 +1091,26 @@ av_cold enum ThreadingStatus ff_thread_sync_ref(AVCodecContext *avctx, size_t of
     return FF_THREAD_IS_COPY;
 }
 
+void *ff_thread_shared_priv_data(AVCodecContext *avctx)
+{
+    if (avctx->internal->is_frame_mt) {
+        /* a frame-thread worker: thread_ctx is this worker's
+         * PerThreadContext, whose parent holds the whole array */
+        PerThreadContext *p = avctx->internal->thread_ctx;
+
+        return p->parent->threads[0].avctx->priv_data;
+    }
+    if (!avctx->internal->thread_ctx ||
+        !(avctx->active_thread_type & FF_THREAD_FRAME))
+        return avctx->priv_data;
+
+    /* User-facing context of a frame-threaded decode: thread_ctx is the
+     * FrameThreadContext; FFCodec.init never ran on it (see
+     * avcodec_open2), so resolve the first decoding context, the one
+     * every worker is seeded from. */
+    return ((FrameThreadContext*)avctx->internal->thread_ctx)->threads[0].avctx->priv_data;
+}
+
 int ff_thread_get_packet(AVCodecContext *avctx, AVPacket *pkt)
 {
     PerThreadContext *p = avctx->internal->thread_ctx;

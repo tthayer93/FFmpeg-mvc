@@ -182,6 +182,13 @@ typedef struct FFCodec {
     /** @} */
 
     /**
+     * Optional decoder hook to adjust a frame's timestamps from
+     * delivery order; runs once per delivered frame on the main thread
+     * before best_effort_timestamp is guessed, and must not fail.
+     */
+    void (*post_receive_frame)(AVCodecContext *avctx, AVFrame *frame);
+
+    /**
      * Private codec-specific defaults.
      */
     const FFCodecDefault *defaults;

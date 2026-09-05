@@ -57,7 +57,9 @@ typedef struct H2645NAL {
     int ref_idc;
 
     /**
-     * HEVC only, nuh_temporal_id_plus_1 - 1
+     * HEVC: nuh_temporal_id_plus_1 - 1.
+     * H.264: temporal_id of a slice extension NAL unit (types 19-23)
+     * when mv_ext_parsed is set, 0 otherwise.
      */
     int temporal_id;
 
@@ -69,6 +71,18 @@ typedef struct H2645NAL {
     int skipped_bytes;
     int skipped_bytes_pos_size;
     int *skipped_bytes_pos;
+
+    /**
+     * H.264 only: nal_unit_header_mvc_extension() fields (7.3.1) of a
+     * slice extension NAL unit (types 19-23). Set when mv_ext_parsed is
+     * non-zero, cleared otherwise.
+     */
+    int mv_ext_parsed;
+    int mv_non_idr;       ///< non_idr_flag
+    int mv_priority_id;   ///< priority_id
+    int mv_view_id;       ///< view_id
+    int mv_anchor_pic;    ///< anchor_pic_flag
+    int mv_inter_view;    ///< inter_view_flag
 } H2645NAL;
 
 typedef struct H2645RBSP {
