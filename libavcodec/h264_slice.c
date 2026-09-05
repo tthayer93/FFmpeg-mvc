@@ -1071,11 +1071,34 @@ static enum AVPixelFormat get_pixel_format(H264Context *h, int force_callback)
         return AVERROR_INVALIDDATA;
     }
 
+    /* H.264/MVC is decoded in software only: with a hwaccel requested,
+     * strip the hardware formats so no backend can engage (the side-by-side
+     * assembly reads software frames). mvc_sps is the "multiview SPS seen"
+     * state kept by h264_mvc_update(); in 2D+delta streams the multiview
+     * SPS may arrive after the base profile SPS, so the active SPS alone
+     * is not the right test. */
+    const int mvc_sw_only = h->mvc_sps &&
+                            (h->avctx->hw_device_ctx || h->avctx->hwaccel);
+    if (mvc_sw_only) {
+        enum AVPixelFormat *w = pix_fmts;
+
+        for (enum AVPixelFormat *r = pix_fmts; r < fmt; r++)
+            if (!(av_pix_fmt_desc_get(*r)->flags & AV_PIX_FMT_FLAG_HWACCEL))
+                *w++ = *r;
+        fmt = w;
+    }
+
     *fmt = AV_PIX_FMT_NONE;
 
     for (int i = 0; pix_fmts[i] != AV_PIX_FMT_NONE; i++)
         if (pix_fmts[i] == h->avctx->pix_fmt && !force_callback)
             return pix_fmts[i];
+    if (mvc_sw_only && !h->mvc_hw_fallback_warned) {
+        h->mvc_hw_fallback_warned = 1;
+        av_log(h->avctx, AV_LOG_WARNING,
+               "H.264/MVC: hardware acceleration is not supported, "
+               "falling back to software decoding\n");
+    }
     return ff_get_format(h->avctx, pix_fmts);
 }
 
