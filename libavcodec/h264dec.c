@@ -358,7 +358,8 @@ static void h264_free_pic(H264Context *h, H264Picture *pic)
 }
 
 /**
- * Export the available multiview view IDs and validate the view_ids
+ * Export the available multiview view IDs, apply the base-view default if
+ * the caller requested no specific views, and validate the view_ids
  * option. Return 0, AVERROR(EINVAL) (requested view missing) or
  * AVERROR(ENOMEM).
  */
@@ -388,9 +389,36 @@ static int h264_mvc_export(H264Context *h)
     if (h->nb_view_ids == 1 && h->view_ids[0] == -1)
         return 0;
 
-    // nothing requested: all views are selected by default, nothing to validate
-    if (!h->nb_view_ids)
+    // nothing requested: decode the base view only. The base view (view ID
+    // 0) is the plain 2D compatible view, so a bare decode of a multiview
+    // stream yields a single full-size picture per access unit; all views
+    // remain available by explicitly selecting them (a single -1, or an ID
+    // list). Defensive: if a stream carries no view ID 0, fall back to the
+    // first view declared in the SPS. This branch runs exactly once per
+    // decoder (at first-multiview SPS adoption), making the notice below a
+    // one-per-stream hint.
+    if (!h->nb_view_ids) {
+        int base = mvc->view_id[0];
+
+        for (i = 0; i < (int)mvc->num_views; i++)
+            if ((int)mvc->view_id[i] == 0) {
+                base = 0;
+                break;
+            }
+
+        h->view_ids = av_malloc_array(1, sizeof(*h->view_ids));
+        if (!h->view_ids)
+            return AVERROR(ENOMEM);
+        h->view_ids[0] = base;
+        h->nb_view_ids = 1;
+
+        av_log(h->avctx, AV_LOG_INFO,
+               "Multiview H.264/MVC stream with %d views detected; decoding "
+               "the base view (ID %d) only by default. Set the view_ids "
+               "option to select views, e.g. a single -1 to decode all "
+               "views.\n", (int)mvc->num_views, base);
         return 0;
+    }
 
     for (i = 0; i < h->nb_view_ids; i++) {
         int id = h->view_ids[i], t, found = 0;
