@@ -156,6 +156,7 @@ typedef uint64_t FFVulkanExtensions;
     MACRO(1, 1, FF_VK_EXT_NO_FLAG,              CmdPipelineBarrier)                      \
     MACRO(1, 1, FF_VK_EXT_NO_FLAG,              CmdCopyBufferToImage)                    \
     MACRO(1, 1, FF_VK_EXT_NO_FLAG,              CmdCopyImageToBuffer)                    \
+    MACRO(1, 1, FF_VK_EXT_NO_FLAG,              CmdCopyImage)                            \
     MACRO(1, 1, FF_VK_EXT_NO_FLAG,              CmdClearColorImage)                                    \
     MACRO(1, 1, FF_VK_EXT_NO_FLAG,              CmdCopyBuffer)                                         \
     MACRO(1, 1, FF_VK_EXT_NO_FLAG,              CmdUpdateBuffer)                                       \
@@ -171,6 +172,7 @@ typedef uint64_t FFVulkanExtensions;
     /* Image */                                                                          \
     MACRO(1, 1, FF_VK_EXT_DRM_MODIFIER_FLAGS,   GetImageDrmFormatModifierPropertiesEXT)  \
     MACRO(1, 1, FF_VK_EXT_NO_FLAG,              GetImageMemoryRequirements2)             \
+    MACRO(1, 1, FF_VK_EXT_NO_FLAG,              GetDeviceImageMemoryRequirements)        \
     MACRO(1, 1, FF_VK_EXT_NO_FLAG,              CreateImage)                             \
     MACRO(1, 1, FF_VK_EXT_NO_FLAG,              BindImageMemory2)                        \
     MACRO(1, 1, FF_VK_EXT_NO_FLAG,              GetImageSubresourceLayout)               \

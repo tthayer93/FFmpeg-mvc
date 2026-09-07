@@ -398,6 +398,7 @@ static inline int parse_nal_units(AVCodecParserContext *s,
         switch (state & 0x1f) {
         case H264_NAL_SLICE:
         case H264_NAL_IDR_SLICE:
+        case H264_NAL_DPA:
         case H264_NAL_AUXILIARY_SLICE:
         case H264_NAL_EXTEN_SLICE:
         case H264_NAL_DEPTH_EXTEN_SLICE:
@@ -487,6 +488,7 @@ static inline int parse_nal_units(AVCodecParserContext *s,
                 p->poc.prev_poc_lsb          = 0;
             }
             av_fallthrough;
+        case H264_NAL_DPA:                // starts with a slice header too
         case H264_NAL_SLICE:
             if (got_slice)
                 break;
