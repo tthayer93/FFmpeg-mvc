@@ -3253,34 +3253,34 @@ ffmpeg -i src.ext -lmax 21*QP2LAMBDA dst.ext
 
 The h264 decoder decodes H.264/MVC multiview streams (one picture per view per
 access unit); views are selected with the view specifiers on @option{-map}
-(see above). Two specifics apply: the decoder outputs all views by default
-(unlike MV-HEVC's base-layer default), so single-eye extraction needs an
-explicit @code{view:} specifier (a bare @option{-map} or @code{vidx:0} selects
-all views, delivered as one native side-by-side frame on a re-packable
-two-view stream); and the bitstream carries no view position information, so
-the @code{vpos:} specifier does not apply.
+(see above). Two specifics apply: like MV-HEVC, the decoder decodes the base
+view only by default - a bare @option{-map} or @code{vidx:0} yields the plain
+2D base view, and all views are selected with @code{view:all} - and the
+bitstream carries no view position information, so the @code{vpos:} specifier
+does not apply.
 
 MVC decoding is performed in software. Hardware acceleration is not
 supported; if a hardware accelerator is requested, decoding falls back
 to software with a warning.
 
-On a two-view stream the all-views default is delivered natively as one
-side-by-side (SBS) frame per access unit (twice the view width, a single
+On a two-view stream, selecting all views (@code{view:all}) delivers natively
+one side-by-side (SBS) frame per access unit (twice the view width, a single
 stereo side data entry) instead of two interleaved full-size frames.
-Single-eye extraction - an explicit @code{view:} specifier or the legacy
-@option{view_ids} option - still yields one single-view stream per access
-unit; the decoder adds no stereo side data in single-eye mode (container- or
-frame-packing-SEI-derived stereo side data passes through unchanged).
+Single-eye extraction - the base-view default, an explicit @code{view:}
+specifier, or the legacy @option{view_ids} option - yields one single-view
+stream per access unit; the decoder adds no stereo side data in single-eye
+mode (container- or frame-packing-SEI-derived stereo side data passes through
+unchanged).
 
 @example
-# decode only the view with view ID 0
-ffmpeg -i stereo.h264 -map 0:v:view:0 -an base.mkv
+# base view (default): plain 2D output
+ffmpeg -i stereo.h264 -an base.mkv
 
 # decode only the view with view ID 1
 ffmpeg -i stereo.h264 -map 0:v:view:1 -an view1.mkv
 
-# all views (default): one native side-by-side frame per access unit
-ffmpeg -i stereo.h264 -an sbs.mkv
+# all views: one native side-by-side frame per access unit
+ffmpeg -i stereo.h264 -map 0:v:view:all -an sbs.mkv
 @end example
 
 A side-by-side image can also be produced by decoding each eye and stacking

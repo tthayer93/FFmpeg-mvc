@@ -14,15 +14,20 @@ for 2D+delta streams.
   Stereo High (118) and Multiview High (128).
 - Decodes dependent-view slices (NAL unit types 19-23) with their 24-bit
   NAL unit header extension.
-- All views are decoded by default. A two-view stream with all views
-  selected is delivered as one native side-by-side frame per access unit
-  with a single `AV_FRAME_DATA_STEREO3D` side data entry; select a single
-  eye with a view specifier on `-map` (e.g. `-map 0:v:view:0`).
+- The base view (view ID 0) is decoded by default, so a bare decode of a
+  multiview stream yields its plain 2D video. Selecting all views of a
+  two-view stream (`view_ids` set to a single `-1`, or `-map 0:v:view:all`)
+  delivers it as one native side-by-side frame per access unit with a single
+  `AV_FRAME_DATA_STEREO3D` side data entry; select any single eye with a view
+  specifier on `-map` (e.g. `-map 0:v:view:1`).
 - Hardware acceleration is not supported for MVC streams: requests for
   hardware acceleration fall back to software decoding with a warning.
 
 See the "Multiview video (H.264/MVC)" section of the ffmpeg docs
 (doc/ffmpeg.texi) and the h264 decoder entry (doc/decoders.texi).
+
+For drop-in use as a media-server FFmpeg build, see the product-branch
+notes in PRODUCT-jellyfin.md.
 
 ### Tests
 
