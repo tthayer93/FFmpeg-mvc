@@ -95,9 +95,17 @@ decoded using their 24-bit NAL unit header extension.
 H.264/MVC is decoded in software; hardware acceleration is not supported
 and requests fall back to software with a warning.
 
-By default, a @emph{two-view} stream decoded with all views selected is
-assembled into a @emph{single} native side-by-side (SBS) frame per access unit
-(twice the view width) carrying one @code{AV_FRAME_DATA_STEREO3D} entry (type
+By default only the @emph{base view} (the view with ID 0) is decoded and
+output, so a bare decode of a multiview stream yields the plain 2D video the
+stream is designed to be compatible with. Views are selected with the
+@option{view_ids} option (below), or - on the @code{ffmpeg} CLI - with the view
+specifiers documented in its manual; a single @option{view_ids} value of '-1'
+selects all views.
+
+A @emph{two-view} stream decoded with all views selected (@option{view_ids} set
+to a single '-1', or both view IDs listed) is assembled into a @emph{single}
+native side-by-side (SBS) frame per access unit (twice the view width) carrying
+one @code{AV_FRAME_DATA_STEREO3D} entry (type
 @code{side-by-side}, left eye physically left per the eye-order rule below).
 Native SBS applies only when exactly two views are selected, the frame carries
 no stereo side data or a temporally-separated / already side-by-side
@@ -156,8 +164,9 @@ specifiers as documented in its manual, rather than the options documented here.
 @table @option
 
 @item view_ids (H.264/MVC)
-Specify a list of view IDs to decode and output; a single '-1' (or the option
-unset) decodes and outputs all views defined in the SPS.
+Specify a list of view IDs to decode and output; a single '-1' decodes and
+outputs all views defined in the SPS. An unset option selects the @emph{base
+view} (view ID 0) only, matching the MV-HEVC base-layer default.
 
 @item view_ids_available (H.264/MVC)
 Readable by the caller: the array of view IDs available in the active SPS,
