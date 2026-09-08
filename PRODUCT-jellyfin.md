@@ -28,8 +28,9 @@ stream is compatible with. This branch therefore changes one default:
 The behavior, the options and the CLI recipes are documented in
 `doc/decoders.texi` (h264 section) and `doc/ffmpeg.texi`
 ("Multiview video (H.264/MVC)"). A one-line `AV_LOG_INFO` notice names the
-default the first time a multiview stream is decoded, so server logs record
-why the base view was chosen and how to select views.
+default once per decoder context (see "Expected log line" under Deployment
+notes), so server logs record why the base view was chosen and how to
+select views.
 
 Everything else is the release-line behavior: multiview view-list export,
 view-ID validation and error handling, view specifiers on `-map`, software
@@ -37,6 +38,39 @@ decoding with a warning when hardware acceleration is requested for an MVC
 stream, and the CBS parameter-set tests. The only behavioral delta versus
 the FFmpeg-mvc release line is the base-view default described above; no
 wire formats, demuxers, encoders or muxers change.
+
+## Build identity
+
+A release string of this branch appears in three places and all three are
+the same string: the git tag, the `VERSION` file and the `ffmpeg -version`
+banner:
+
+    tag == VERSION == banner
+
+For example, a tag `n8.1.2-mvc1-jf4` is built from a `VERSION` file holding
+`n8.1.2-mvc1-jf4` and prints the banner
+
+    ffmpeg version n8.1.2-mvc1-jf4 Copyright (c) 2000-2026 the FFmpeg developers
+
+so the identity of an installed binary can be read from any server log.
+The string is built from three parts:
+
+- `n8.1.2` - the FFmpeg release the build is based on. The leading `n`
+  mirrors the shape of upstream's own tags; the server-side version regex
+  (see the ledger below) tolerates it.
+- `-mvc<F>` (`-mvc1` in the example) - which build of this fork's own code
+  sits on that FFmpeg base. It bumps whenever this branch's code changes
+  and restarts at `mvc1` when the FFmpeg base moves.
+- `-jf<N>` (`-jf4` in the example) - which build of the matching
+  `jellyfin/jellyfin-ffmpeg` line this drop-in targets and has been
+  validated against (there `v8.1.2-4`). This part is a compatibility
+  pointer, not an upstream claim: it moves only when their build line
+  moves and this branch realigns to the new build; our own code changes
+  bump `mvc`, never `jf`.
+
+Servers that gate on a version number never see the suffixes: the
+validation regex in the ledger below reads `8.1.2` out of the full banner
+above, while the complete identity remains visible in every log line.
 
 ## Consumer-contract ledger
 
@@ -47,7 +81,9 @@ branch at commit `7c463f5`, 2026-09-05; line numbers re-checked 2026-09-07):
 - The server validates the `ffmpeg -version` banner with the anchored regex
   `^ffmpeg version n?((?:[0-9]+\.?)+)`, requires at least version 4.4 and
   sets no maximum version; this branch's banner
-  `ffmpeg version 8.1.2-mvc` parses as `8.1.2` and passes. —
+  `ffmpeg version n8.1.2-mvc1-jf4` parses as `8.1.2` - the regex tolerates
+  the leading `n` and the number match stops at the first `-`, so the
+  build suffixes are invisible to the version check - and passes. —
   jellyfin/jellyfin MediaBrowser.MediaEncoding/Encoder/EncoderValidator.cs:211-216
   @ master (verified 2026-09-05/07)
 - Feature detection is done by capability list-probes of the binary
@@ -90,23 +126,27 @@ branch at commit `7c463f5`, 2026-09-05; line numbers re-checked 2026-09-07):
 
 - **Source.** Build from this public branch (or its release tag) with the
   usual `./configure && make`; no out-of-tree inputs are required.
-- **Build identity.** The `VERSION` file yields the banner
-  `ffmpeg version 8.1.2-mvc`, which satisfies the server's version regex
-  above while keeping the fork's identity visible in every log.
+- **Build identity.** Ship from a tagged release: the tag, the `VERSION`
+  file and the banner are one string (e.g. `n8.1.2-mvc1-jf4`, see "Build
+  identity" above), the banner satisfies the server's version regex while
+  keeping the fork's identity visible in every log.
 - **Capabilities.** No option names, decoders, encoders, filters, hwaccels
   or CLI flags are added or removed relative to FFmpeg 8.1.2, so capability
   probes behave identically.
 - **Artifact naming.** Ship the result under this project's own identity
-  (e.g. `ffmpeg-mvc-8.1.2-mvc-linux64.tar.xz`). Never reuse the
+  (e.g. `ffmpeg-mvc-n8.1.2-mvc1-jf4-linux64.tar.xz`). Never reuse the
   `jellyfin-ffmpeg*` binary or package names: those identify a different
   build with its own patches and update channel, and overriding a package
   with foreign content breaks the server's upgrade path. If installing next
   to a package-managed FFmpeg, place this build in its own directory (for
   example `/opt/ffmpeg-mvc/`) and point `JELLYFIN_FFMPEG` / `--ffmpeg` at
   it. Keep `ffprobe` in the same directory as `ffmpeg`.
-- **Expected log line.** Decoding an MVC stream logs one informational
-  notice per stream stating that the base view is decoded by default and
-  naming the `view_ids` option; that is the designed behavior, not an
+- **Expected log line.** The informational notice naming the base-view
+  default and the `view_ids` option is logged once per decoder context,
+  not once per stream: a run that probes an input file and then decodes
+  it creates two decoder contexts for the same video stream - an `.m2ts`
+  input yields two copies of the notice, one from the probe context and
+  one from the decode context. That is the designed behavior, not an
   error.
 
 ## License and patents
