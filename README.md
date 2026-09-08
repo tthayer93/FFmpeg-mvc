@@ -26,14 +26,25 @@ for 2D+delta streams.
 See the "Multiview video (H.264/MVC)" section of the ffmpeg docs
 (doc/ffmpeg.texi) and the h264 decoder entry (doc/decoders.texi).
 
-For drop-in use as a media-server FFmpeg build, see the product-branch
-notes in PRODUCT-jellyfin.md.
+## Branches and releases
+
+- `master` — rolling development line; upstream's main branch is merged
+  in periodically.
+- `release/9.0`, `release/8.1` — stable lines tracking the matching
+  upstream maintenance branches.
+- `jellyfin-8.1` — product branch derived from `release/8.1`: a
+  media-server drop-in build that behaves like plain FFmpeg when invoked
+  without multiview options. Code taken from jellyfin/jellyfin-ffmpeg is
+  attributed in the commits that carry it; operator notes are in
+  `PRODUCT-jellyfin.md` on that branch.
 
 ### Tests
 
 FATE tests for this support are `h264-mvc-*` and `cbs-h264-mvc-*`
-(tests/fate/h264.mak, tests/fate/cbs.mak). Their three sample streams are
-kept in-tree under `tests/fate/h264-mvc/`; run with the samples staged:
+(tests/fate/h264.mak, tests/fate/cbs.mak). Their four sample streams are
+kept in-tree under `tests/fate/h264-mvc/`, including a distinct-content
+two-view stream that pins per-view selection; run with the samples
+staged:
 
     cp -r tests/fate/h264-mvc "$SAMPLES"/
     make fate-h264 fate-cbs SAMPLES="$SAMPLES"
@@ -42,3 +53,7 @@ kept in-tree under `tests/fate/h264-mvc/`; run with the samples staged:
 
 FFmpeg codebase is mainly LGPL-licensed with optional components licensed under
 GPL. Please refer to the LICENSE file for detailed information.
+
+## AI-assisted development
+
+AI was used in the development of this fork.
