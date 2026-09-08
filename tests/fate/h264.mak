@@ -204,6 +204,9 @@ FATE_H264  := $(FATE_H264:%=fate-h264-conformance-%)                    \
               fate-h264-mvc-2view-allviews                              \
               fate-h264-mvc-2view-base                                  \
               fate-h264-mvc-2view-view1                                 \
+              fate-h264-mvc-diffcontent-allviews                        \
+              fate-h264-mvc-diffcontent-default                         \
+              fate-h264-mvc-diffcontent-view1                           \
               fate-h264-ref-pic-mod-overflow                            \
               fate-h264-timecode                                        \
 
@@ -506,6 +509,19 @@ fate-h264-timecode:                               CMD = framecrc -i $(TARGET_SAM
 fate-h264-mvc-2view-base:                         CMD = framecrc -i $(TARGET_SAMPLES)/h264-mvc/2view-p128.h264
 fate-h264-mvc-2view-allviews:                     CMD = framecrc -view_ids -1 -i $(TARGET_SAMPLES)/h264-mvc/2view-p128.h264
 fate-h264-mvc-2view-view1:                        CMD = framecrc -view_ids 1 -i $(TARGET_SAMPLES)/h264-mvc/2view-p128.h264
+
+# Same two-view layout as above, but here the two views carry DIFFERENT
+# picture content, so which view a run delivers is visible in the pixels.
+# Each picture is one macroblock, coded Intra_16x16 with a single luma DC
+# coefficient: +100 in the base view, -100 in the dependent view. The two
+# picture parameter sets quantise that coefficient differently, so the views
+# render as flat luma 158 and 47 (chroma stays at 128 in both). The three
+# references below are therefore pairwise different, unlike the trio above:
+# -default is the base view, -view1 is the dependent view, and -allviews is
+# the 32x16 side-by-side repack of the two.
+fate-h264-mvc-diffcontent-default:                CMD = framecrc -i $(TARGET_SAMPLES)/h264-mvc/2view-diffcontent.h264
+fate-h264-mvc-diffcontent-allviews:               CMD = framecrc -view_ids -1 -i $(TARGET_SAMPLES)/h264-mvc/2view-diffcontent.h264
+fate-h264-mvc-diffcontent-view1:                  CMD = framecrc -view_ids 1 -i $(TARGET_SAMPLES)/h264-mvc/2view-diffcontent.h264
 
 fate-h264-reinit-%:                               CMD = framecrc -i $(TARGET_SAMPLES)/h264/$(@:fate-h264-%=%).h264 -vf scale,format=yuv444p10le,scale=w=352:h=288
 
