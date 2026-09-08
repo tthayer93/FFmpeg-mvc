@@ -39,6 +39,24 @@ stream, and the CBS parameter-set tests. The only behavioral delta versus
 the FFmpeg-mvc release line is the base-view default described above; no
 wire formats, demuxers, encoders or muxers change.
 
+An explicit selection always wins over that default, including when it
+arrives late. A view specifier names its view from the stream's view list,
+which the decoder can only report once it has parsed the stream's multiview
+sequence header; a seek into an open-GOP stream can land somewhere that
+header has not yet appeared, so such a request is completed shortly after
+decoding starts. In earlier builds of this branch the decoder used that
+moment to apply the base-view default, and the pictures at the front of the
+requested view were dropped for the duration of the delay - so a transcode
+started from a seek delivered a window shifted a few frames into the
+stream, while the same request through the decoder option (configured before
+decoding starts, so never exposed to that moment) delivered the intended
+frames. The default no longer occupies that position: it is resolved where a
+view is used rather than written into the selection when the multiview
+header is adopted, and the tool asks for all views while a request for a
+non-base view is in flight. A view specifier and the equivalent decoder
+option now deliver the same frames at every seek point checked, as they did
+before the default existed; the bare-decode default above is unchanged.
+
 ## Build identity
 
 A release string of this branch appears in three places and all three are
@@ -188,8 +206,12 @@ branch at commit `7c463f5`, 2026-09-05; line numbers re-checked 2026-09-07):
   not once per stream: a run that probes an input file and then decodes
   it creates two decoder contexts for the same video stream - an `.m2ts`
   input yields two copies of the notice, one from the probe context and
-  one from the decode context. That is the designed behavior, not an
-  error.
+  one from the decode context. That is the designed behavior, not an error.
+  The notice names a default that was actually applied: a decode that asked
+  for views - including one whose request from a stream specifier is
+  completed shortly after decoding starts, which is what a seek into an
+  open-GOP stream can do - prints no notice at all.
+
 
 ## License and patents
 
