@@ -53,24 +53,66 @@ For example, a tag `n8.1.2-mvc1-jf4` is built from a `VERSION` file holding
     ffmpeg version n8.1.2-mvc1-jf4 Copyright (c) 2000-2026 the FFmpeg developers
 
 so the identity of an installed binary can be read from any server log.
-The string is built from three parts:
+The string is built from three parts, plus one optional part:
 
 - `n8.1.2` - the FFmpeg release the build is based on. The leading `n`
   mirrors the shape of upstream's own tags; the server-side version regex
-  (see the ledger below) tolerates it.
+  (see the consumer-contract ledger below) tolerates it.
 - `-mvc<F>` (`-mvc1` in the example) - which build of this fork's own code
   sits on that FFmpeg base. It bumps whenever this branch's code changes
   and restarts at `mvc1` when the FFmpeg base moves.
+- an optional `.S` directly after it (`n8.1.2-mvc1.1`) - a dot-numbered
+  sub-build within one build generation: a further issue of the same
+  `-mvc<F>` code, numbered forward from `.1`. The first issue of a
+  generation is always written bare (`-mvc1`, never `-mvc1.0`), and the
+  three-place identity rule above covers the whole string, sub-build
+  included.
 - `-jf<N>` (`-jf4` in the example) - which build of the matching
   `jellyfin/jellyfin-ffmpeg` line this drop-in targets and has been
   validated against (there `v8.1.2-4`). This part is a compatibility
-  pointer, not an upstream claim: it moves only when their build line
-  moves and this branch realigns to the new build; our own code changes
-  bump `mvc`, never `jf`.
+  pointer, not an upstream claim and not a parity claim: it moves only
+  when their build line moves and this branch realigns to the new build;
+  our own code changes bump `mvc`, never `jf`. What it asserts is that
+  this build was validated against that build's behavior surface, not
+  that it contains that build - the only content taken from their line
+  is the short queue listed under "Ported fixes" below, and a `-jf<N>`
+  suffix claims nothing beyond it.
 
 Servers that gate on a version number never see the suffixes: the
-validation regex in the ledger below reads `8.1.2` out of the full banner
-above, while the complete identity remains visible in every log line.
+validation regex in the consumer-contract ledger below reads `8.1.2` out
+of the full banner above, while the complete identity remains visible in
+every log line.
+
+## Ported fixes
+
+Everything this branch takes from `jellyfin/jellyfin-ffmpeg` is listed
+here, one line per item, and each of them is attributed in the commit
+that carries it. Their build `v8.1.2-4` keeps its source delta as a
+queue of 98 patch files under `debian/patches/` applied at package build
+time; a `-jf4` suffix is a pointer to that build as the drop-in target
+this branch is validated against and is not a statement that this build
+contains that queue. Reading it as blanket parity - "compatible with
+v8.1.2-4, therefore carries its fixes" - would be wrong in both
+directions: most of their queue (encoder, hardware-filter and packaging
+work) has no counterpart here, and their build is not current with
+upstream's `release/8.1` maintenance fixes either.
+
+| Their patch file | Taken from | What it does |
+|---|---|---|
+| `0076-fix-seeking-h264-open-gop-videos-with-d3d11va-on-amd.patch` | jellyfin-ffmpeg v8.1.2-4 | Re-query the pixel format every time the decoder reinitializes, so a seek inside an open GOP no longer keeps a format the hardware backend would not pick. Not an upstream change: it locally reverses an upstream optimization. |
+| `0098-backport-a-fix-to-not-stall-sub2video-on-stream-eof.patch` | jellyfin-ffmpeg v8.1.2-4 | Queue a subtitle stream's end-of-stream while the filtergraph does not exist yet, so a burned-in subtitle track that ends early cannot leave the run waiting for it, and report the failure of the replayed call. Not an upstream change. |
+| `0090-backport-a-fix-to-use-sw-pix-fmt-in-codec-par-if-set.patch` | upstream `140d708d65f65dbfb10ee44d87964c66554f4373` | Copy `sw_pix_fmt` into codec parameters when it is set, so a hardware pixel format cannot hide the bit depth from muxers. Master-only upstream: `release/8.1` has not taken it, which is why their queue and this branch both need it. |
+
+Two of the three carry their patch name because the work is theirs; the
+third is taken from upstream with its own commit id, and their queue is
+only how this branch heard about it. What this branch does not take from
+that queue is deliberately not itemised: the table above is the whole
+list, not a sample of it.
+
+Carrying them changes this branch's code, so it moves the build
+identity: the build that ships these ports is `n8.1.2-mvc2-jf4` - `mvc2`
+because branch code changed, `-jf4` unchanged because their build line
+did not.
 
 ## Consumer-contract ledger
 
@@ -80,8 +122,8 @@ branch at commit `7c463f5`, 2026-09-05; line numbers re-checked 2026-09-07):
 
 - The server validates the `ffmpeg -version` banner with the anchored regex
   `^ffmpeg version n?((?:[0-9]+\.?)+)`, requires at least version 4.4 and
-  sets no maximum version; this branch's banner
-  `ffmpeg version n8.1.2-mvc1-jf4` parses as `8.1.2` - the regex tolerates
+  sets no maximum version; any banner this branch emits (for example
+  `ffmpeg version n8.1.2-mvc1-jf4`) parses as `8.1.2` - the regex tolerates
   the leading `n` and the number match stops at the first `-`, so the
   build suffixes are invisible to the version check - and passes. —
   jellyfin/jellyfin MediaBrowser.MediaEncoding/Encoder/EncoderValidator.cs:211-216
