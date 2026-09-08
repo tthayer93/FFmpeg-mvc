@@ -95,9 +95,10 @@ decoded using their 24-bit NAL unit header extension.
 H.264/MVC is decoded in software; hardware acceleration is not supported
 and requests fall back to software with a warning.
 
-By default only the @emph{base view} (the view with ID 0) is decoded and
-output, so a bare decode of a multiview stream yields the plain 2D video the
-stream is designed to be compatible with. Views are selected with the
+By default only the @emph{base view} (view ID 0, or the first declared view if
+the stream carries no view ID 0) is decoded and output, so a bare decode of a
+multiview stream yields the plain 2D video the stream is designed to be
+compatible with. Views are selected with the
 @option{view_ids} option (below), or - on the @code{ffmpeg} CLI - with the view
 specifiers documented in its manual; a single @option{view_ids} value of '-1'
 selects all views.
@@ -165,8 +166,9 @@ specifiers as documented in its manual, rather than the options documented here.
 
 @item view_ids (H.264/MVC)
 Specify a list of view IDs to decode and output; a single '-1' decodes and
-outputs all views defined in the SPS. An unset option selects the @emph{base
-view} (view ID 0) only, matching the MV-HEVC base-layer default.
+outputs all views defined in the SPS. An unset option selects the
+@emph{base view} (view ID 0, or the first declared view if the stream carries
+no view ID 0) only, matching the MV-HEVC base-layer default.
 
 @item view_ids_available (H.264/MVC)
 Readable by the caller: the array of view IDs available in the active SPS,
