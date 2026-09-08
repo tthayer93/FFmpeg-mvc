@@ -86,7 +86,9 @@ typedef struct DecoderPriv {
 
     // multiview_setup() ran but the decoder had not exported its view
     // list yet (in-band multiview SPS after the first format negotiation):
-    // "no list yet" is not "single view"; retried from get_buffer().
+    // "no list yet" is not "single view"; retried from get_buffer(). While
+    // pending, the decoder has been asked for all views, so that its own
+    // default cannot drop the views this selection wants.
     int                 multiview_pending;
 
     struct {
@@ -1161,8 +1163,10 @@ static int multiview_setup(DecoderPriv *dp, AVCodecContext *dec_ctx)
         // multiview SPS). If only the base view was requested the
         // outcome is identical either way, so fall through; if a
         // non-base view was requested, do not assume single view and do
-        // not hard-fail - defer completion to get_buffer() and let the
-        // decoder keep running (base view only) in the meantime.
+        // not hard-fail - defer completion to get_buffer() and ask the
+        // decoder for all views in the meantime, so that the default it
+        // applies when it adopts its multiview SPS does not drop the
+        // views this selection is about to request.
         int want_non_base = 0;
 
         for (int i = 0; i < dp->nb_views_requested; i++) {
@@ -1176,10 +1180,29 @@ static int multiview_setup(DecoderPriv *dp, AVCodecContext *dec_ctx)
         }
 
         if (want_non_base) {
+            int all_views = -1;
+
             av_log(dp, AV_LOG_DEBUG,
                    "Multiview decoding requested, but no views are "
                    "exported by the decoder yet - deferring setup until "
                    "the view list becomes available\n");
+
+            // Declare the pending request to the decoder: a decoder that has
+            // been given no selection applies its own default as soon as it
+            // adopts its multiview SPS - for H.264/MVC that default is the
+            // base view alone, which would silently drop the pictures of the
+            // view this selection is about to ask for. Asking for all views
+            // meanwhile keeps every view decodable; the completion in
+            // get_buffer() narrows it to the requested views as soon as the
+            // decoder has exported its view list.
+            av_opt_set(dec_ctx, "view_ids", NULL, AV_OPT_SEARCH_CHILDREN);
+            ret = av_opt_set_array(dec_ctx, "view_ids", AV_OPT_SEARCH_CHILDREN,
+                                   0, 1, AV_OPT_TYPE_INT, &all_views);
+            if (ret < 0)
+                av_log(dp, AV_LOG_DEBUG, "Could not declare the pending view "
+                       "selection to the decoder (%s); deferring anyway\n",
+                       av_err2str(ret));
+
             dp->multiview_pending = 1;
             return 0;
         }
