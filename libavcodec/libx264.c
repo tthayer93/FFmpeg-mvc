@@ -828,7 +828,9 @@ static int convert_pix_fmt(enum AVPixelFormat pix_fmt)
         return X264_CSP_RGB;
     case AV_PIX_FMT_NV12:      return X264_CSP_NV12;
     case AV_PIX_FMT_NV16:
-    case AV_PIX_FMT_NV20:      return X264_CSP_NV16;
+    /* AV_PIX_FMT_NV20 names the packed format; x264 wants the NV20LE/BE
+     * layout this mapping was written against */
+    case AV_PIX_FMT_NE(NV20BE, NV20LE): return X264_CSP_NV16;
 #ifdef X264_CSP_NV21
     case AV_PIX_FMT_NV21:      return X264_CSP_NV21;
 #endif
@@ -1456,7 +1458,7 @@ static const enum AVPixelFormat pix_fmts_10bit[] = {
     AV_PIX_FMT_YUV420P10,
     AV_PIX_FMT_YUV422P10,
     AV_PIX_FMT_YUV444P10,
-    AV_PIX_FMT_NV20,
+    AV_PIX_FMT_NE(NV20BE, NV20LE),
     AV_PIX_FMT_NONE
 };
 static const enum AVPixelFormat pix_fmts_all[] = {
@@ -1474,7 +1476,7 @@ static const enum AVPixelFormat pix_fmts_all[] = {
     AV_PIX_FMT_YUV420P10,
     AV_PIX_FMT_YUV422P10,
     AV_PIX_FMT_YUV444P10,
-    AV_PIX_FMT_NV20,
+    AV_PIX_FMT_NE(NV20BE, NV20LE),
 #ifdef X264_CSP_I400
     AV_PIX_FMT_GRAY8,
     AV_PIX_FMT_GRAY10,
