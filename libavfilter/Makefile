@@ -222,6 +222,7 @@ OBJS-$(CONFIG_BOXBLUR_FILTER)                += vf_boxblur.o boxblur.o
 OBJS-$(CONFIG_BOXBLUR_OPENCL_FILTER)         += vf_avgblur_opencl.o opencl.o \
                                                 opencl/avgblur.o boxblur.o
 OBJS-$(CONFIG_BWDIF_FILTER)                  += vf_bwdif.o bwdifdsp.o yadif_common.o
+OBJS-$(CONFIG_BWDIF_D3D11_FILTER)            += vf_yadif_d3d11.o yadif_common.o d3d11/deint.o d3d11_filter.o
 OBJS-$(CONFIG_BWDIF_CUDA_FILTER)             += vf_bwdif_cuda.o vf_bwdif_cuda.ptx.o \
                                                 yadif_common.o
 OBJS-$(CONFIG_BWDIF_OPENCL_FILTER)           += vf_bwdif_opencl.o opencl.o opencl/bwdif.o \
@@ -609,6 +610,7 @@ OBJS-$(CONFIG_XMEDIAN_FILTER)                += vf_xmedian.o framesync.o
 OBJS-$(CONFIG_XPSNR_FILTER)                  += vf_xpsnr.o framesync.o psnr.o
 OBJS-$(CONFIG_XSTACK_FILTER)                 += vf_stack.o framesync.o
 OBJS-$(CONFIG_YADIF_FILTER)                  += vf_yadif.o yadif_common.o
+OBJS-$(CONFIG_YADIF_D3D11_FILTER)            += vf_yadif_d3d11.o yadif_common.o d3d11/deint.o d3d11_filter.o
 OBJS-$(CONFIG_YADIF_CUDA_FILTER)             += vf_yadif_cuda.o vf_yadif_cuda.ptx.o \
                                                 yadif_common.o cuda/load_helper.o
 OBJS-$(CONFIG_YADIF_OPENCL_FILTER)           += vf_yadif_opencl.o opencl.o opencl/yadif.o \
@@ -721,10 +723,16 @@ TOOLS-$(CONFIG_LIBZMQ) += zmqsend
 
 clean::
 	$(RM) $(CLEANSUFFIXES:%=libavfilter/dnn/%) $(CLEANSUFFIXES:%=libavfilter/opencl/%) \
-              $(CLEANSUFFIXES:%=libavfilter/metal/%)
+              $(CLEANSUFFIXES:%=libavfilter/metal/%) $(CLEANSUFFIXES:%=libavfilter/d3d11/%)
 
 OPENCL = $(subst $(SRC_PATH)/,,$(wildcard $(SRC_PATH)/libavfilter/opencl/*.cl))
 .SECONDARY: $(OPENCL:.cl=.c)
 libavfilter/opencl/%.c: TAG = OPENCL
 libavfilter/opencl/%.c: $(SRC_PATH)/libavfilter/opencl/%.cl
+	$(M)$(SRC_PATH)/tools/source2c $< $@
+
+HLSL = $(subst $(SRC_PATH)/,,$(wildcard $(SRC_PATH)/libavfilter/d3d11/*.hlsl))
+.SECONDARY: $(HLSL:.hlsl=.c)
+libavfilter/d3d11/%.c: TAG = HLSL
+libavfilter/d3d11/%.c: $(SRC_PATH)/libavfilter/d3d11/%.hlsl
 	$(M)$(SRC_PATH)/tools/source2c $< $@
