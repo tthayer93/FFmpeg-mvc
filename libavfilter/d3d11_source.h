@@ -25,6 +25,7 @@
 
 extern const char *ff_source_deint_hlsl;
 extern const char *ff_source_overlay_hlsl;
+extern const char *ff_source_scale_hlsl;
 extern const char *ff_source_tonemap_hlsl;
 
 #endif /* AVFILTER_D3D11_SOURCE_H */
