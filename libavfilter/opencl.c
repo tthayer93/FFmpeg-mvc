@@ -78,6 +78,9 @@ int ff_opencl_filter_config_input(AVFilterLink *inlink)
     if (!ctx->output_height)
         ctx->output_height = inlink->h;
 
+    if (avctx->nb_outputs > 0)
+        avctx->outputs[0]->fixed_pool_size = inlink->fixed_pool_size;
+
     return 0;
 }
 
@@ -126,6 +129,9 @@ int ff_opencl_filter_config_output(AVFilterLink *outlink)
     l->hw_frames_ctx = output_frames_ref;
     outlink->w = ctx->output_width;
     outlink->h = ctx->output_height;
+
+    if (avctx->nb_inputs > 0)
+        outlink->fixed_pool_size = avctx->inputs[0]->fixed_pool_size;
 
     return 0;
 fail:
