@@ -1,5 +1,5 @@
 /*
- * D3D11 HLSL shader source declarations
+ * D3D11 overlay filter shader constants
  *
  * Copyright (C) 2026 Gnattu OC <gnattuoc@me.com>
  *
@@ -20,10 +20,25 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#ifndef AVFILTER_D3D11_SOURCE_H
-#define AVFILTER_D3D11_SOURCE_H
+#ifndef AVFILTER_OVERLAY_D3D11_H
+#define AVFILTER_OVERLAY_D3D11_H
 
-extern const char *ff_source_deint_hlsl;
-extern const char *ff_source_overlay_hlsl;
+#define OVERLAY_D3D11_THREAD_GROUP_X 16
+#define OVERLAY_D3D11_THREAD_GROUP_Y 16
 
-#endif /* AVFILTER_D3D11_SOURCE_H */
+typedef struct OverlayD3D11Params {
+    int dst_w;
+    int dst_h;
+    int ov_x;
+    int ov_y;
+    int ov_w;
+    int ov_h;
+    int ov_src_w;
+    int ov_src_h;
+    float alpha;
+    float pad0;
+    float pad1;
+    float pad2;
+} OverlayD3D11Params;
+
+#endif /* AVFILTER_OVERLAY_D3D11_H */

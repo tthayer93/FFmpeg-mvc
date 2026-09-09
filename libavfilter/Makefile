@@ -429,6 +429,7 @@ OBJS-$(CONFIG_OCV_FILTER)                    += vf_libopencv.o
 OBJS-$(CONFIG_OCIO_FILTER)                   += vf_opencolorio.o ocio_wrapper.o
 OBJS-$(CONFIG_OSCILLOSCOPE_FILTER)           += vf_datascope.o
 OBJS-$(CONFIG_OVERLAY_FILTER)                += vf_overlay.o framesync.o
+OBJS-$(CONFIG_OVERLAY_D3D11_FILTER)          += vf_overlay_d3d11.o framesync.o d3d11/overlay.o d3d11_filter.o
 OBJS-$(CONFIG_OVERLAY_CUDA_FILTER)           += vf_overlay_cuda.o framesync.o vf_overlay_cuda.ptx.o \
                                                 cuda/load_helper.o
 OBJS-$(CONFIG_OVERLAY_OPENCL_FILTER)         += vf_overlay_opencl.o opencl.o \
@@ -567,6 +568,7 @@ OBJS-$(CONFIG_TONEMAP_VIDEOTOOLBOX_FILTER)   += vf_tonemap_videotoolbox.o \
                                                 metal/utils.o
 OBJS-$(CONFIG_TPAD_FILTER)                   += vf_tpad.o
 OBJS-$(CONFIG_TRANSPOSE_FILTER)              += vf_transpose.o
+OBJS-$(CONFIG_TRANSPOSE_D3D11_FILTER)        += vf_transpose_d3d11.o
 OBJS-$(CONFIG_TRANSPOSE_CUDA_FILTER)         += vf_transpose_cuda.o vf_transpose_cuda.ptx.o \
                                                 cuda/load_helper.o
 OBJS-$(CONFIG_TRANSPOSE_NPP_FILTER)          += vf_transpose_npp.o

@@ -386,7 +386,9 @@ static int scale_d3d11_config_props(AVFilterLink *outlink)
 
     AVD3D11VAFramesContext *frames_hwctx = frames_ctx->hwctx;
     frames_hwctx->MiscFlags = 0;
-    frames_hwctx->BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_VIDEO_ENCODER;
+    frames_hwctx->BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    if (frames_ctx->sw_format == AV_PIX_FMT_NV12)
+        frames_hwctx->BindFlags |= D3D11_BIND_VIDEO_ENCODER;
 
     ret = av_hwframe_ctx_init(s->hw_frames_ctx_out);
     if (ret < 0) {
