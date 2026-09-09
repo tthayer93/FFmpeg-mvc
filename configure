@@ -367,6 +367,7 @@ External library support:
   --enable-omx             enable OpenMAX IL code [no]
   --enable-omx-rpi         enable OpenMAX IL code for Raspberry Pi [no]
   --enable-rkmpp           enable Rockchip Media Process Platform code [no]
+  --enable-rkrga           enable Rockchip 2D Raster Graphic Acceleration code [no]
   --disable-v4l2-m2m       disable V4L2 mem2mem code [autodetect]
   --disable-vaapi          disable Video Acceleration API (mainly Unix/Intel) code [autodetect]
   --disable-vdpau          disable Nvidia Video Decode and Presentation API for Unix code [autodetect]
@@ -2015,6 +2016,7 @@ EXTERNAL_LIBRARY_VERSION3_LIST="
     libvo_amrwbenc
     mbedtls
     rkmpp
+    rkrga
 "
 
 EXTERNAL_LIBRARY_GPLV3_LIST="
@@ -2162,6 +2164,7 @@ HWACCEL_LIBRARY_LIST="
     mmal
     omx
     opencl
+    rkmpp
 "
 
 DOCUMENT_LIST="
@@ -3565,10 +3568,12 @@ av1_nvenc_encoder_select="atsc_a53"
 av1_qsv_decoder_select="qsvdec"
 av1_qsv_encoder_deps="libvpl"
 av1_qsv_encoder_select="qsvenc"
+av1_rkmpp_decoder_deps="rkmpp"
 av1_vaapi_encoder_deps="VAEncPictureParameterBufferAV1"
 av1_vaapi_encoder_select="cbs_av1 vaapi_encode"
 av1_vulkan_encoder_deps="vulkan_1_4"
 av1_vulkan_encoder_select="cbs_av1 vulkan_encode"
+h263_rkmpp_decoder_deps="rkmpp"
 h263_v4l2m2m_decoder_deps="v4l2_m2m h263_v4l2_m2m"
 h263_v4l2m2m_encoder_deps="v4l2_m2m h263_v4l2_m2m"
 h264_amf_encoder_deps="amf"
@@ -3591,7 +3596,7 @@ h264_omx_encoder_deps="omx"
 h264_qsv_decoder_select="h264_mp4toannexb_bsf qsvdec"
 h264_qsv_encoder_select="atsc_a53 qsvenc"
 h264_rkmpp_decoder_deps="rkmpp"
-h264_rkmpp_decoder_select="h264_mp4toannexb_bsf"
+h264_rkmpp_decoder_select="h264_mp4toannexb_bsf dump_extradata_bsf"
 h264_rkmpp_encoder_deps="rkmpp"
 h264_vaapi_encoder_select="atsc_a53 cbs_h264 vaapi_encode"
 h264_vulkan_encoder_select="atsc_a53 cbs_h264 vulkan_encode"
@@ -3616,7 +3621,7 @@ hevc_oh_encoder_deps="ohcodec"
 hevc_qsv_decoder_select="hevc_mp4toannexb_bsf qsvdec"
 hevc_qsv_encoder_select="hevcparse qsvenc"
 hevc_rkmpp_decoder_deps="rkmpp"
-hevc_rkmpp_decoder_select="hevc_mp4toannexb_bsf"
+hevc_rkmpp_decoder_select="hevc_mp4toannexb_bsf dump_extradata_bsf dovi_rpudec hevcparse"
 hevc_rkmpp_encoder_deps="rkmpp"
 hevc_vaapi_encoder_deps="VAEncPictureParameterBufferHEVC"
 hevc_vaapi_encoder_select="atsc_a53 cbs_h265 vaapi_encode"
@@ -3628,18 +3633,22 @@ mjpeg_cuvid_decoder_deps="cuvid"
 mjpeg_qsv_decoder_select="qsvdec"
 mjpeg_qsv_encoder_deps="libmfx"
 mjpeg_qsv_encoder_select="qsvenc"
+mjpeg_rkmpp_decoder_deps="rkmpp"
+mjpeg_rkmpp_encoder_deps="rkmpp"
 mjpeg_vaapi_encoder_deps="VAEncPictureParameterBufferJPEG"
 mjpeg_vaapi_encoder_select="cbs_jpeg jpegtables vaapi_encode"
 mp3_mf_encoder_deps="mediafoundation"
 mp3_mediacodec_decoder_deps="mediacodec"
 mp3_mediacodec_decoder_select="mpegaudioheader"
 mpeg1_cuvid_decoder_deps="cuvid"
+mpeg1_rkmpp_decoder_deps="rkmpp"
 mpeg1_v4l2m2m_decoder_deps="v4l2_m2m mpeg1_v4l2_m2m"
 mpeg2_cuvid_decoder_deps="cuvid"
 mpeg2_mmal_decoder_deps="mmal"
 mpeg2_mediacodec_decoder_deps="mediacodec"
 mpeg2_qsv_decoder_select="qsvdec"
 mpeg2_qsv_encoder_select="qsvenc"
+mpeg2_rkmpp_decoder_deps="rkmpp"
 mpeg2_vaapi_encoder_select="cbs_mpeg2 vaapi_encode"
 mpeg2_v4l2m2m_decoder_deps="v4l2_m2m mpeg2_v4l2_m2m"
 mpeg4_cuvid_decoder_deps="cuvid"
@@ -3648,6 +3657,8 @@ mpeg4_mediacodec_encoder_deps="mediacodec"
 mpeg4_mediacodec_encoder_select="extract_extradata_bsf"
 mpeg4_mmal_decoder_deps="mmal"
 mpeg4_omx_encoder_deps="omx"
+mpeg4_rkmpp_decoder_deps="rkmpp"
+mpeg4_rkmpp_decoder_select="mpeg4_unpack_bframes_bsf dump_extradata_bsf"
 mpeg4_v4l2m2m_decoder_deps="v4l2_m2m mpeg4_v4l2_m2m"
 mpeg4_v4l2m2m_encoder_deps="v4l2_m2m mpeg4_v4l2_m2m"
 vc1_cuvid_decoder_deps="cuvid"
@@ -4178,6 +4189,7 @@ libopencolorio_filter_deps="libopencolorio"
 overlay_opencl_filter_deps="opencl"
 overlay_qsv_filter_deps="libmfx"
 overlay_qsv_filter_select="qsvvpp"
+overlay_rkrga_filter_deps="rkrga"
 overlay_vaapi_filter_deps="vaapi VAProcPipelineCaps_blend_flags"
 overlay_vulkan_filter_deps="vulkan spirv_library"
 owdenoise_filter_deps="gpl"
@@ -4203,6 +4215,7 @@ vpp_amf_filter_deps="amf"
 scale_opencl_filter_deps="opencl const_nan"
 scale_qsv_filter_deps="libmfx"
 scale_qsv_filter_select="qsvvpp"
+scale_rkrga_filter_deps="rkrga"
 scdet_filter_select="scene_sad"
 scdet_vulkan_filter_deps="vulkan spirv_library"
 select_filter_select="scene_sad"
@@ -4247,6 +4260,7 @@ scale_vt_filter_deps="videotoolbox VTPixelTransferSessionCreate"
 scale_vulkan_filter_deps="vulkan spirv_compiler spirv_library"
 vpp_qsv_filter_deps="libmfx"
 vpp_qsv_filter_select="qsvvpp"
+vpp_rkrga_filter_deps="rkrga"
 xfade_opencl_filter_deps="opencl"
 xfade_vulkan_filter_deps="vulkan spirv_library"
 yadif_cuda_filter_deps="ffnvcodec"
@@ -4297,14 +4311,14 @@ cws2fws_extralibs="zlib_extralibs"
 
 # libraries, in any order
 avcodec_deps="avutil"
-avcodec_suggest="libm stdatomic zlib"
+avcodec_suggest="libm rkrga stdatomic zlib"
 avdevice_deps="avformat avcodec avutil"
 avdevice_suggest="libm stdatomic"
 avfilter_deps="avutil"
 avfilter_suggest="libm stdatomic zlib spirv_library"
 avformat_deps="avcodec avutil"
 avformat_suggest="libm network zlib stdatomic"
-avutil_suggest="clock_gettime ffnvcodec gcrypt libm zlib libdrm libmfx opencl openssl user32 vaapi vulkan videotoolbox corefoundation corevideo coremedia bcrypt stdatomic"
+avutil_suggest="clock_gettime ffnvcodec gcrypt libm zlib libdrm libmfx opencl openssl rkmpp user32 vaapi vulkan videotoolbox corefoundation corevideo coremedia bcrypt stdatomic"
 swresample_deps="avutil"
 swresample_suggest="libm libsoxr stdatomic"
 swscale_deps="avutil"
@@ -7510,9 +7524,14 @@ enabled openssl           && { { check_pkg_config openssl "openssl >= 3.0.0" ope
                                check_lib openssl openssl/ssl.h DTLS_get_data_mtu -lssl -lcrypto -lws2_32 -lgdi32 ||
                                die "ERROR: openssl (>= 1.1.1) not found"; }
 enabled pocketsphinx      && require_pkg_config pocketsphinx pocketsphinx pocketsphinx/pocketsphinx.h ps_init
-enabled rkmpp             && { require_pkg_config rkmpp "rockchip_mpp >= 1.3.8" "rockchip/rk_mpi.h rockchip/mpp_buffer.h" "mpp_create mpp_buffer_sync_begin_f" &&
+enabled rkmpp             && { require_pkg_config rkmpp "rockchip_mpp >= 1.3.9" "rockchip/rk_mpi.h rockchip/mpp_buffer.h" "mpp_create mpp_buffer_sync_begin_f" &&
                                { enabled libdrm ||
                                  die "ERROR: rkmpp requires --enable-libdrm"; }
+                             }
+enabled rkrga             && { require_pkg_config rkrga librga rga/RgaApi.h c_RkRgaBlit &&
+                               require_pkg_config rkrga librga rga/im2d.h querystring &&
+                               { enabled rkmpp ||
+                                 die "ERROR: rkrga requires --enable-rkmpp"; }
                              }
 enabled vapoursynth       && require_headers "vapoursynth/VSScript4.h vapoursynth/VapourSynth4.h"
 
@@ -7713,7 +7732,7 @@ fi
 if enabled_all opencl libdrm ; then
     check_type "CL/cl_intel.h" "clCreateImageFromFdINTEL_fn" &&
         enable opencl_drm_beignet
-    check_func_headers "CL/cl_ext.h" clImportMemoryARM &&
+    enabled_any arm aarch64 &&
         enable opencl_drm_arm
 fi
 

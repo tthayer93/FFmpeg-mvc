@@ -83,6 +83,16 @@ typedef CL_API_ENTRY cl_mem(CL_API_CALL *clConvertImageAMD_fn)(
 #include <CL/cl_ext.h>
 #include <drm_fourcc.h>
 #include "hwcontext_drm.h"
+
+typedef intptr_t cl_import_properties_arm;
+typedef CL_API_ENTRY cl_mem(CL_API_CALL *clImportMemoryARM_fn)(
+    cl_context context,
+    cl_mem_flags flags,
+    const cl_import_properties_arm *properties,
+    void *memory,
+    size_t size,
+    cl_int *errcode_ret);
+
 #endif
 
 #if HAVE_OPENCL_VIDEOTOOLBOX
@@ -159,6 +169,8 @@ typedef struct OpenCLDeviceContext {
 
 #if HAVE_OPENCL_DRM_ARM
     int drm_arm_mapping_usable;
+    clImportMemoryARM_fn
+        clImportMemoryARM;
 #endif
 } OpenCLDeviceContext;
 
@@ -707,6 +719,8 @@ static int opencl_device_init(AVHWDeviceContext *hwdev)
 {
     OpenCLDeviceContext    *priv = hwdev->hwctx;
     AVOpenCLDeviceContext *hwctx = &priv->p;
+    char *vendor = NULL;
+    cl_uint vendor_id;
     cl_int cle;
 
     if (hwctx->command_queue) {
@@ -734,6 +748,22 @@ static int opencl_device_init(AVHWDeviceContext *hwdev)
     if (cle != CL_SUCCESS) {
         av_log(hwdev, AV_LOG_ERROR, "Failed to determine the OpenCL "
                "platform containing the device.\n");
+        return AVERROR(EIO);
+    }
+
+    cle = clGetDeviceInfo(hwctx->device_id, CL_DEVICE_VENDOR_ID,
+                          sizeof(vendor_id), &vendor_id,
+                          NULL);
+    if (cle != CL_SUCCESS) {
+        av_log(hwdev, AV_LOG_ERROR, "Failed to determine the OpenCL "
+               "vendor_id of the device.\n");
+        return AVERROR(EIO);
+    }
+
+    vendor = opencl_get_device_string(hwctx->device_id, CL_DEVICE_VENDOR);
+    if (!vendor) {
+        av_log(hwdev, AV_LOG_ERROR, "Failed to determine the OpenCL "
+               "vendor of the device.\n");
         return AVERROR(EIO);
     }
 
@@ -770,6 +800,7 @@ static int opencl_device_init(AVHWDeviceContext *hwdev)
 #endif
 
 #if HAVE_OPENCL_VAAPI_INTEL_MEDIA
+    if (vendor_id == 0x8086)
     {
         size_t props_size;
         cl_context_properties *props = NULL;
@@ -924,6 +955,7 @@ static int opencl_device_init(AVHWDeviceContext *hwdev)
 #endif
 
 #if HAVE_OPENCL_DRM_ARM
+    if (vendor_id == 0x13b5 || strstr(vendor, "ARM"))
     {
         const char *drm_arm_ext = "cl_arm_import_memory";
         const char *image_ext   = "cl_khr_image2d_from_buffer";
@@ -942,7 +974,8 @@ static int opencl_device_init(AVHWDeviceContext *hwdev)
             fail = 1;
         }
 
-        // clImportMemoryARM() is linked statically.
+        CL_FUNC(clImportMemoryARM,
+                "DRM to OpenCL mapping on ARM");
 
         if (fail) {
             av_log(hwdev, AV_LOG_WARNING, "DRM to OpenCL mapping on ARM "
@@ -955,6 +988,8 @@ static int opencl_device_init(AVHWDeviceContext *hwdev)
 #endif
 
 #undef CL_FUNC
+
+    av_freep(&vendor);
 
     return 0;
 }
@@ -1419,6 +1454,7 @@ static int opencl_device_derive(AVHWDeviceContext *hwdev,
 
 #if HAVE_OPENCL_DRM_ARM
     case AV_HWDEVICE_TYPE_DRM:
+    case AV_HWDEVICE_TYPE_RKMPP:
         {
             OpenCLDeviceSelector selector = {
                 .platform_index      = -1,
@@ -3197,7 +3233,8 @@ static int opencl_map_from_drm_arm(AVHWFramesContext *dst_fc, AVFrame *dst,
 {
     AVHWFramesContext *src_fc =
         (AVHWFramesContext*)src->hw_frames_ctx->data;
-    AVOpenCLDeviceContext *dst_dev = dst_fc->device_ctx->hwctx;
+    OpenCLDeviceContext *device_priv = dst_fc->device_ctx->hwctx;
+    AVOpenCLDeviceContext   *dst_dev = &device_priv->p;
     const AVDRMFrameDescriptor *desc;
     DRMARMtoOpenCLMapping *mapping = NULL;
     cl_mem_flags cl_flags;
@@ -3231,8 +3268,8 @@ static int opencl_map_from_drm_arm(AVHWFramesContext *dst_fc, AVFrame *dst,
         }
 
         mapping->object_buffers[i] =
-            clImportMemoryARM(dst_dev->context, cl_flags, props,
-                              &fd, desc->objects[i].size, &cle);
+            device_priv->clImportMemoryARM(dst_dev->context, cl_flags, props,
+                                           &fd, desc->objects[i].size, &cle);
         if (!mapping->object_buffers[i]) {
             av_log(dst_fc, AV_LOG_ERROR, "Failed to create CL buffer "
                    "from object %d (fd %d, size %zu) of DRM frame: %d.\n",
@@ -3254,14 +3291,31 @@ static int opencl_map_from_drm_arm(AVHWFramesContext *dst_fc, AVFrame *dst,
             cl_buffer_region region;
             int p = mapping->nb_planes;
 
-            err = opencl_get_plane_format(src_fc->sw_format, p,
-                                          src_fc->width, src_fc->height,
-                                          &image_format, &image_desc);
-            if (err < 0) {
-                av_log(dst_fc, AV_LOG_ERROR, "Invalid plane %d (DRM "
-                       "layer %d plane %d): %d.\n", p, i, j, err);
-                goto fail;
+            if (src_fc->sw_format == AV_PIX_FMT_NV15) {
+                if (!(desc->nb_layers == 1 && layer->nb_planes == 2)) {
+                    err = AVERROR(ENOSYS);
+                    av_log(dst_fc, AV_LOG_ERROR, "Invalid plane %d (DRM "
+                           "layer %d plane %d): %d.\n", p, i, j, err);
+                    goto fail;
+                }
+                memset(&image_format, 0, sizeof(image_format));
+                memset(&image_desc,   0, sizeof(image_desc));
+                image_desc.image_type   = CL_MEM_OBJECT_IMAGE2D;
+                image_desc.image_width  = src_fc->width * 10 / 8;
+                image_desc.image_height = src_fc->height >> j;
+                image_format.image_channel_data_type = CL_UNSIGNED_INT8;
+                image_format.image_channel_order     = CL_R;
+            } else {
+                err = opencl_get_plane_format(src_fc->sw_format, p,
+                                              src_fc->width, src_fc->height,
+                                              &image_format, &image_desc);
+                if (err < 0) {
+                    av_log(dst_fc, AV_LOG_ERROR, "Invalid plane %d (DRM "
+                           "layer %d plane %d): %d.\n", p, i, j, err);
+                    goto fail;
+                }
             }
+            image_desc.image_row_pitch = plane->pitch;
 
             region.origin = plane->offset;
             region.size   = image_desc.image_row_pitch *
