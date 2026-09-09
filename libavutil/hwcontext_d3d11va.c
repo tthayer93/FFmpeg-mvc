@@ -643,6 +643,8 @@ static int d3d11va_device_create(AVHWDeviceContext *ctx, const char *device,
         adapter = atoi(device);
     } else {
         AVDictionaryEntry *e = av_dict_get(opts, "vendor_id", NULL, 0);
+        if (!e || !e->value)
+            e = av_dict_get(opts, "vendor", NULL, 0); // for backward compatibility
         if (e && e->value) {
             adapter = d3d11va_device_find_adapter_by_vendor_id(ctx, creationFlags, e->value);
             if (adapter < 0) {
