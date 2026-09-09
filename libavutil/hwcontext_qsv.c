@@ -1706,13 +1706,47 @@ static int qsv_transfer_data_child(AVHWFramesContext *ctx, AVFrame *dst,
     dummy->width         = src->width;
     dummy->height        = src->height;
     dummy->buf[0]        = download ? src->buf[0] : dst->buf[0];
-    dummy->data[3]       = surf->Data.MemId;
     dummy->hw_frames_ctx = s->child_frames_ref;
+
+    switch (child_frames_ctx->device_ctx->type) {
+#if CONFIG_VAAPI
+    case AV_HWDEVICE_TYPE_VAAPI:
+        {
+            mfxHDLPair *pair = (mfxHDLPair *)surf->Data.MemId;
+            dummy->data[3] = (uint8_t *)(intptr_t)*(VASurfaceID *)pair->first;
+            break;
+        }
+#endif
+#if CONFIG_D3D11VA
+    case AV_HWDEVICE_TYPE_D3D11VA:
+        {
+            mfxHDLPair *pair = (mfxHDLPair *)surf->Data.MemId;
+            dummy->data[0] = (uint8_t *)pair->first;
+            dummy->data[1] = pair->second == (mfxMemId)MFX_INFINITE ?
+                             (uint8_t *)0 : (uint8_t *)pair->second;
+            break;
+        }
+#endif
+#if CONFIG_DXVA2
+    case AV_HWDEVICE_TYPE_DXVA2:
+        {
+            mfxHDLPair *pair = (mfxHDLPair *)surf->Data.MemId;
+            dummy->data[3] = (uint8_t *)pair->first;
+            break;
+        }
+#endif
+    default:
+        ret = AVERROR(ENOSYS);
+        goto exit;
+    }
 
     ret = download ? av_hwframe_transfer_data(dst, dummy, 0) :
                      av_hwframe_transfer_data(dummy, src, 0);
 
+exit:
     dummy->buf[0]        = NULL;
+    dummy->data[0]       = NULL;
+    dummy->data[1]       = NULL;
     dummy->data[3]       = NULL;
     dummy->hw_frames_ctx = NULL;
 
@@ -1902,6 +1936,9 @@ static int qsv_transfer_data_from(AVHWFramesContext *ctx, AVFrame *dst,
 static int qsv_transfer_data_to(AVHWFramesContext *ctx, AVFrame *dst,
                                 const AVFrame *src)
 {
+#if CONFIG_D3D11VA
+    QSVDeviceContext *device_priv = ctx->device_ctx->hwctx;
+#endif
     QSVFramesContext   *s = ctx->hwctx;
     mfxFrameSurface1   in = {{ 0 }};
     mfxFrameSurface1 *out = (mfxFrameSurface1*)dst->data[3];
@@ -1954,9 +1991,20 @@ static int qsv_transfer_data_to(AVHWFramesContext *ctx, AVFrame *dst,
 
     src_frame = realigned ? tmp_frame : src;
 
-    if (!s->session_upload) {
-        if (s->child_frames_ref)
+    if (!s->session_upload
+#if CONFIG_D3D11VA /* Wa an out of sync issue in MSDK RT on Windows */
+        || ((src_frame->format == AV_PIX_FMT_BGRA) &&
+            !QSV_RUNTIME_VERSION_ATLEAST(device_priv->ver, 1, 255) &&
+            (device_priv->handle_type == MFX_HANDLE_D3D11_DEVICE))
+#endif
+        ) {
+        if (s->child_frames_ref) {
+            if (realigned) {
+                out->Info.CropW = tmp_info.CropW;
+                out->Info.CropH = tmp_info.CropH;
+            }
             return qsv_transfer_data_child(ctx, dst, src_frame);
+        }
 
         av_log(ctx, AV_LOG_ERROR, "Surface upload not possible\n");
         return AVERROR(ENOSYS);

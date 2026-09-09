@@ -168,7 +168,7 @@ int ff_qsvvpp_print_warning(void *log_ctx, mfxStatus err,
     const char *desc;
     int ret;
     ret = qsv_map_error(err, &desc);
-    av_log(log_ctx, AV_LOG_WARNING, "%s: %s (%d)\n", warning_string, desc, err);
+    av_log(log_ctx, AV_LOG_VERBOSE, "%s: %s (%d)\n", warning_string, desc, err);
     return ret;
 }
 
@@ -437,6 +437,7 @@ static QSVFrame *submit_frame(QSVVPPContext *s, AVFilterLink *inlink, AVFrame *p
 
             qsv_frame->frame->width   = picref->width;
             qsv_frame->frame->height  = picref->height;
+            qsv_frame->frame->pts     = picref->pts;
 
             if (av_frame_copy(qsv_frame->frame, picref) < 0) {
                 av_frame_free(&qsv_frame->frame);
@@ -460,8 +461,12 @@ static QSVFrame *submit_frame(QSVVPPContext *s, AVFilterLink *inlink, AVFrame *p
             !(qsv_frame->frame->flags & AV_FRAME_FLAG_INTERLACED) ? MFX_PICSTRUCT_PROGRESSIVE :
             ((qsv_frame->frame->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST) ? MFX_PICSTRUCT_FIELD_TFF :
                                                  MFX_PICSTRUCT_FIELD_BFF);
-    if (qsv_frame->frame->repeat_pict == 1)
+    if (qsv_frame->frame->repeat_pict == 1) {
         qsv_frame->surface.Info.PicStruct |= MFX_PICSTRUCT_FIELD_REPEATED;
+        qsv_frame->surface.Info.PicStruct |=
+            (qsv_frame->frame->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST) ? MFX_PICSTRUCT_FIELD_TFF :
+                                                                        MFX_PICSTRUCT_FIELD_BFF;
+    }
     else if (qsv_frame->frame->repeat_pict == 2)
         qsv_frame->surface.Info.PicStruct |= MFX_PICSTRUCT_FRAME_DOUBLING;
     else if (qsv_frame->frame->repeat_pict == 4)
@@ -908,8 +913,13 @@ static int qsvvpp_init_vpp_session(AVFilterContext *avctx, QSVVPPContext *s, con
 
         /* Query VPP params again, including params for frame */
         ret = MFXVideoVPP_Query(s->session, &s->vpp_param, &s->vpp_param);
-        if (ret < 0)
-            return ff_qsvvpp_print_error(avctx, ret, "Error querying VPP params");
+        if (ret < 0) {
+            /* Wa a PicStruct validation issue in VPL/MSDK RT */
+            if (s->vpp_param.vpp.In.PicStruct != in->surface.Info.PicStruct)
+                s->vpp_param.vpp.In.PicStruct = in->surface.Info.PicStruct;
+            else
+                return ff_qsvvpp_print_error(avctx, ret, "Error querying VPP params");
+        }
         else if (ret > 0)
             ff_qsvvpp_print_warning(avctx, ret, "Warning When querying VPP params");
 
