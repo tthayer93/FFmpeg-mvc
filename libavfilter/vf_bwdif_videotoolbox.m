@@ -1,6 +1,7 @@
 /*
  * Copyright (C) 2018 Philip Langdale <philipl@overt.org>
  *               2020 Aman Karmani <aman@tmm1.net>
+ *               2024 Gnattu OC
  *
  * This file is part of FFmpeg.
  *
@@ -29,10 +30,10 @@
 
 #include <assert.h>
 
-extern char ff_vf_yadif_videotoolbox_metallib_data[];
-extern unsigned int ff_vf_yadif_videotoolbox_metallib_len;
+extern char ff_vf_bwdif_videotoolbox_metallib_data[];
+extern unsigned int ff_vf_bwdif_videotoolbox_metallib_len;
 
-typedef struct API_AVAILABLE(macos(10.11), ios(8.0)) YADIFVTContext {
+typedef struct API_AVAILABLE(macos(10.11), ios(8.0)) BWDIFVTContext {
     YADIFContext yadif;
 
     AVBufferRef       *device_ref;
@@ -47,20 +48,20 @@ typedef struct API_AVAILABLE(macos(10.11), ios(8.0)) YADIFVTContext {
     id<MTLBuffer> mtlParamsBuffer;
 
     CVMetalTextureCacheRef textureCache;
-} YADIFVTContext API_AVAILABLE(macos(10.11), ios(8.0));
+} BWDIFVTContext API_AVAILABLE(macos(10.11), ios(8.0));
 
-// Using sizeof(YADIFVTContext) outside of an availability check will error
+// Using sizeof(BWDIFVTContext) outside of an availability check will error
 // if we're targeting an older OS version, so we need to calculate the size ourselves
-// (we'll statically verify it's correct in yadif_videotoolbox_init behind a check)
-#define YADIF_VT_CTX_SIZE (sizeof(YADIFContext) + sizeof(void*) * 10)
+// (we'll statically verify it's correct in bwdif_videotoolbox_init behind a check)
+#define BWDIF_VT_CTX_SIZE (sizeof(YADIFContext) + sizeof(void*) * 10)
 
-struct mtlYadifParams {
+struct mtlBwdifParams {
     uint channels;
     uint parity;
     uint tff;
     bool is_second_field;
     bool skip_spatial_check;
-    int field_mode;
+    bool is_field_end;
 };
 
 static void call_kernel(AVFilterContext *ctx,
@@ -72,17 +73,19 @@ static void call_kernel(AVFilterContext *ctx,
                         int parity,
                         int tff) API_AVAILABLE(macos(10.11), ios(8.0))
 {
-    YADIFVTContext *s = ctx->priv;
+    BWDIFVTContext *s = ctx->priv;
+    YADIFContext *y = &s->yadif;
+    bool is_field_end = y->current_field == YADIF_FIELD_END;
     id<MTLCommandBuffer> buffer = s->mtlQueue.commandBuffer;
     id<MTLComputeCommandEncoder> encoder = buffer.computeCommandEncoder;
-    struct mtlYadifParams *params = (struct mtlYadifParams *)s->mtlParamsBuffer.contents;
-    *params = (struct mtlYadifParams){
+    struct mtlBwdifParams *params = (struct mtlBwdifParams *)s->mtlParamsBuffer.contents;
+    *params = (struct mtlBwdifParams){
         .channels = channels,
         .parity = parity,
         .tff = tff,
         .is_second_field = !(parity ^ tff),
         .skip_spatial_check = s->yadif.mode&2,
-        .field_mode = s->yadif.current_field
+        .is_field_end = is_field_end
     };
 
     [encoder setTexture:dst  atIndex:0];
@@ -100,7 +103,7 @@ static void call_kernel(AVFilterContext *ctx,
 static void filter(AVFilterContext *ctx, AVFrame *dst,
                    int parity, int tff) API_AVAILABLE(macos(10.11), ios(8.0))
 {
-    YADIFVTContext *s = ctx->priv;
+    BWDIFVTContext *s = ctx->priv;
     YADIFContext *y = &s->yadif;
     int i;
 
@@ -134,6 +137,7 @@ static void filter(AVFilterContext *ctx, AVFrame *dst,
             av_log(ctx, AV_LOG_ERROR, "Unsupported pixel format: %s\n", y->csp->name);
             goto exit;
         }
+
         av_log(ctx, AV_LOG_TRACE,
                "Deinterlacing plane %d: pixel_size: %d channels: %d\n",
                comp->plane, pixel_size, channels);
@@ -169,7 +173,7 @@ exit:
 
 static av_cold void do_uninit(AVFilterContext *ctx) API_AVAILABLE(macos(10.11), ios(8.0))
 {
-    YADIFVTContext *s = ctx->priv;
+    BWDIFVTContext *s = ctx->priv;
 
     ff_yadif_uninit(ctx);
 
@@ -191,7 +195,7 @@ static av_cold void do_uninit(AVFilterContext *ctx) API_AVAILABLE(macos(10.11), 
 }
 
 
-static av_cold void yadif_videotoolbox_uninit(AVFilterContext *ctx)
+static av_cold void bwdif_videotoolbox_uninit(AVFilterContext *ctx)
 {
     if (@available(macOS 10.11, iOS 8.0, *)) {
         do_uninit(ctx);
@@ -200,9 +204,10 @@ static av_cold void yadif_videotoolbox_uninit(AVFilterContext *ctx)
 
 static av_cold int do_init(AVFilterContext *ctx) API_AVAILABLE(macos(10.11), ios(8.0))
 {
-    YADIFVTContext *s = ctx->priv;
+    BWDIFVTContext *s = ctx->priv;
     NSError *err = nil;
     CVReturn ret;
+    dispatch_data_t libData;
 
     s->mtlDevice = MTLCreateSystemDefaultDevice();
     if (!s->mtlDevice) {
@@ -212,9 +217,9 @@ static av_cold int do_init(AVFilterContext *ctx) API_AVAILABLE(macos(10.11), ios
 
     av_log(ctx, AV_LOG_INFO, "Using Metal device: %s\n", s->mtlDevice.name.UTF8String);
 
-    dispatch_data_t libData = dispatch_data_create(
-        ff_vf_yadif_videotoolbox_metallib_data,
-        ff_vf_yadif_videotoolbox_metallib_len,
+    libData = dispatch_data_create(
+        ff_vf_bwdif_videotoolbox_metallib_data,
+        ff_vf_bwdif_videotoolbox_metallib_len,
         nil,
         nil);
     s->mtlLibrary = [s->mtlDevice newLibraryWithData:libData error:&err];
@@ -246,7 +251,7 @@ static av_cold int do_init(AVFilterContext *ctx) API_AVAILABLE(macos(10.11), ios
     }
 
     s->mtlParamsBuffer = [s->mtlDevice
-        newBufferWithLength:sizeof(struct mtlYadifParams)
+        newBufferWithLength:sizeof(struct mtlBwdifParams)
         options:MTLResourceStorageModeShared];
     if (!s->mtlParamsBuffer) {
         av_log(ctx, AV_LOG_ERROR, "Failed to create Metal buffer for parameters\n");
@@ -267,15 +272,15 @@ static av_cold int do_init(AVFilterContext *ctx) API_AVAILABLE(macos(10.11), ios
 
     return 0;
 fail:
-    yadif_videotoolbox_uninit(ctx);
+    bwdif_videotoolbox_uninit(ctx);
     return AVERROR_EXTERNAL;
 }
 
-static av_cold int yadif_videotoolbox_init(AVFilterContext *ctx)
+static av_cold int bwdif_videotoolbox_init(AVFilterContext *ctx)
 {
     if (@available(macOS 10.11, iOS 8.0, *)) {
-        // Ensure we calculated YADIF_VT_CTX_SIZE correctly
-        static_assert(YADIF_VT_CTX_SIZE == sizeof(YADIFVTContext), "Incorrect YADIF_VT_CTX_SIZE value!");
+        // Ensure we calculated BWDIF_VT_CTX_SIZE correctly
+        static_assert(BWDIF_VT_CTX_SIZE == sizeof(BWDIFVTContext), "Incorrect BWDIF_VT_CTX_SIZE value!");
         return do_init(ctx);
     } else {
         av_log(ctx, AV_LOG_ERROR, "Metal is not available on this OS version\n");
@@ -285,17 +290,17 @@ static av_cold int yadif_videotoolbox_init(AVFilterContext *ctx)
 
 static int do_config_input(AVFilterLink *inlink) API_AVAILABLE(macos(10.11), ios(8.0))
 {
-    FilterLink *l = ff_filter_link(inlink);
+    FilterLink *inl = ff_filter_link(inlink);
     AVFilterContext *ctx = inlink->dst;
-    YADIFVTContext *s = ctx->priv;
+    BWDIFVTContext *s = ctx->priv;
 
-    if (!l->hw_frames_ctx) {
+    if (!inl->hw_frames_ctx) {
         av_log(ctx, AV_LOG_ERROR, "A hardware frames reference is "
                "required to associate the processing device.\n");
         return AVERROR(EINVAL);
     }
 
-    s->input_frames_ref = av_buffer_ref(l->hw_frames_ctx);
+    s->input_frames_ref = av_buffer_ref(inl->hw_frames_ctx);
     if (!s->input_frames_ref) {
         av_log(ctx, AV_LOG_ERROR, "A input frames reference create "
                "failed.\n");
@@ -319,11 +324,12 @@ static int config_input(AVFilterLink *inlink)
 
 static int do_config_output(AVFilterLink *link) API_AVAILABLE(macos(10.11), ios(8.0))
 {
-    FilterLink *l = ff_filter_link(link);
-    FilterLink *il = ff_filter_link(link->src->inputs[0]);
+    FilterLink *outl = ff_filter_link(link);
     AVHWFramesContext *output_frames, *input_frames;
     AVFilterContext *ctx = link->src;
-    YADIFVTContext *s = ctx->priv;
+    AVFilterLink *inlink = link->src->inputs[0];
+    FilterLink *inl = ff_filter_link(inlink);
+    BWDIFVTContext *s = ctx->priv;
     YADIFContext *y = &s->yadif;
     int ret = 0;
 
@@ -335,16 +341,16 @@ static int do_config_output(AVFilterLink *link) API_AVAILABLE(macos(10.11), ios(
         return AVERROR(ENOMEM);
     }
 
-    l->hw_frames_ctx = av_hwframe_ctx_alloc(s->device_ref);
-    if (!l->hw_frames_ctx) {
+    outl->hw_frames_ctx = av_hwframe_ctx_alloc(s->device_ref);
+    if (!outl->hw_frames_ctx) {
         av_log(ctx, AV_LOG_ERROR, "Failed to create HW frame context "
                "for output.\n");
         ret = AVERROR(ENOMEM);
         goto exit;
     }
 
-    input_frames = (AVHWFramesContext*)il->hw_frames_ctx->data;
-    output_frames = (AVHWFramesContext*)l->hw_frames_ctx->data;
+    input_frames = (AVHWFramesContext*)inl->hw_frames_ctx->data;
+    output_frames = (AVHWFramesContext*)outl->hw_frames_ctx->data;
 
     output_frames->format    = AV_PIX_FMT_VIDEOTOOLBOX;
     output_frames->sw_format = s->input_frames->sw_format;
@@ -356,7 +362,7 @@ static int do_config_output(AVFilterLink *link) API_AVAILABLE(macos(10.11), ios(
     if (ret < 0)
         goto exit;
 
-    ret = av_hwframe_ctx_init(l->hw_frames_ctx);
+    ret = av_hwframe_ctx_init(outl->hw_frames_ctx);
     if (ret < 0) {
         av_log(ctx, AV_LOG_ERROR, "Failed to initialise VideoToolbox frame "
                "context for output: %d\n", ret);
@@ -388,13 +394,11 @@ static int config_output(AVFilterLink *link)
 #define FLAGS AV_OPT_FLAG_VIDEO_PARAM|AV_OPT_FLAG_FILTERING_PARAM
 #define CONST(name, help, val, unit) { name, help, 0, AV_OPT_TYPE_CONST, {.i64=val}, INT_MIN, INT_MAX, FLAGS, unit }
 
-static const AVOption yadif_videotoolbox_options[] = {
+static const AVOption bwdif_videotoolbox_options[] = {
     #define OFFSET(x) offsetof(YADIFContext, x)
-    { "mode",   "specify the interlacing mode", OFFSET(mode), AV_OPT_TYPE_INT, {.i64=YADIF_MODE_SEND_FRAME}, 0, 3, FLAGS, .unit = "mode"},
+    { "mode",   "specify the interlacing mode", OFFSET(mode), AV_OPT_TYPE_INT, {.i64=YADIF_MODE_SEND_FRAME}, 0, 1, FLAGS, .unit = "mode"},
     CONST("send_frame",           "send one frame for each frame",                                     YADIF_MODE_SEND_FRAME,           "mode"),
     CONST("send_field",           "send one frame for each field",                                     YADIF_MODE_SEND_FIELD,           "mode"),
-    CONST("send_frame_nospatial", "send one frame for each frame, but skip spatial interlacing check", YADIF_MODE_SEND_FRAME_NOSPATIAL, "mode"),
-    CONST("send_field_nospatial", "send one frame for each field, but skip spatial interlacing check", YADIF_MODE_SEND_FIELD_NOSPATIAL, "mode"),
 
     { "parity", "specify the assumed picture field parity", OFFSET(parity), AV_OPT_TYPE_INT, {.i64=YADIF_PARITY_AUTO}, -1, 1, FLAGS, .unit = "parity" },
     CONST("tff",  "assume top field first",    YADIF_PARITY_TFF,  "parity"),
@@ -409,9 +413,9 @@ static const AVOption yadif_videotoolbox_options[] = {
     { NULL }
 };
 
-AVFILTER_DEFINE_CLASS(yadif_videotoolbox);
+AVFILTER_DEFINE_CLASS(bwdif_videotoolbox);
 
-static const AVFilterPad yadif_videotoolbox_inputs[] = {
+static const AVFilterPad bwdif_videotoolbox_inputs[] = {
     {
         .name          = "default",
         .type          = AVMEDIA_TYPE_VIDEO,
@@ -420,7 +424,7 @@ static const AVFilterPad yadif_videotoolbox_inputs[] = {
     },
 };
 
-static const AVFilterPad yadif_videotoolbox_outputs[] = {
+static const AVFilterPad bwdif_videotoolbox_outputs[] = {
     {
         .name          = "default",
         .type          = AVMEDIA_TYPE_VIDEO,
@@ -429,17 +433,17 @@ static const AVFilterPad yadif_videotoolbox_outputs[] = {
     },
 };
 
-const FFFilter ff_vf_yadif_videotoolbox = {
-    .p.name         = "yadif_videotoolbox",
-    .p.description  = NULL_IF_CONFIG_SMALL("YADIF for VideoToolbox frames using Metal compute"),
-    .p.priv_class   = &yadif_videotoolbox_class,
+const FFFilter ff_vf_bwdif_videotoolbox = {
+    .p.name         = "bwdif_videotoolbox",
+    .p.description  = NULL_IF_CONFIG_SMALL("BWDIF for VideoToolbox frames using Metal compute"),
+    .priv_size      = BWDIF_VT_CTX_SIZE,
+    .p.priv_class   = &bwdif_videotoolbox_class,
+    .init           = bwdif_videotoolbox_init,
+    .uninit         = bwdif_videotoolbox_uninit,
+    FILTER_SINGLE_PIXFMT(AV_PIX_FMT_VIDEOTOOLBOX),
+    FILTER_INPUTS(bwdif_videotoolbox_inputs),
+    FILTER_OUTPUTS(bwdif_videotoolbox_outputs),
     .p.flags        = AVFILTER_FLAG_HWDEVICE |
                       AVFILTER_FLAG_SUPPORT_TIMELINE_INTERNAL,
-    .priv_size      = YADIF_VT_CTX_SIZE,
-    .init           = yadif_videotoolbox_init,
-    .uninit         = yadif_videotoolbox_uninit,
-    FILTER_SINGLE_PIXFMT(AV_PIX_FMT_VIDEOTOOLBOX),
-    FILTER_INPUTS(yadif_videotoolbox_inputs),
-    FILTER_OUTPUTS(yadif_videotoolbox_outputs),
     .flags_internal = FF_FILTER_FLAG_HWFRAME_AWARE,
 };

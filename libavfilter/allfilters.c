@@ -204,6 +204,7 @@ extern const FFFilter ff_vf_boxblur;
 extern const FFFilter ff_vf_boxblur_opencl;
 extern const FFFilter ff_vf_bwdif;
 extern const FFFilter ff_vf_bwdif_cuda;
+extern const FFFilter ff_vf_bwdif_videotoolbox;
 extern const FFFilter ff_vf_bwdif_vulkan;
 extern const FFFilter ff_vf_cas;
 extern const FFFilter ff_vf_ccrepack;
