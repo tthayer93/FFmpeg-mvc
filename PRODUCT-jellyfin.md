@@ -223,3 +223,127 @@ your jurisdiction and use case.
 ## Ship ledger
 
 - Ship identity (2026-09-09): the late-adoption fix ships as n8.1.2-mvc2-jf4. The ports-only build previously issued under this name (commit 09a7dcb635) is withdrawn by owner direction; its tag was deleted and the name reused for this combined ship. The mvc counter is shared across lines; see tag messages.
+
+The entry above closes the ports-only era of this branch. What follows is the
+containment record of the ship that ends it: this tree now holds the queue the
+`-jf4` part of its name points at, so the ledger states that with a count,
+names what is not carried, and keeps the two consequences of taking a queue
+verbatim - one attribution and one test inconsistency - on the record.
+
+- **jf98 full inclusion (2026-09-09).** `jellyfin/jellyfin-ffmpeg` `v8.1.2-4`
+  keeps its source delta as a queue of 98 patch files listed in
+  `debian/patches/series`. **94 of those 98 are now landed on this branch as 94
+  separate commits** - one patch per commit, in the order of that queue, each
+  patch landing as the bytes the queue holds: nothing folded, squashed or
+  hand-adapted, so any one of the 94 can be byte-compared against the patch
+  file its message names. Each of them carries its own provenance in its commit
+  message - an `Origin: jellyfin-ffmpeg v8.1.2-4 patch 00NN` trailer on all of
+  them, an `Upstream:` line naming the upstream commit and the class of the
+  match wherever one was identified, and a `Provenance:` line where the mapping
+  is honestly incomplete rather than simply absent. The landings ran as five
+  waves on 2026-09-09, one build per wave on this branch, and the last patch
+  commit of the last wave is `b492b43fc1`. The wave is 96 commits wide: those
+  94 plus the two named in "Our own two commits" below.
+- **The four queue entries this branch does not land (2026-09-09).** Each is a
+  decision with a stated reason, not an omission.
+
+  - `0054` - **REFUSED-BY-LICENCE.**
+    `0054-add-ac4-decoder-for-atsc-3-0.patch` imports the AC-4 parser and
+    decoder from Librempeg verbatim, which makes them GPL-3-or-later code. That
+    alone would be a posture question, because the decoder and parser are gated
+    behind a `gplv3` configure switch this build never enables. What decides it
+    is the rest of the patch: it lifts the float reverse-multiply DSP out of
+    `libavutil/float_dsp.c` into a new `libavutil/float_fmul_reverse.c` - under
+    the same GPL-3 header - and adds that file to libavutil's **unconditional**
+    object list, so any tree holding this patch ships GPL-3-only code inside
+    the library this product delivers as LGPL-2.1 or later, whatever
+    `./configure` is told. AC-4 is not part of anything this branch exists for.
+    The tree is proved free of the patch at the landing: neither file it would
+    add exists here, `ac4` appears in none of `configure`,
+    `libavcodec/Makefile`, `allcodecs.c` or `parsers.c`, and the upstream form
+    of that DSP function is still the one in place. The licensing review of
+    2026-09-08 holds the finding, including the route back if AC-4 is ever
+    wanted: keep the gated decoder files, restore the small LGPL function to
+    `float_dsp.c`, and leave the two GPL-3 files out.
+  - `0076`, `0090` and `0098` - **already carried.** These three are contents
+    this branch shipped in its ports-only build, listed by name in the "Ported
+    fixes" table above; landing their queue entries again would re-apply a
+    change the tree already holds. They are recorded as carried rather than
+    applied, each with the commit that carries it: `0076` by
+    `68f273e87eaaac6362c50fc27799da6c19e0b655`, `0090` by
+    `8ca9ad8afc21c08bd2a9c1fae4e4df891b7ea88e`, `0098` by
+    `3510cfeef290cbfca71ac1dc1b49c3cb38719f4d`. Each carry was proved four ways
+    at the landing: the queue patch does not apply to this tree, the same bytes
+    reverse-apply against it, the content is present in the file it names, and
+    the carrier commit is an ancestor of this branch.
+- **Our own two commits inside the series (2026-09-09).** Landing the queue
+  verbatim showed two places where verbatim text needs a line from us. Both
+  went in as commits of their own, at the position in the series where the need
+  appears, and never as an edit inside somebody else's patch commit.
+
+  - After `0042`: `d0c0aef7f6`, `lavc/x264: keep pixel-format mappings explicit
+    after the NV20 repurpose`. That patch repurposes the `AV_PIX_FMT_NV20`
+    name - it drops the endian-alias macro and reuses the name for a packed
+    4:2:2 10-bit format - and `libx264.c` is not one of the files it edits.
+    Left alone, the x264 wrapper would have answered with the semi-planar
+    colour-space constant for the packed format and dropped the mapping for the
+    semi-planar pair that constant actually describes. Spelling the alias out in
+    place of the name keeps the encoder advertising and mapping exactly what it
+    did before the repurpose.
+  - After `0053`: `avfilter/tonemapx: restore libplacebo attribution`. Their
+    `0007` deletes the comment in the OpenCL tone-mapping shader naming where
+    its peak/average detection and BT.2390 lineage came from, and the curves of
+    the filter that `0053` adds were ported out of that same shader. This
+    branch names the origin again at the site that now carries the logic.
+    Libplacebo is MIT and porting an algorithm needs no notice; the credit
+    costs nothing, and a tree shipping this lineage should say where it came
+    from.
+- **What carrying `0058` leaves inconsistent (2026-09-09).** `0058` changes
+  when the sub2video heartbeat pushes a frame, so a burn-in run can emit
+  different frames at the same timestamps, and its patch file rewrites exactly
+  one test reference to match: `tests/ref/fate/filter-overlay-dvdsub-2397`. The
+  three sub2video references - `sub2video`, `sub2video_basic` and
+  `sub2video_time_limited` - it does not touch, so their bookkeeping is still
+  the pre-patch one, and one of them was last written by the very upstream
+  commit `0058` reverts. Carrying `0058` verbatim carries that unfinished
+  bookkeeping with it, which is what a verbatim carry means; this branch does
+  not correct it locally, because rewriting those three references here would be
+  a hand edit of somebody else's test data and would break the byte-identity
+  this ledger rests on. Measured on this build the inconsistency is dormant
+  rather than failing: all three tests match their untouched references, and the
+  DVD-subtitle burn-in matches the reference `0058` rewrote. It is on the record
+  for the day the test set this project gates on (`fate-h264` and `fate-cbs`) is
+  widened to the whole FATE suite - if those three ever do report a difference,
+  that difference is this carried behavior, not a regression introduced by the
+  port.
+- **Patents, kept apart from the code licence (2026-09-09).** A code licence is
+  not a patent licence, and this wave brings in two codecs that belong in the
+  second column. AC-4 - the ATSC 3.0 audio system, whose stream-type detection
+  lands with `0084` while its decoder is the entry refused above - sits under a
+  patent pool administered by Dolby. The DTS:X detection of `0087` touches
+  holdings of Xperi/DTS. The H.264/MVC decoder this branch is built around sits
+  in the AVC pool, as it did before this wave, and the HEVC-adjacent work of
+  `0033`, `0039` and `0086` in the HEVC pools. None of that changes the
+  copyright posture of this public source tree. It does mean that whoever
+  deploys a build of this tree into something that decodes or encodes those
+  formats needs their own patent analysis, because that obligation follows the
+  deployment and not the source host. Wherever this document names a codec,
+  read the two columns separately: the code is licensed, the patents are not.
+- **What the `-jf4` part of the name claims on this ship (2026-09-09).** "Build
+  identity" above says that part is a pointer to a build line and not a parity
+  claim, and the "Ported fixes" table is the ledger of the ship for which that
+  was the whole story. From this ship there is a second half. This tree now
+  holds the applicable whole of their queue: 94 patch commits landed one per
+  patch, 3 queue entries already carried, 1 entry refused on licence and named
+  with its reason. So `-jf4` states a containment this branch can show, and in
+  every other respect it stays what it has always been here - a pointer to
+  their build line, unmoved by our own code changes, and not a claim that their
+  queue is current with upstream's `release/8.1` maintenance fixes, which this
+  branch tracks directly instead. The version string does not move for this
+  ship either: by the owner ruling of 2026-09-09, `n8.1.2-mvc2-jf4` is the name
+  of the jf4-complete build, and the tag is reminted on this tree at ship time,
+  so tag, `VERSION` file and banner state the same identity over the same
+  content. `-mvc2` is unchanged and stays true: not one of the wave's 96
+  commits touches the fork delta that counter counts, which this branch shares
+  with the release lines.
+
