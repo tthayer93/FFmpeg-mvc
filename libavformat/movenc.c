@@ -6929,7 +6929,7 @@ int ff_mov_write_packet(AVFormatContext *s, AVPacket *pkt)
     } else if (par->codec_id == AV_CODEC_ID_HEVC && trk->extradata_size[trk->last_stsd_index] > 6 &&
                (AV_RB24(trk->extradata[trk->last_stsd_index]) == 1 || AV_RB32(trk->extradata[trk->last_stsd_index]) == 1)) {
         /* extradata is Annex B, assume the bitstream is too and convert it */
-        int filter_ps = (trk->tag == MKTAG('h','v','c','1'));
+        int filter_ps = 0; // Allow in-band ps for robustness
         if (trk->hint_track >= 0 && trk->hint_track < mov->nb_tracks) {
             ret = ff_hevc_annexb2mp4_buf(pkt->data, &reformatted_data,
                                          &size, filter_ps, NULL);

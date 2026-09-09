@@ -320,6 +320,13 @@ static int vaapi_encode_h265_init_sequence_params(AVCodecContext *avctx)
             bs.bits.max_max_transform_hierarchy_depth_inter;
         sps->max_transform_hierarchy_depth_intra =
             bs.bits.max_max_transform_hierarchy_depth_intra;
+
+        if (ctx->amd_vcn_override) {
+            sps->max_transform_hierarchy_depth_inter =
+                sps->log2_diff_max_min_luma_coding_block_size + 1;
+            sps->max_transform_hierarchy_depth_intra =
+                sps->max_transform_hierarchy_depth_inter;
+        }
     }
 
     // update pps setting according to queried result
@@ -335,6 +342,9 @@ static int vaapi_encode_h265_init_sequence_params(AVCodecContext *avctx)
         // 0 will make cu_qp_delta invalid.
         if (pps->cu_qp_delta_enabled_flag)
             pps->diff_cu_qp_delta_depth = sps->log2_diff_max_min_luma_coding_block_size;
+
+        if (ctx->amd_vcn_override)
+            pps->diff_cu_qp_delta_depth = 0;
     }
 #endif
 
@@ -1019,6 +1029,9 @@ static av_cold int vaapi_encode_h265_configure(AVCodecContext *avctx)
         priv->fixed_qp_p   = 30;
         priv->fixed_qp_b   = 30;
     }
+
+    if (ctx->amd_vcn_override)
+        priv->unit_opts.fixed_qp_idr = 26; // pps->init_qp_minus26
 
     ctx->roi_quant_range = 51 + 6 * (ctx->profile->depth - 8);
 
