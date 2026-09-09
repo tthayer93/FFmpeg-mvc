@@ -109,4 +109,9 @@ float ff_inverse_eotf_st2084(float x, float ref_white);
 float ff_eotf_arib_b67(float x, float ref_white, int bt2446b);
 float ff_inverse_eotf_bt1886(float x);
 
+int ff_get_range_off(int *off, int *y_rng, int *uv_rng,
+                     enum AVColorRange rng, int depth);
+void ff_get_yuv_coeffs(int out[3][3][8], double (*table)[3],
+                       int depth, int y_rng, int uv_rng, int yuv2rgb);
+
 #endif

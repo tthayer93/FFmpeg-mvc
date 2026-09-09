@@ -17,6 +17,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include "libavutil/avassert.h"
 #include "libavutil/frame.h"
 #include "libavutil/mastering_display_metadata.h"
 #include "libavutil/pixdesc.h"
@@ -361,4 +362,52 @@ float ff_eotf_arib_b67(float x, float ref_white, int bt2446b)
 // delinearizer for BT709, BT2020-10
 float ff_inverse_eotf_bt1886(float x) {
     return x > 0.0f ? powf(x, 1.0f / 2.4f) : 0.0f;
+}
+
+int ff_get_range_off(int *off, int *y_rng, int *uv_rng,
+                     enum AVColorRange rng, int depth)
+{
+    switch (rng) {
+    case AVCOL_RANGE_UNSPECIFIED:
+    case AVCOL_RANGE_MPEG:
+        *off = 16 << (depth - 8);
+        *y_rng = 219 << (depth - 8);
+        *uv_rng = 224 << (depth - 8);
+        break;
+    case AVCOL_RANGE_JPEG:
+        *off = 0;
+        *y_rng = *uv_rng = (256 << (depth - 8)) - 1;
+        break;
+    default:
+        return AVERROR(EINVAL);
+    }
+
+    return 0;
+}
+
+void ff_get_yuv_coeffs(int out[3][3][8], double (*table)[3],
+                       int depth, int y_rng, int uv_rng, int yuv2rgb)
+{
+#define N (yuv2rgb ? m : n)
+#define M (yuv2rgb ? n : m)
+    int rng, n, m, o;
+    int bits = 1 << (yuv2rgb ? (depth - 1) : (29 - depth));
+    for (rng = y_rng, n = 0; n < 3; n++, rng = uv_rng) {
+        for (m = 0; m < 3; m++) {
+            out[N][M][0] = (int)lrint(bits * (yuv2rgb ? 32767 : rng) * table[N][M] / (yuv2rgb ? rng : 32767));
+            for (o = 1; o < 8; o++)
+                out[N][M][o] = out[N][M][0];
+        }
+    }
+#undef N
+#undef M
+
+    if (yuv2rgb) {
+        av_assert2(out[0][1][0] == 0);
+        av_assert2(out[2][2][0] == 0);
+        av_assert2(out[0][0][0] == out[1][0][0]);
+        av_assert2(out[0][0][0] == out[2][0][0]);
+    } else {
+        av_assert2(out[1][2][0] == out[2][0][0]);
+    }
 }
