@@ -45,6 +45,10 @@ typedef struct {
     int src_height;
     float param;
     int mpeg_range;
+
+    CUtexObject dither_tex;
+    float dither_size;
+    float dither_quantization;
 } CUDAScaleKernelParams;
 
 #endif
