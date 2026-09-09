@@ -843,9 +843,7 @@ static CFDictionaryRef videotoolbox_decoder_config_create(CMVideoCodecType codec
                                                                    &kCFTypeDictionaryValueCallBacks);
 
     CFDictionarySetValue(config_info,
-                         codec_type == kCMVideoCodecType_HEVC ?
-                            kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder :
-                            kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder,
+                         kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder,
                          kCFBooleanTrue);
 
     avc_info = CFDictionaryCreateMutable(kCFAllocatorDefault,
