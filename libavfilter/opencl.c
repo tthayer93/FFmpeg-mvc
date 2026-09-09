@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "libavutil/avassert.h"
 #include "libavutil/file_open.h"
 #include "libavutil/mem.h"
 #include "libavutil/pixdesc.h"
@@ -156,6 +157,29 @@ void ff_opencl_filter_uninit(AVFilterContext *avctx)
     av_buffer_unref(&ctx->device_ref);
 }
 
+#if ARCH_AARCH64 && (defined(__linux__) || defined(__ANDROID__))
+static char *check_opencl_device_str(cl_device_id device_id,
+                                     cl_device_info key)
+{
+    char *str;
+    size_t size;
+    cl_int cle;
+    cle = clGetDeviceInfo(device_id, key, 0, NULL, &size);
+    if (cle != CL_SUCCESS)
+        return NULL;
+    str = av_malloc(size);
+    if (!str)
+        return NULL;
+    cle = clGetDeviceInfo(device_id, key, size, str, &size);
+    if (cle != CL_SUCCESS) {
+        av_free(str);
+        return NULL;
+    }
+    av_assert0(strlen(str) + 1== size);
+    return str;
+}
+#endif
+
 int ff_opencl_filter_load_program(AVFilterContext *avctx,
                                   const char **program_source_array,
                                   int nb_strings)
@@ -171,8 +195,40 @@ int ff_opencl_filter_load_program(AVFilterContext *avctx,
         return AVERROR(EIO);
     }
 
+#if ARCH_AARCH64 && (defined(__linux__) || defined(__ANDROID__))
+    /* Try aggressive heuristics for the kernel vectorizer & unroller on libMali */
+    {
+        char *device_vendor = check_opencl_device_str(ctx->hwctx->device_id, CL_DEVICE_VENDOR);
+        char *device_name = check_opencl_device_str(ctx->hwctx->device_id, CL_DEVICE_NAME);
+
+        if (device_vendor && strstr(device_vendor, "ARM") &&
+            device_name && strstr(device_name, "Mali")) {
+            av_freep(&device_vendor);
+            av_freep(&device_name);
+
+            cle = clBuildProgram(ctx->program, 1, &ctx->hwctx->device_id,
+                                 "-cl-finite-math-only -cl-unsafe-math-optimizations "
+                                 "-fkernel-vectorizer -fkernel-unroller", NULL, NULL);
+            if (cle == CL_SUCCESS)
+                return 0;
+
+            /* Fall-back to standard build options */
+            clReleaseProgram(ctx->program);
+            ctx->program = clCreateProgramWithSource(ctx->hwctx->context, nb_strings,
+                                                     program_source_array,
+                                                     NULL, &cle);
+            if (!ctx->program) {
+                av_log(avctx, AV_LOG_ERROR, "Failed to create program: %d.\n", cle);
+                return AVERROR(EIO);
+            }
+        }
+        av_freep(&device_vendor);
+        av_freep(&device_name);
+    }
+#endif
+
     cle = clBuildProgram(ctx->program, 1, &ctx->hwctx->device_id,
-                         NULL, NULL, NULL);
+                         "-cl-finite-math-only -cl-unsafe-math-optimizations", NULL, NULL);
     if (cle != CL_SUCCESS) {
         av_log(avctx, AV_LOG_ERROR, "Failed to build program: %d.\n", cle);
 
@@ -333,7 +389,7 @@ void ff_opencl_print_const_matrix_3x3(AVBPrint *buf, const char *name_str,
     av_bprintf(buf, "__constant float %s[9] = {\n", name_str);
     for (i = 0; i < 3; i++) {
         for (j = 0; j < 3; j++)
-            av_bprintf(buf, " %.5ff,", mat[i][j]);
+            av_bprintf(buf, " %.13lff,", mat[i][j]);
         av_bprintf(buf, "\n");
     }
     av_bprintf(buf, "};\n");
