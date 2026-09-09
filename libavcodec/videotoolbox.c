@@ -124,7 +124,7 @@ static int videotoolbox_postproc_frame(void *avctx, AVFrame *frame)
     if (!ref->pixbuf) {
         av_log(avctx, AV_LOG_ERROR, "No frame decoded?\n");
         av_frame_unref(frame);
-        return AVERROR_EXTERNAL;
+        return 0;
     }
 
     frame->crop_right = 0;
