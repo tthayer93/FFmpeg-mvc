@@ -614,6 +614,35 @@ static int d3d11va_device_find_adapter_by_vendor_id(AVHWDeviceContext *ctx, uint
     return -1;
 }
 
+static int d3d11va_check_uma_support(AVHWDeviceContext *ctx)
+{
+    AVD3D11VADeviceContext *device_hwctx = ctx->hwctx;
+    D3D11_FEATURE_DATA_D3D11_OPTIONS2 data = {};
+    HRESULT hr = ID3D11Device_CheckFeatureSupport(device_hwctx->device,
+                                                  D3D11_FEATURE_D3D11_OPTIONS2,
+                                                  &data, sizeof(data));
+    return SUCCEEDED(hr) && data.UnifiedMemoryArchitecture;
+}
+
+static void d3d11va_query_device_desc(AVHWDeviceContext *ctx,
+                                      DXGI_ADAPTER_DESC *desc)
+{
+    AVD3D11VADeviceContext *device_hwctx = ctx->hwctx;
+    IDXGIDevice *pDXGIDevice = NULL;
+    IDXGIAdapter *pDXGIAdapter = NULL;
+    HRESULT hr = ID3D11Device_QueryInterface(device_hwctx->device, &IID_IDXGIDevice,
+                                             (void **)&pDXGIDevice);
+    if (SUCCEEDED(hr) && pDXGIDevice) {
+        hr = IDXGIDevice_GetParent(pDXGIDevice, &IID_IDXGIAdapter,
+                                   (void **)&pDXGIAdapter);
+        if (SUCCEEDED(hr) && pDXGIAdapter) {
+            IDXGIAdapter_GetDesc(pDXGIAdapter, desc);
+            IDXGIAdapter_Release(pDXGIAdapter);
+        }
+        IDXGIDevice_Release(pDXGIDevice);
+    }
+}
+
 static int d3d11va_device_create(AVHWDeviceContext *ctx, const char *device,
                                  AVDictionary *opts, int flags)
 {
@@ -690,6 +719,9 @@ static int d3d11va_device_create(AVHWDeviceContext *ctx, const char *device,
         ID3D10Multithread_SetMultithreadProtected(pMultithread, TRUE);
         ID3D10Multithread_Release(pMultithread);
     }
+
+    device_hwctx->is_uma = d3d11va_check_uma_support(ctx);
+    d3d11va_query_device_desc(ctx, &device_hwctx->device_desc);
 
 #if !HAVE_UWP && HAVE_DXGIDEBUG_H
     if (is_debug) {

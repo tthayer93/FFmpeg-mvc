@@ -616,6 +616,18 @@ int ff_dxva2_common_frame_params(AVCodecContext *avctx,
     else
         surface_alignment = 16;
 
+#if CONFIG_D3D11VA
+    /* align surfaces to 32 on Intel to keep in line with the MSDK impl,
+    which avoids the unnecessary resizing when mapping to QSV */
+    if (device_ctx->type == AV_HWDEVICE_TYPE_D3D11VA) {
+        AVD3D11VADeviceContext *device_hwctx = device_ctx->hwctx;
+        if (device_hwctx->device_desc.VendorId == 0x8086) {
+            av_log(avctx, AV_LOG_DEBUG, "Intel DX11 device found, alignment changed!\n");
+            surface_alignment = 32;
+        }
+    }
+#endif
+
     /* 1 base work surface */
     num_surfaces = 1;
 
@@ -623,9 +635,9 @@ int ff_dxva2_common_frame_params(AVCodecContext *avctx,
     if (avctx->codec_id == AV_CODEC_ID_H264 || avctx->codec_id == AV_CODEC_ID_HEVC)
         num_surfaces += 16;
     else if (avctx->codec_id == AV_CODEC_ID_VP9 || avctx->codec_id == AV_CODEC_ID_AV1)
-        num_surfaces += 8;
+        num_surfaces += 8 + 4; /* 4 base work surface in vpp async */
     else
-        num_surfaces += 2;
+        num_surfaces += 2 + 4; /* 4 base work surface in vpp async */
 
     frames_ctx->sw_format = avctx->sw_pix_fmt == AV_PIX_FMT_YUV420P10 ?
                             AV_PIX_FMT_P010 : AV_PIX_FMT_NV12;

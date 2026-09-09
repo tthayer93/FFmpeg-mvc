@@ -108,6 +108,16 @@ typedef struct AVD3D11VADeviceContext {
      * It applies globally to all AVD3D11VAFramesContext allocated from this device context.
      */
     UINT MiscFlags;
+
+    /**
+     * DXGI adapter description of the device.
+     */
+    DXGI_ADAPTER_DESC device_desc;
+
+    /**
+     * Whether the device is an UMA device.
+     */
+    int is_uma;
 } AVD3D11VADeviceContext;
 
 /**
