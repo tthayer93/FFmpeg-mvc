@@ -653,6 +653,9 @@ static int init_vpp_session(AVFilterContext *avctx, QSVVPPContext *s)
 
         out_frames_hwctx->frame_type      = s->out_mem_mode;
 
+        if (in_frames_hwctx)
+            out_frames_hwctx->require_sync = in_frames_hwctx->require_sync;
+
         ret = av_hwframe_ctx_init(out_frames_ref);
         if (ret < 0) {
             av_buffer_unref(&out_frames_ref);

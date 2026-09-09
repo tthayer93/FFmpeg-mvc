@@ -2064,6 +2064,7 @@ static int qsv_dynamic_frames_derive_to(AVHWFramesContext *dst_ctx,
         } else {
             dst_hwctx->frame_type |= MFX_MEMTYPE_VIDEO_MEMORY_DECODER_TARGET;
         }
+        dst_hwctx->require_sync = src_hwctx->require_sync;
     }
     break;
 #endif
@@ -2139,6 +2140,7 @@ static int qsv_fixed_frames_derive_to(AVHWFramesContext *dst_ctx,
             } else {
                 dst_hwctx->frame_type |= MFX_MEMTYPE_VIDEO_MEMORY_DECODER_TARGET;
             }
+            dst_hwctx->require_sync = src_hwctx->require_sync;
         }
         break;
 #endif

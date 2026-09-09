@@ -197,6 +197,11 @@ typedef struct AVD3D11VAFramesContext {
      * This field is ignored/invalid if a user-allocated texture is provided.
     */
     AVD3D11FrameDescriptor *texture_infos;
+
+    /**
+     * Whether the frames require extra sync when exporting as external memory.
+     */
+    int require_sync;
 } AVD3D11VAFramesContext;
 
 #endif /* AVUTIL_HWCONTEXT_D3D11VA_H */
