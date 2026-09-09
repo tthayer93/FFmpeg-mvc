@@ -202,6 +202,11 @@ typedef struct AVD3D11VAFramesContext {
      * Whether the frames require extra sync when exporting as external memory.
      */
     int require_sync;
+
+    /**
+     * Whether to alloc an array of textures when (BindFlags & D3D11_BIND_DECODER).
+     */
+    int array_of_tex;
 } AVD3D11VAFramesContext;
 
 #endif /* AVUTIL_HWCONTEXT_D3D11VA_H */

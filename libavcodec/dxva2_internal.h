@@ -100,6 +100,7 @@ typedef struct FFDXVASharedContext {
     ID3D11VideoDecoderOutputView  **d3d11_views;
     int                          nb_d3d11_views;
     ID3D11Texture2D                *d3d11_texture;
+    AVD3D11FrameDescriptor         *d3d11_texture_infos;
 #endif
 
 #if CONFIG_DXVA2
