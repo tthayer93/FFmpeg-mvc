@@ -5914,7 +5914,7 @@ elif enabled x86; then
         ;;
         # everything else should support nopl and conditional mov (cmov)
         *)
-            cpuflags="-march=$cpu"
+            # there is no -march=generic option
             enable i686
             enable fast_cmov
         ;;
@@ -8052,8 +8052,8 @@ if enabled icc; then
 elif enabled gcc; then
     gcc_version=$($cc -dumpversion)
     major_version=${gcc_version%%[!0-9]*}
-    if [ $major_version -lt 13 ]; then
-        # Disable tree-vectorize for GCC <13 - it has historically been buggy.
+    if [ $major_version -lt 11 ]; then
+        # Disable tree-vectorize for GCC <11 - it has historically been buggy.
         check_optflags -fno-tree-vectorize
     else
         case $arch in
