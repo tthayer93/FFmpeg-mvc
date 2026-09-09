@@ -571,6 +571,7 @@ extern const FFFilter ff_vf_drawbox_vaapi;
 
 extern const FFFilter ff_vsrc_allrgb;
 extern const FFFilter ff_vsrc_allyuv;
+extern const FFFilter ff_vsrc_alphasrc;
 extern const FFFilter ff_vsrc_amf_capture;
 extern const FFFilter ff_vsrc_cellauto;
 extern const FFFilter ff_vsrc_color;

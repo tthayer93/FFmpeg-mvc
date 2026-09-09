@@ -611,6 +611,7 @@ OBJS-$(CONFIG_DRAWBOX_VAAPI_FILTER)          += vf_drawbox_vaapi.o vaapi_vpp.o
 
 OBJS-$(CONFIG_ALLRGB_FILTER)                 += vsrc_testsrc.o
 OBJS-$(CONFIG_ALLYUV_FILTER)                 += vsrc_testsrc.o
+OBJS-$(CONFIG_ALPHASRC_FILTER)               += vsrc_alphasrc.o
 OBJS-$(CONFIG_CELLAUTO_FILTER)               += vsrc_cellauto.o
 OBJS-$(CONFIG_COLOR_FILTER)                  += vsrc_testsrc.o
 OBJS-$(CONFIG_COLORCHART_FILTER)             += vsrc_testsrc.o
