@@ -1451,6 +1451,16 @@ static int get_buffer(AVCodecContext *dec_ctx, AVFrame *frame, int flags)
 
             dp->multiview_pending = 0;
             if (ret < 0) {
+                // The request cannot be honoured, so withdraw it: the pending
+                // declaration asking the decoder for all views belonged to the
+                // request, not to the stream. Leaving it in force would deliver
+                // every view of every access unit - one double-width frame per
+                // picture in a pipeline that asked for a view it cannot get -
+                // where the same request resolved before decoding starts, and
+                // any decode that makes no request, delivers the decoder's own
+                // default instead. With nothing selected that default is the
+                // base view, applied where a view is used.
+                av_opt_set(dec_ctx, "view_ids", NULL, AV_OPT_SEARCH_CHILDREN);
                 av_log(dp, AV_LOG_ERROR,
                        "Error setting up multiview decoding: %s\n",
                        av_err2str(ret));
