@@ -1025,6 +1025,23 @@ static int videotoolbox_start(AVCodecContext *avctx)
         av_log(avctx, AV_LOG_VERBOSE, "VideoToolbox reported invalid data.\n");
         return AVERROR_INVALIDDATA;
     case 0:
+        if (avctx->skip_frame >= AVDISCARD_NONKEY) {
+            status = VTSessionSetProperty(videotoolbox->session,
+                                          kVTDecompressionPropertyKey_OnlyTheseFrames,
+                                          kVTDecompressionProperty_OnlyTheseFrames_KeyFrames);
+            if (status) {
+                av_log(avctx, AV_LOG_WARNING, "kVTDecompressionProperty_OnlyTheseFrames_KeyFrames is not supported on this device. Ignoring.\n");
+            }
+        }
+        if (avctx->hwaccel_flags & AV_HWACCEL_FLAG_LOW_PRIORITY) {
+            status = VTSessionSetProperty(videotoolbox->session,
+                                          kVTDecompressionPropertyKey_RealTime,
+                                          kCFBooleanFalse);
+            av_log(avctx, AV_LOG_INFO, "Decoder running at lower priority.\n");
+            if (status) {
+                av_log(avctx, AV_LOG_WARNING, "kVTDecompressionPropertyKey_RealTime is not supported on this device. Ignoring.\n");
+            }
+        }
         return 0;
     default:
         av_log(avctx, AV_LOG_VERBOSE, "Unknown VideoToolbox session creation error %d\n", (int)status);
