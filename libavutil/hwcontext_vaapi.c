@@ -1376,9 +1376,8 @@ static int vaapi_map_to_drm_esh(AVHWFramesContext *hwfc, AVFrame *dst,
 
         vas = vaSyncSurface(hwctx->display, surface_id);
         if (vas != VA_STATUS_SUCCESS) {
-            av_log(hwfc, AV_LOG_ERROR, "Failed to sync surface "
+            av_log(hwfc, AV_LOG_WARNING, "Failed to sync surface "
                    "%#x: %d (%s).\n", surface_id, vas, vaErrorStr(vas));
-            return AVERROR(EIO);
         }
     }
 
