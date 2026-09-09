@@ -1901,6 +1901,10 @@ static void clear_unused_frames(QSVEncContext *q)
             memset(&cur->enc_ctrl, 0, sizeof(cur->enc_ctrl));
             cur->enc_ctrl.Payload = cur->payloads;
             cur->enc_ctrl.ExtParam = cur->extparam;
+            if (cur->external_frame) {
+                av_freep(&cur->surface.Data.MemId);
+                cur->external_frame = 0;
+            }
             if (cur->frame->format == AV_PIX_FMT_QSV) {
                 av_frame_unref(cur->frame);
             }
@@ -2072,6 +2076,16 @@ static int submit_frame(QSVEncContext *q, const AVFrame *frame,
         return ret;
 
     if (frame->format == AV_PIX_FMT_QSV) {
+        AVHWFramesContext *frames_ctx = NULL;
+        AVQSVFramesContext *frames_hwctx = NULL;
+        int is_fixed_pool = 0;
+
+        if (q->avctx->hw_frames_ctx) {
+            frames_ctx    = (AVHWFramesContext *)q->avctx->hw_frames_ctx->data;
+            frames_hwctx  = frames_ctx->hwctx;
+            is_fixed_pool = frames_hwctx->nb_surfaces > 0;
+        }
+
         ret = av_frame_ref(qf->frame, frame);
         if (ret < 0)
             return ret;
@@ -2080,10 +2094,19 @@ static int submit_frame(QSVEncContext *q, const AVFrame *frame,
 
         if (q->frames_ctx.mids) {
             ret = ff_qsv_find_surface_idx(&q->frames_ctx, qf);
-            if (ret < 0)
+            if (ret < 0 && !is_fixed_pool)
                 return ret;
-
-            qf->surface.Data.MemId = &q->frames_ctx.mids[ret];
+            if (ret >= 0)
+                qf->surface.Data.MemId = &q->frames_ctx.mids[ret];
+        }
+        if (is_fixed_pool && (!q->frames_ctx.mids || ret < 0)) {
+            QSVMid *mid = NULL;
+            mid = (QSVMid *)av_mallocz(sizeof(*mid));
+            if (!mid)
+                return AVERROR(ENOMEM);
+            mid->handle_pair = (mfxHDLPair *)qf->surface.Data.MemId;
+            qf->surface.Data.MemId = mid;
+            qf->external_frame = 1;
         }
     } else {
         /* make a copy if the input is not padded as libmfx requires */
