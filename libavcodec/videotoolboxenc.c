@@ -556,6 +556,7 @@ static CMVideoCodecType get_cm_codec_type(AVCodecContext *avctx,
             else
                 return MKBETAG('a','p','c','n'); // kCMVideoCodecType_AppleProRes422
         }
+    case AV_CODEC_ID_MJPEG: return kCMVideoCodecType_JPEG;
     default:               return 0;
     }
 }
@@ -1258,7 +1259,7 @@ static int vtenc_create_encoder(AVCodecContext   *avctx,
                                       kVTCompressionPropertyKey_Quality,
                                       quality_num);
         CFRelease(quality_num);
-    } else if (avctx->codec_id != AV_CODEC_ID_PRORES) {
+    } else if (avctx->codec_id != AV_CODEC_ID_PRORES && avctx->codec_id != AV_CODEC_ID_MJPEG) {
         bit_rate_num = CFNumberCreate(kCFAllocatorDefault,
                                       kCFNumberSInt32Type,
                                       &bit_rate);
@@ -1374,7 +1375,7 @@ static int vtenc_create_encoder(AVCodecContext   *avctx,
         }
     }
 
-    if (avctx->gop_size > 0 && avctx->codec_id != AV_CODEC_ID_PRORES) {
+    if (avctx->gop_size > 0 && avctx->codec_id != AV_CODEC_ID_PRORES && avctx->codec_id != AV_CODEC_ID_MJPEG) {
         CFNumberRef interval = CFNumberCreate(kCFAllocatorDefault,
                                               kCFNumberIntType,
                                               &avctx->gop_size);
@@ -1523,7 +1524,7 @@ static int vtenc_create_encoder(AVCodecContext   *avctx,
         }
     }
 
-    if (!vtctx->has_b_frames && avctx->codec_id != AV_CODEC_ID_PRORES) {
+    if (!vtctx->has_b_frames && avctx->codec_id != AV_CODEC_ID_PRORES && avctx->codec_id != AV_CODEC_ID_MJPEG) {
         status = VTSessionSetProperty(vtctx->session,
                                       kVTCompressionPropertyKey_AllowFrameReordering,
                                       kCFBooleanFalse);
@@ -2769,6 +2770,13 @@ static const enum AVPixelFormat prores_pix_fmts[] = {
     AV_PIX_FMT_NONE
 };
 
+static const enum AVPixelFormat mjpeg_pix_fmts[] = {
+    AV_PIX_FMT_VIDEOTOOLBOX,
+    AV_PIX_FMT_NV12,
+    AV_PIX_FMT_YUV420P,
+    AV_PIX_FMT_NONE
+};
+
 #define VE AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_ENCODING_PARAM
 #define COMMON_OPTIONS \
     { "allow_sw", "Allow software encoding", OFFSET(allow_sw), AV_OPT_TYPE_BOOL, \
@@ -2941,6 +2949,38 @@ const FFCodec ff_prores_videotoolbox_encoder = {
     FF_CODEC_ENCODE_CB(vtenc_frame),
     .close            = vtenc_close,
     .p.priv_class     = &prores_videotoolbox_class,
+    .caps_internal    = FF_CODEC_CAP_INIT_CLEANUP,
+    .p.wrapper_name   = "videotoolbox",
+    .hw_configs       = vt_encode_hw_configs,
+};
+
+static const AVOption mjpeg_options[] = {
+    { "allow_sw", "Allow software encoding", OFFSET(allow_sw), AV_OPT_TYPE_BOOL,{ .i64 = 0 }, 0, 1, VE },
+    { NULL },
+};
+
+static const AVClass mjpeg_videotoolbox_class = {
+    .class_name = "mjpeg_videotoolbox",
+    .item_name  = av_default_item_name,
+    .option     = mjpeg_options,
+    .version    = LIBAVUTIL_VERSION_INT,
+};
+
+const FFCodec ff_mjpeg_videotoolbox_encoder = {
+    .p.name           = "mjpeg_videotoolbox",
+    CODEC_LONG_NAME("VideoToolbox MJPEG Encoder"),
+    .p.type           = AVMEDIA_TYPE_VIDEO,
+    .p.id             = AV_CODEC_ID_MJPEG,
+    .p.capabilities   = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_DELAY |
+                        AV_CODEC_CAP_HARDWARE,
+    .priv_data_size   = sizeof(VTEncContext),
+    CODEC_PIXFMTS_ARRAY(mjpeg_pix_fmts),
+    .defaults         = vt_defaults,
+    .color_ranges     = AVCOL_RANGE_MPEG | AVCOL_RANGE_JPEG,
+    .init             = vtenc_init,
+    FF_CODEC_ENCODE_CB(vtenc_frame),
+    .close            = vtenc_close,
+    .p.priv_class     = &mjpeg_videotoolbox_class,
     .caps_internal    = FF_CODEC_CAP_INIT_CLEANUP,
     .p.wrapper_name   = "videotoolbox",
     .hw_configs       = vt_encode_hw_configs,
