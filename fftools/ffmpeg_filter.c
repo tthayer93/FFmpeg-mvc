@@ -1726,9 +1726,22 @@ static int configure_output_video_filter(FilterGraphPriv *fgp, AVFilterGraph *gr
                ofp->format != AV_PIX_FMT_NONE || !ofp->pix_fmts);
     av_bprint_init(&bprint, 0, AV_BPRINT_SIZE_UNLIMITED);
     choose_pix_fmts(ofp, &bprint);
-    choose_color_spaces(ofp, &bprint);
-    choose_color_ranges(ofp, &bprint);
-    choose_alpha_modes(ofp, &bprint);
+    /* SW filter cannot handle color conversions between HW pixel formats. */
+    {
+        int bprint_color_options = 1;
+        if (ofp->format != AV_PIX_FMT_NONE) {
+            const AVPixFmtDescriptor *ofp_fmt_desc;
+
+            ofp_fmt_desc = av_pix_fmt_desc_get(ofp->format);
+            if (ofp_fmt_desc->flags & AV_PIX_FMT_FLAG_HWACCEL)
+                bprint_color_options = 0;
+        }
+        if (bprint_color_options) {
+            choose_color_spaces(ofp, &bprint);
+            choose_color_ranges(ofp, &bprint);
+            choose_alpha_modes(ofp, &bprint);
+        }
+    }
     if (!av_bprint_is_complete(&bprint))
         return AVERROR(ENOMEM);
 
