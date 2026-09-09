@@ -133,16 +133,39 @@ static int h264_pic_held_for_output(const H264Context *h, const H264Picture *pic
 }
 
 /**
- * View selection (view_ids option): selected when no specific view is
- * requested (or -1), or the view's id appears in h->view_ids (validated
- * against the SPS view list by h264_mvc_export()). Single-view streams
- * always select their only view.
+ * View ID of the base view of the adopted multiview SPS: the view with ID 0,
+ * or - defensively, for a stream carrying no view ID 0 - the first view
+ * declared in the SPS. Before any multiview SPS has been adopted the only
+ * view there is, is the base one.
+ */
+int h264_base_view_id(const H264Context *h)
+{
+    const H264MVCSPS *mvc = h->mvc_sps ? &h->mvc_sps->mvc : NULL;
+
+    if (!mvc)
+        return h->views[0].view_id;
+    for (int i = 0; i < (int)mvc->num_views; i++)
+        if ((int)mvc->view_id[i] == 0)
+            return 0;
+    return mvc->view_id[0];
+}
+
+/**
+ * View selection (view_ids option): a view is selected when its id appears in
+ * h->view_ids (validated against the SPS view list by h264_mvc_export()), or
+ * a single -1 was requested (all views). No selection at all selects the base
+ * view only - resolved here, at the decision points, rather than by writing a
+ * default into h->view_ids when the multiview SPS is adopted, so that a
+ * selection made by the caller later always governs the output (see
+ * h264_mvc_export()). Single-view streams always select their only view.
  */
 int h264_view_selected(const H264Context *h, int slot)
 {
     if (h->view_count <= 1)
         return 1;
-    if (!h->nb_view_ids || (h->nb_view_ids == 1 && h->view_ids[0] == -1))
+    if (!h->nb_view_ids)
+        return h->views[slot].view_id == h264_base_view_id(h);
+    if (h->nb_view_ids == 1 && h->view_ids[0] == -1)
         return 1;
     for (unsigned i = 0; i < h->nb_view_ids; i++)
         if (h->views[slot].view_id == h->view_ids[i])

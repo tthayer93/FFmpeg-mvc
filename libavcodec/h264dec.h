@@ -945,6 +945,7 @@ int ff_h264_execute_decode_slices(H264Context *h);
  */
 int ff_h264_complete_truncated_region(H264Context *h);
 int h264_view_selected(const H264Context *h, int slot);
+int h264_base_view_id(const H264Context *h);
 int ff_h264_update_thread_context(AVCodecContext *dst,
                                   const AVCodecContext *src);
 int ff_h264_update_thread_context_for_user(AVCodecContext *dst,
