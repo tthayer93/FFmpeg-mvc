@@ -1066,6 +1066,16 @@ int ff_qsvvpp_filter_frame(QSVVPPContext *s, AVFilterLink *inlink, AVFrame *picr
     return 0;
 }
 
+#if !QSV_ONEVPL || HAVE_LIBVPL_LEGACY_MFXINIT
+
+static int qsvvpp_create_mfx_session_legacy(void *ctx,
+                                            void *loader,
+                                            mfxIMPL implementation,
+                                            mfxVersion *pver,
+                                            mfxSession *psession);
+
+#endif
+
 #if QSV_ONEVPL
 
 int ff_qsvvpp_create_mfx_session(void *ctx,
@@ -1109,6 +1119,15 @@ int ff_qsvvpp_create_mfx_session(void *ctx,
         impl_idx++;
     }
 
+#if HAVE_LIBVPL_LEGACY_MFXINIT
+    if (sts < 0) {
+        av_log(ctx, AV_LOG_VERBOSE, "Error creating a MFX session using oneVPL, "
+               "falling back to retry with the legacy Media SDK path\n");
+        if (!qsvvpp_create_mfx_session_legacy(ctx, loader, implementation, pver, psession))
+            return 0;
+    }
+#endif
+
     if (sts < 0)
         return ff_qsvvpp_print_error(ctx, sts,
                                      "Error creating a MFX session");
@@ -1125,6 +1144,19 @@ int ff_qsvvpp_create_mfx_session(void *ctx,
                                  mfxIMPL implementation,
                                  mfxVersion *pver,
                                  mfxSession *psession)
+{
+    return qsvvpp_create_mfx_session_legacy(ctx, loader, implementation, pver, psession);
+}
+
+#endif
+
+#if !QSV_ONEVPL || HAVE_LIBVPL_LEGACY_MFXINIT
+
+static int qsvvpp_create_mfx_session_legacy(void *ctx,
+                                            void *loader,
+                                            mfxIMPL implementation,
+                                            mfxVersion *pver,
+                                            mfxSession *psession)
 {
     mfxSession session = NULL;
     mfxStatus sts;

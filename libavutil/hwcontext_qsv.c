@@ -827,6 +827,18 @@ static mfxStatus frame_get_hdl(mfxHDL pthis, mfxMemId mid, mfxHDL *hdl)
     return MFX_ERR_NONE;
 }
 
+#if !QSV_ONEVPL || HAVE_LIBVPL_LEGACY_MFXINIT
+
+static int qsv_create_mfx_session_legacy(void *ctx,
+                                         mfxHDL handle,
+                                         mfxHandleType handle_type,
+                                         mfxIMPL implementation,
+                                         mfxVersion *pver,
+                                         mfxSession *psession,
+                                         void **ploader);
+
+#endif
+
 #if QSV_ONEVPL
 
 static int qsv_d3d11_update_config(void *ctx, mfxHDL handle, mfxConfig cfg)
@@ -1218,6 +1230,16 @@ static int qsv_create_mfx_session(void *ctx,
     return 0;
 
 fail:
+#if HAVE_LIBVPL_LEGACY_MFXINIT
+    av_log(ctx, AV_LOG_VERBOSE, "Error creating a MFX session using oneVPL, "
+           "falling back to retry with the legacy Media SDK path\n");
+    if (!qsv_create_mfx_session_legacy(ctx, handle, handle_type, implementation, pver, psession, ploader)) {
+        if (!*ploader)
+            *ploader = loader;
+        return 0;
+    }
+#endif
+
     if (!*ploader && loader)
         MFXUnload(loader);
 
@@ -1233,6 +1255,21 @@ static int qsv_create_mfx_session(void *ctx,
                                   mfxVersion *pver,
                                   mfxSession *psession,
                                   void **ploader)
+{
+    return qsv_create_mfx_session_legacy(ctx, handle, handle_type, implementation, pver, psession, ploader);
+}
+
+#endif
+
+#if !QSV_ONEVPL || HAVE_LIBVPL_LEGACY_MFXINIT
+
+static int qsv_create_mfx_session_legacy(void *ctx,
+                                         mfxHDL handle,
+                                         mfxHandleType handle_type,
+                                         mfxIMPL implementation,
+                                         mfxVersion *pver,
+                                         mfxSession *psession,
+                                         void **ploader)
 {
     mfxVersion ver;
     mfxStatus sts;

@@ -499,6 +499,17 @@ static int ff_qsv_set_display_handle(AVCodecContext *avctx, QSVSession *qs)
 }
 #endif //AVCODEC_QSV_LINUX_SESSION_HANDLE
 
+#if !QSV_ONEVPL || HAVE_LIBVPL_LEGACY_MFXINIT
+
+static int qsv_create_mfx_session_legacy(AVCodecContext *avctx,
+                                         mfxIMPL implementation,
+                                         mfxVersion *pver,
+                                         int gpu_copy,
+                                         mfxSession *psession,
+                                         void **ploader);
+
+#endif
+
 #if QSV_ONEVPL
 static int qsv_new_mfx_loader(AVCodecContext *avctx,
                               mfxIMPL implementation,
@@ -639,6 +650,16 @@ static int qsv_create_mfx_session(AVCodecContext *avctx,
     return 0;
 
 fail:
+#if HAVE_LIBVPL_LEGACY_MFXINIT
+    av_log(avctx, AV_LOG_VERBOSE, "Error creating a MFX session using oneVPL, "
+           "falling back to retry with the legacy Media SDK path\n");
+    if (!qsv_create_mfx_session_legacy(avctx, implementation, pver, gpu_copy, psession, ploader)) {
+        if (!*ploader)
+            *ploader = loader;
+        return 0;
+    }
+#endif
+
     if (!*ploader && loader)
         MFXUnload(loader);
 
@@ -653,6 +674,20 @@ static int qsv_create_mfx_session(AVCodecContext *avctx,
                                   int gpu_copy,
                                   mfxSession *psession,
                                   void **ploader)
+{
+    return qsv_create_mfx_session_legacy(avctx, implementation, pver, gpu_copy, psession, ploader);
+}
+
+#endif
+
+#if !QSV_ONEVPL || HAVE_LIBVPL_LEGACY_MFXINIT
+
+static int qsv_create_mfx_session_legacy(AVCodecContext *avctx,
+                                         mfxIMPL implementation,
+                                         mfxVersion *pver,
+                                         int gpu_copy,
+                                         mfxSession *psession,
+                                         void **ploader)
 {
     mfxInitParam init_par = { MFX_IMPL_AUTO_ANY };
     mfxSession session = NULL;

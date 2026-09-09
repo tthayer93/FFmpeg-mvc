@@ -1190,7 +1190,7 @@ static int init_video_param(AVCodecContext *avctx, QSVEncContext *q)
 
 #if QSV_HAVE_EXT_AV1_PARAM
     if (avctx->codec_id == AV_CODEC_ID_AV1) {
-        if (QSV_RUNTIME_VERSION_ATLEAST(q->ver, 2, 5)) {
+        if (QSV_RUNTIME_VERSION_ATLEAST(q->ver, 1, 255)) { // (2, 5)
             q->extav1tileparam.Header.BufferId = MFX_EXTBUFF_AV1_TILE_PARAM;
             q->extav1tileparam.Header.BufferSz = sizeof(q->extav1tileparam);
             q->extav1tileparam.NumTileColumns  = q->tile_cols;
@@ -1414,7 +1414,7 @@ static int qsv_retrieve_enc_av1_params(AVCodecContext *avctx, QSVEncContext *q)
         (mfxExtBuffer*)&co3,
     };
 
-    if (!QSV_RUNTIME_VERSION_ATLEAST(q->ver, 2, 5)) {
+    if (!QSV_RUNTIME_VERSION_ATLEAST(q->ver, 1, 255)) { // (2, 5)
         av_log(avctx, AV_LOG_ERROR,
                "This version of runtime doesn't support AV1 encoding\n");
         return AVERROR_UNKNOWN;
