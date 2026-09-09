@@ -450,6 +450,9 @@ static int out_format_is_supported(enum AVPixelFormat fmt)
     return 0;
 }
 
+/* the tone-mapping curves below were ported from the GPU tonemap shader,
+ * whose algorithm was ported from:
+ * libplacebo (https://github.com/haasn/libplacebo) */
 static float hable(float in)
 {
     float a = 0.15f, b = 0.50f, c = 0.10f, d = 0.20f, e = 0.02f, f = 0.30f;
