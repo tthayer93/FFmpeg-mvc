@@ -20,6 +20,7 @@
 #define AVFILTER_OPENCL_SOURCE_H
 
 extern const char *ff_source_avgblur_cl;
+extern const char *ff_source_bwdif_cl;
 extern const char *ff_source_colorkey_cl;
 extern const char *ff_source_colorspace_common_cl;
 extern const char *ff_source_convolution_cl;
@@ -34,5 +35,6 @@ extern const char *ff_source_tonemap_cl;
 extern const char *ff_source_transpose_cl;
 extern const char *ff_source_unsharp_cl;
 extern const char *ff_source_xfade_cl;
+extern const char *ff_source_yadif_cl;
 
 #endif /* AVFILTER_OPENCL_SOURCE_H */

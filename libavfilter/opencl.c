@@ -86,9 +86,17 @@ int ff_opencl_filter_config_input(AVFilterLink *inlink)
 
 int ff_opencl_filter_config_output(AVFilterLink *outlink)
 {
-    FilterLink            *l = ff_filter_link(outlink);
     AVFilterContext   *avctx = outlink->src;
     OpenCLFilterContext *ctx = avctx->priv;
+
+    return ff_opencl_filter_config_output2(outlink, ctx);
+}
+
+int ff_opencl_filter_config_output2(AVFilterLink *outlink,
+                                    OpenCLFilterContext *ctx)
+{
+    FilterLink            *l = ff_filter_link(outlink);
+    AVFilterContext   *avctx = outlink->src;
     AVBufferRef       *output_frames_ref = NULL;
     AVHWFramesContext *output_frames;
     int err;
@@ -151,6 +159,13 @@ int ff_opencl_filter_init(AVFilterContext *avctx)
 void ff_opencl_filter_uninit(AVFilterContext *avctx)
 {
     OpenCLFilterContext *ctx = avctx->priv;
+
+    ff_opencl_filter_uninit2(avctx, ctx);
+}
+
+void ff_opencl_filter_uninit2(AVFilterContext *avctx,
+                              OpenCLFilterContext *ctx)
+{
     cl_int cle;
 
     if (ctx->program) {
@@ -191,6 +206,16 @@ int ff_opencl_filter_load_program(AVFilterContext *avctx,
                                   int nb_strings)
 {
     OpenCLFilterContext *ctx = avctx->priv;
+
+    return ff_opencl_filter_load_program2(avctx, ctx,
+                                          program_source_array, nb_strings);
+}
+
+int ff_opencl_filter_load_program2(AVFilterContext *avctx,
+                                   OpenCLFilterContext *ctx,
+                                   const char **program_source_array,
+                                   int nb_strings)
+{
     cl_int cle;
 
     ctx->program = clCreateProgramWithSource(ctx->hwctx->context, nb_strings,

@@ -224,6 +224,8 @@ OBJS-$(CONFIG_BOXBLUR_OPENCL_FILTER)         += vf_avgblur_opencl.o opencl.o \
 OBJS-$(CONFIG_BWDIF_FILTER)                  += vf_bwdif.o bwdifdsp.o yadif_common.o
 OBJS-$(CONFIG_BWDIF_CUDA_FILTER)             += vf_bwdif_cuda.o vf_bwdif_cuda.ptx.o \
                                                 yadif_common.o
+OBJS-$(CONFIG_BWDIF_OPENCL_FILTER)           += vf_bwdif_opencl.o opencl.o opencl/bwdif.o \
+                                                yadif_common.o
 OBJS-$(CONFIG_BWDIF_VIDEOTOOLBOX_FILTER)     += vf_bwdif_videotoolbox.o \
                                                 metal/vf_bwdif_videotoolbox.metallib.o \
                                                 metal/utils.o \
@@ -609,6 +611,8 @@ OBJS-$(CONFIG_XSTACK_FILTER)                 += vf_stack.o framesync.o
 OBJS-$(CONFIG_YADIF_FILTER)                  += vf_yadif.o yadif_common.o
 OBJS-$(CONFIG_YADIF_CUDA_FILTER)             += vf_yadif_cuda.o vf_yadif_cuda.ptx.o \
                                                 yadif_common.o cuda/load_helper.o
+OBJS-$(CONFIG_YADIF_OPENCL_FILTER)           += vf_yadif_opencl.o opencl.o opencl/yadif.o \
+                                                yadif_common.o
 OBJS-$(CONFIG_YADIF_VIDEOTOOLBOX_FILTER)     += vf_yadif_videotoolbox.o \
                                                 metal/vf_yadif_videotoolbox.metallib.o \
                                                 metal/utils.o \

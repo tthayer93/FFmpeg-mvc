@@ -256,6 +256,9 @@ int ff_opencl_filter_config_input(AVFilterLink *inlink);
  */
 int ff_opencl_filter_config_output(AVFilterLink *outlink);
 
+int ff_opencl_filter_config_output2(AVFilterLink *outlink,
+                                    OpenCLFilterContext *ctx);
+
 /**
  * Initialise an OpenCL filter context.
  */
@@ -266,6 +269,9 @@ int ff_opencl_filter_init(AVFilterContext *avctx);
  */
 void ff_opencl_filter_uninit(AVFilterContext *avctx);
 
+void ff_opencl_filter_uninit2(AVFilterContext *avctx,
+                              OpenCLFilterContext *ctx);
+
 /**
  * Load a new OpenCL program from strings in memory.
  *
@@ -275,6 +281,11 @@ void ff_opencl_filter_uninit(AVFilterContext *avctx);
 int ff_opencl_filter_load_program(AVFilterContext *avctx,
                                   const char **program_source_array,
                                   int nb_strings);
+
+int ff_opencl_filter_load_program2(AVFilterContext *avctx,
+                                   OpenCLFilterContext *ctx,
+                                   const char **program_source_array,
+                                   int nb_strings);
 
 /**
  * Load a new OpenCL program from a file.
