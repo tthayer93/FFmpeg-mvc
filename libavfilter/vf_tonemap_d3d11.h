@@ -1,5 +1,5 @@
 /*
- * D3D11 HLSL shader source declarations
+ * D3D11 tonemap filter shader constants
  *
  * Copyright (C) 2026 Gnattu OC <gnattuoc@me.com>
  *
@@ -20,11 +20,10 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#ifndef AVFILTER_D3D11_SOURCE_H
-#define AVFILTER_D3D11_SOURCE_H
+#ifndef AVFILTER_TONEMAP_D3D11_H
+#define AVFILTER_TONEMAP_D3D11_H
 
-extern const char *ff_source_deint_hlsl;
-extern const char *ff_source_overlay_hlsl;
-extern const char *ff_source_tonemap_hlsl;
+#define TONEMAP_D3D11_TGX 16
+#define TONEMAP_D3D11_TGY 16
 
-#endif /* AVFILTER_D3D11_SOURCE_H */
+#endif /* AVFILTER_TONEMAP_D3D11_H */

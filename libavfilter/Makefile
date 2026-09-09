@@ -560,6 +560,7 @@ OBJS-$(CONFIG_TONEMAP_FILTER)                += vf_tonemap.o
 OBJS-$(CONFIG_TONEMAPX_FILTER)               += vf_tonemapx.o
 OBJS-$(CONFIG_TONEMAP_CUDA_FILTER)           += vf_tonemap_cuda.o cuda/tonemap.ptx.o \
                                                 cuda/host_util.o cuda/load_helper.o
+OBJS-$(CONFIG_TONEMAP_D3D11_FILTER)           += vf_tonemap_d3d11.o d3d11/tonemap.o d3d11_filter.o
 OBJS-$(CONFIG_TONEMAP_OPENCL_FILTER)         += vf_tonemap_opencl.o opencl.o \
                                                 opencl/tonemap.o opencl/colorspace_common.o
 OBJS-$(CONFIG_TONEMAP_VAAPI_FILTER)          += vf_tonemap_vaapi.o vaapi_vpp.o

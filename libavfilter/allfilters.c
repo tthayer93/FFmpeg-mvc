@@ -520,6 +520,7 @@ extern const FFFilter ff_vf_tmix;
 extern const FFFilter ff_vf_tonemap;
 extern const FFFilter ff_vf_tonemapx;
 extern const FFFilter ff_vf_tonemap_cuda;
+extern const FFFilter ff_vf_tonemap_d3d11;
 extern const FFFilter ff_vf_tonemap_opencl;
 extern const FFFilter ff_vf_tonemap_vaapi;
 extern const FFFilter ff_vf_tonemap_videotoolbox;
