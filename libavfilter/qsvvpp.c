@@ -70,6 +70,36 @@ static const struct {
 #endif
 };
 
+extern int ff_qsvvpp_check_dynamic_pool_supported(AVHWDeviceContext *device_ctx);
+
+int ff_qsvvpp_check_dynamic_pool_supported(AVHWDeviceContext *device_ctx)
+{
+    AVQSVDeviceContext *device_hwctx;
+    mfxIMPL impl;
+    mfxVersion ver;
+    int ret;
+
+    if (!device_ctx || device_ctx->type != AV_HWDEVICE_TYPE_QSV)
+        return AVERROR(EINVAL);
+
+    device_hwctx = device_ctx->hwctx;
+
+    ret = MFXQueryIMPL(device_hwctx->session, &impl);
+    if (ret == MFX_ERR_NONE)
+        ret = MFXQueryVersion(device_hwctx->session, &ver);
+    if (ret != MFX_ERR_NONE)
+        return AVERROR_UNKNOWN;
+
+    if (!QSV_RUNTIME_VERSION_ATLEAST(ver, 2, 9))
+        return AVERROR(ENOSYS);
+
+    if (!(MFX_IMPL_VIA_VAAPI == MFX_IMPL_VIA_MASK(impl) ||
+          MFX_IMPL_VIA_D3D11 == MFX_IMPL_VIA_MASK(impl)))
+        return AVERROR(ENOSYS);
+
+    return 0;
+}
+
 int ff_qsvvpp_print_iopattern(void *log_ctx, int mfx_iopattern,
                               const char *extra_string)
 {

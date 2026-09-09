@@ -32,6 +32,10 @@
 #include "formats.h"
 #include "video.h"
 
+#if CONFIG_QSVVPP
+extern int ff_qsvvpp_check_dynamic_pool_supported(AVHWDeviceContext *device_ctx);
+#endif
+
 typedef struct HWUploadContext {
     const AVClass *class;
 
@@ -168,6 +172,15 @@ static int hwupload_config_output(AVFilterLink *outlink)
     if (ctx->hwframes->format == AV_PIX_FMT_D3D11) {
         AVD3D11VAFramesContext *frames_d3d11 = ctx->hwframes->hwctx;
         frames_d3d11->BindFlags = D3D11_BIND_DECODER;
+    }
+#endif
+
+#if CONFIG_QSVVPP
+    if (ctx->hwframes->format == AV_PIX_FMT_QSV) {
+        AVHWDeviceContext *qsv_ctx = (AVHWDeviceContext *)ctx->hwdevice_ref->data;
+        if (!ff_qsvvpp_check_dynamic_pool_supported(qsv_ctx)) {
+            ctx->hwframes->initial_pool_size = 0;
+        }
     }
 #endif
 
