@@ -16,20 +16,15 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#ifndef AVFILTER_CUDA_LOAD_HELPER_H
-#define AVFILTER_CUDA_LOAD_HELPER_H
+#ifndef AVFILTER_CUDA_HOST_UTIL_H
+#define AVFILTER_CUDA_HOST_UTIL_H
 
-/**
- * Loads a CUDA module and applies any decompression, if necessary.
- */
-int ff_cuda_load_module(void *avctx, AVCUDADeviceContext *hwctx, CUmodule *cu_module,
-                        const unsigned char *data, const unsigned int length);
+#include "libavutil/frame.h"
+#include "libavutil/pixdesc.h"
+#include "libavfilter/avfilter.h"
+#include "shared.h"
 
-/**
- * Adds a PTX data to a pending linker invocation and applies any decompression, if necessary.
- */
-int ff_cuda_link_add_data(void *avctx, AVCUDADeviceContext *hwctx,
-                          CUlinkState state, const char* name,
-                          const unsigned char *data, const unsigned int length);
+int ff_make_cuda_frame(AVFilterContext *ctx, CudaFunctions *cu, int make_cu_tex,
+                       FFCUDAFrame *dst, const AVFrame *src, const AVPixFmtDescriptor *src_desc);
 
-#endif /* AVFILTER_CUDA_LOAD_HELPER_H */
+#endif /* AVFILTER_CUDA_HOST_UTIL_H */

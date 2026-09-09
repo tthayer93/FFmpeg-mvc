@@ -16,20 +16,18 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#ifndef AVFILTER_CUDA_LOAD_HELPER_H
-#define AVFILTER_CUDA_LOAD_HELPER_H
+#ifndef AVFILTER_CUDA_SHARED_H
+#define AVFILTER_CUDA_SHARED_H
 
-/**
- * Loads a CUDA module and applies any decompression, if necessary.
- */
-int ff_cuda_load_module(void *avctx, AVCUDADeviceContext *hwctx, CUmodule *cu_module,
-                        const unsigned char *data, const unsigned int length);
+typedef struct FFCUDAFrame {
+    unsigned char *data[4];
+    int linesize[4];
+    int width, height;
+    int planes;
 
-/**
- * Adds a PTX data to a pending linker invocation and applies any decompression, if necessary.
- */
-int ff_cuda_link_add_data(void *avctx, AVCUDADeviceContext *hwctx,
-                          CUlinkState state, const char* name,
-                          const unsigned char *data, const unsigned int length);
+    float peak;
 
-#endif /* AVFILTER_CUDA_LOAD_HELPER_H */
+    unsigned long long tex[4];
+} FFCUDAFrame;
+
+#endif /* AVFILTER_CUDA_SHARED_H */

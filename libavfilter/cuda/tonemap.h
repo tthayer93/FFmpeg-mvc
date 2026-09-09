@@ -16,20 +16,28 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#ifndef AVFILTER_CUDA_LOAD_HELPER_H
-#define AVFILTER_CUDA_LOAD_HELPER_H
+#ifndef AVFILTER_CUDA_TONEMAP_H
+#define AVFILTER_CUDA_TONEMAP_H
 
-/**
- * Loads a CUDA module and applies any decompression, if necessary.
- */
-int ff_cuda_load_module(void *avctx, AVCUDADeviceContext *hwctx, CUmodule *cu_module,
-                        const unsigned char *data, const unsigned int length);
+enum TonemapAlgorithm {
+    TONEMAP_NONE,
+    TONEMAP_LINEAR,
+    TONEMAP_GAMMA,
+    TONEMAP_CLIP,
+    TONEMAP_REINHARD,
+    TONEMAP_HABLE,
+    TONEMAP_MOBIUS,
+    TONEMAP_BT2390,
+    TONEMAP_COUNT,
+};
 
-/**
- * Adds a PTX data to a pending linker invocation and applies any decompression, if necessary.
- */
-int ff_cuda_link_add_data(void *avctx, AVCUDADeviceContext *hwctx,
-                          CUlinkState state, const char* name,
-                          const unsigned char *data, const unsigned int length);
+enum TonemapMode {
+    TONEMAP_MODE_MAX,
+    TONEMAP_MODE_RGB,
+    TONEMAP_MODE_LUM,
+    TONEMAP_MODE_ITP,
+    TONEMAP_MODE_AUTO,
+    TONEMAP_MODE_COUNT,
+};
 
-#endif /* AVFILTER_CUDA_LOAD_HELPER_H */
+#endif /* AVFILTER_CUDA_TONEMAP_H */

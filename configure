@@ -3522,6 +3522,8 @@ scale_cuda_filter_deps="ffnvcodec"
 scale_cuda_filter_deps_any="cuda_nvcc cuda_llvm"
 thumbnail_cuda_filter_deps="ffnvcodec"
 thumbnail_cuda_filter_deps_any="cuda_nvcc cuda_llvm"
+tonemap_cuda_filter_deps="ffnvcodec const_nan"
+tonemap_cuda_filter_deps_any="cuda_nvcc cuda_llvm"
 transpose_npp_filter_deps="ffnvcodec libnpp"
 overlay_cuda_filter_deps="ffnvcodec"
 overlay_cuda_filter_deps_any="cuda_nvcc cuda_llvm"
@@ -4987,6 +4989,15 @@ if enabled cuda_nvcc; then
     if $nvcc $nvccflags_default 2>&1 | grep -qi unsupported; then
         nvccflags_default="-gencode arch=compute_75,code=sm_75 -O2"
     fi
+else
+    clang_version=$($nvcc -dumpversion 2>/dev/null || echo 0)
+    # clang-11+ allows disabling reassociate with progma when fast-math is enabled
+    test ${clang_version%%[!0-9]*} -ge 11 && append nvccflags_default "-ffast-math"
+
+    # clang-20 emits ptx60 instruction 'brx.idx' even for ptx32 target (llvm/llvm-project@ccc3127)
+    # default to ptx60/sm_30 to follow the changes made in clang-16+ (llvm/llvm-project@d677505)
+    # '--cuda-feature=+ptx*' option is not available before clang-15
+    test ${clang_version%%[!0-9]*} -ge 15 && append nvccflags_default "--cuda-feature=+ptx60"
 fi
 
 set_default arch cc cxx doxygen pkg_config ranlib strip sysinclude \
@@ -7117,7 +7128,7 @@ fi
 if enabled cuda_nvcc; then
     nvccflags="$nvccflags -ptx"
 else
-    nvccflags="$nvccflags -S -nocudalib -nocudainc --cuda-device-only -Wno-c++11-narrowing -include ${source_link}/compat/cuda/cuda_runtime.h"
+    nvccflags="$nvccflags -S -nocudalib -nocudainc --cuda-device-only -Wno-c++11-narrowing -std=c++14 -include ${source_link}/compat/cuda/cuda_runtime.h"
     check_nvcc cuda_llvm
 fi
 
