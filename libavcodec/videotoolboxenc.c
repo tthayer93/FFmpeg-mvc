@@ -1050,9 +1050,10 @@ static int create_cv_pixel_buffer_info(AVCodecContext* avctx,
     CFNumberRef width_num = NULL;
     CFNumberRef height_num = NULL;
     CFMutableDictionaryRef pixel_buffer_info = NULL;
+    enum AVPixelFormat pix_fmt = avctx->pix_fmt == AV_PIX_FMT_VIDEOTOOLBOX ? avctx->sw_pix_fmt : avctx->pix_fmt;
     int cv_color_format;
     int status = get_cv_pixel_format(avctx,
-                                     avctx->pix_fmt,
+                                     pix_fmt,
                                      avctx->color_range,
                                      &cv_color_format,
                                      NULL);
@@ -1723,11 +1724,9 @@ static int vtenc_configure_encoder(AVCodecContext *avctx)
                              kCFBooleanTrue);
     }
 
-    if (avctx->pix_fmt != AV_PIX_FMT_VIDEOTOOLBOX) {
-        status = create_cv_pixel_buffer_info(avctx, &pixel_buffer_info);
-        if (status)
-            goto init_cleanup;
-    }
+    status = create_cv_pixel_buffer_info(avctx, &pixel_buffer_info);
+    if (status)
+        goto init_cleanup;
 
     vtctx->dts_delta = vtctx->has_b_frames ? -1 : 0;
 
