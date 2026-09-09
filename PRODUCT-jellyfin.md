@@ -219,3 +219,7 @@ The FFmpeg codebase is licensed under the LGPLv2.1 (optionally GPLv3); this
 branch changes no licensing posture. An open-source software license is not
 a patent grant: decoding H.264/MVC may require patent licensing depending on
 your jurisdiction and use case.
+
+## Ship ledger
+
+- Ship identity (2026-09-09): the late-adoption fix ships as n8.1.2-mvc2-jf4. The ports-only build previously issued under this name (commit 09a7dcb635) is withdrawn by owner direction; its tag was deleted and the name reused for this combined ship. The mvc counter is shared across lines; see tag messages.
