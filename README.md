@@ -8,13 +8,10 @@ for 2D+delta streams.
 
 ## Experimental status
 
-The multiview support added by this fork is experimental. It carries no
-stability promises: option behaviour and output details may change
-between releases, and damaged streams are handled on a best-effort
-concealment basis. The tagged releases on the `release/8.1`,
-`release/9.0`, and `jellyfin-8.1` branches are the recommended pins;
-`master` is a rolling development line. As always with FFmpeg, there is
-no warranty of any kind.
+The H.264/MVC support added by this fork is experimental: option
+behaviour and output details may change between releases, and damaged
+streams are handled on a best-effort basis. Build from a tagged
+release rather than `master` if you need reproducibility.
 
 ## H.264/MVC support
 
@@ -36,102 +33,91 @@ no warranty of any kind.
 See the "Multiview video (H.264/MVC)" section of the ffmpeg docs
 (doc/ffmpeg.texi) and the h264 decoder entry (doc/decoders.texi).
 
-## Building
+## Hardware Acceleration
+
+Hardware acceleration is not supported. Hardware video decoders do
+not implement the H.264/MVC extension: upstream hardware decode APIs
+have no path for the Annex E dependent-view bitstreams, and this
+fork's composed pairing is decoder-internal state that a hardware
+path cannot carry. Requests for hardware acceleration log a warning
+and decoding falls back to software.
+
+## Building and installing
 
 Building needs the usual FFmpeg build tools: a C compiler (gcc or
-clang), `make`, `pkg-config` (used to locate external libraries such
-as x264), and `nasm` on x86. The examples below encode with
-`libx264`, which is GPL-licensed, so configure with GPL enabled and the
-x264 development files installed:
+clang), `make`, `pkg-config` (to locate external libraries), and
+`nasm` on x86. The default build decodes and encodes with all
+built-in components, including the MVC decoder:
+
+    ./configure
+    make -j"$(nproc)"
+
+To add x264 encoding (GPL) to the build:
 
     ./configure --enable-gpl --enable-libx264
     make -j"$(nproc)"
 
-The freshly built `ffmpeg` and `ffprobe` land in the build root and can
-be run from there. To build a specific release, check out its tag first
-(see "Branches and releases"):
-
-    git checkout n8.1.2-mvc3
-
-`./configure --help` lists every option, including optional external
-libraries.
-
-## Installing
-
-    sudo make install
-
-installs into `/usr/local` by default. Pass `--prefix` to `configure` to
-choose another location, or `DESTDIR=` to `make install` when packaging.
-If you configured `--enable-shared` and installed to a prefix the
-dynamic loader does not know yet, run `sudo ldconfig` (or add the
-library directory to the loader configuration) before first use.
+`ffmpeg` and `ffprobe` land in the build root and can run from
+there; `sudo make install` installs into `/usr/local` (relocate with
+`--prefix`, or `DESTDIR=` when packaging; with `--enable-shared`, run
+`sudo ldconfig` before first use). For a specific release, check out
+its tag first.
 
 ## Usage
 
-A multiview stream decodes to its base view by default, so an ordinary
-transcode yields the plain 2D video:
+A multiview stream decodes to its base view by default, so an
+ordinary transcode yields the plain 2D video:
 
-    ffmpeg -i in.mkv -c:v libx264 -crf 20 out.mp4
+    ffmpeg -i in.mkv -c:v ffv1 out.mkv
 
-To reach the other views, select them explicitly. The legacy `view_ids`
-option picks views when the stream is opened, so it must be placed
-**before** `-i`; the same selection can be made with `-map` view
-specifiers after `-i`, which the ffmpeg docs recommend (the legacy
-form prints a non-fatal hint saying so). The examples below convert a
-two-view `.mkv` remux of a 3D movie; swap in your own encoder settings.
+To reach the other views, select them explicitly. The legacy
+`view_ids` option goes **before** `-i`; the `-map` view specifiers go
+after `-i` (the two forms cannot be mixed). The examples below
+convert a two-view `.mkv` of a 3D movie and use FFV1, the built-in
+lossless encoder, so they run on the default build; for smaller
+files substitute your own encoder (for example `-c:v libx264 -crf
+20` with the GPL build above).
 
-One view only (the two eyes of the title as separate files):
+One view only:
 
-    ffmpeg -view_ids 0 -i in.mkv -c:v libx264 -crf 20 view0.mp4
-    ffmpeg -view_ids 1 -i in.mkv -c:v libx264 -crf 20 view1.mp4
+    ffmpeg -view_ids 0 -i in.mkv -c:v ffv1 view0.mkv
+    ffmpeg -view_ids 1 -i in.mkv -c:v ffv1 view1.mkv
 
-The output-side form of the same selection:
+The same with the newer selectors: `-map 0:v:view:0` (or `view:1`)
+after `-i`. View 0 is the base view; which physical eye it carries
+varies by release, so check a short clip before a long job.
 
-    ffmpeg -i in.mkv -map 0:v:view:1 -c:v libx264 -crf 20 view1.mp4
+All views, composed into one native side-by-side frame per access
+unit:
 
-View 0 is the base view; which physical eye each view feeds depends on
-the release, so render a short clip and check before committing to a
-long job.
+    ffmpeg -view_ids -1 -i in.mkv -c:v ffv1 sbs.mkv
 
-All views of a two-view stream, composed into one native side-by-side
-frame per access unit:
-
-    ffmpeg -view_ids -1 -i in.mkv -c:v libx264 -crf 20 sbs.mp4
-
-Those frames are tagged as side-by-side, which most players honour. To
-bake a display format into the pixels instead, follow the decoder with
-the upstream `stereo3d` filter:
+The frames are tagged side-by-side, which most players honour. To
+bake a display format into the pixels, add the `stereo3d` filter:
 
     # half-width side-by-side
     ffmpeg -view_ids -1 -i in.mkv \
-        -vf "stereo3d=in=sbsl:out=sbs2l" -c:v libx264 -crf 20 sbs_half.mp4
+        -vf "stereo3d=in=sbsl:out=sbs2l" -c:v ffv1 sbs_half.mkv
 
     # half-height top-and-bottom
     ffmpeg -view_ids -1 -i in.mkv \
-        -vf "stereo3d=in=sbsl:out=tb2l" -c:v libx264 -crf 20 tab.mp4
+        -vf "stereo3d=in=sbsl:out=tb2l" -c:v ffv1 tab.mkv
 
-    # red/cyan anaglyph (other red/cyan styles: arch, arcc; green/magenta: agmg)
+    # red/cyan anaglyph (also: arch, arcc; green/magenta: agmg)
     ffmpeg -view_ids -1 -i in.mkv \
-        -vf "stereo3d=in=sbsl:out=arcd" -c:v libx264 -crf 20 anaglyph.mp4
+        -vf "stereo3d=in=sbsl:out=arcd" -c:v ffv1 anaglyph.mkv
 
-If the first view of the title is its **right** eye, say so with
-`in=sbsr` instead of `in=sbsl`. Composed decoding (`-view_ids -1` or
+If the first view is the title's **right** eye, use `in=sbsr`
+instead of `in=sbsl`. Composed decoding (`-view_ids -1` or
 `-map 0:v:view:all`) runs both views through one single-threaded
-pipeline to keep them correctly paired, so it is slower than
-single-view decoding. A damaged dependent view is completed against
-the base view with a console warning; when the two halves cannot be
-paired, standalone half frames are delivered rather than dropped.
-The `-map` view specifiers (`-map 0:v:view:0`,
-`-map 0:v:view:1`, or `-map 0:v:view:all` for the composed pair) are
-the recommended, non-legacy form of the same selection; the two forms
-cannot be mixed in one invocation.
+pipeline to keep them paired, so it is slower than single-view
+decoding. A damaged dependent view is completed against the base
+view with a console warning; when the halves cannot be paired,
+standalone half frames are delivered rather than dropped.
 
-For media servers (for example Jellyfin or Emby), build the
-`jellyfin-8.1` branch (operator notes: `PRODUCT-jellyfin.md` on that
-branch): transcodes run without view options behave exactly like plain
-FFmpeg (base view, plain 2D), and the multiview paths above are
-available wherever the server allows custom encoder or filter
-arguments.
+For media servers (Jellyfin, Emby), build the `jellyfin-8.1`
+branch: transcodes without view options behave exactly like plain
+FFmpeg (operator notes: `PRODUCT-jellyfin.md` on that branch).
 
 ## Branches and releases
 
@@ -144,14 +130,6 @@ arguments.
   without multiview options. Code taken from jellyfin/jellyfin-ffmpeg is
   attributed in the commits that carry it; operator notes are in
   `PRODUCT-jellyfin.md` on that branch.
-
-Current pins — the release banner of a build matches its tag:
-
-| Branch         | Pin              |
-|----------------|------------------|
-| `release/8.1`  | `n8.1.2-mvc3`    |
-| `release/9.0`  | `n9.0.1-mvc3`    |
-| `jellyfin-8.1` | `n8.1.2-mvc3-jf4` |
 
 Fork release names are the upstream FFmpeg release name plus a fork
 generation suffix (`-mvcN`, or `-jfN` on the product line).
