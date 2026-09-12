@@ -41,6 +41,7 @@
 
 #include "codec_internal.h"
 #include "internal.h"
+#include "avcodec_internal.h"
 #include "error_resilience.h"
 #include "avcodec.h"
 #include "h264.h"
@@ -357,6 +358,55 @@ static void h264_free_pic(H264Context *h, H264Picture *pic)
     av_frame_free(&pic->f_grain);
 }
 
+/* ------------------------------------------------------------------------
+ * Composed-pairing queues: the pending halves of the allviews side-by-side
+ * output (see h264_sbs_process()).
+ * -------------------------------------------------------------------- */
+
+/* Is this picture pending in a compose pairing queue?
+ *
+ * A picture survives the DPB's housekeeping while it carries a reference
+ * marking or while some output list still names it - the delayed output
+ * queues, the committed and parked slots - and every scan that maintains the
+ * pins knows those lists (h264_pic_held_for_output() in h264_slice.c, the
+ * keep-DELAYED branches in h264_refs.c). A half waiting to be paired is
+ * held for output too, but it has already left its view's delayed queue:
+ * the emission that handed it to the compose stage popped it. Without this
+ * report, reference maintenance on a queued half (an MMCO, an inter-view
+ * cleanup, an IDR refresh) clears its hold pin, release_unused_pictures()
+ * unrefs the slot, and the next decoded picture takes it over - leaving the
+ * queue to hand out a picture that is somebody else's by then. */
+int ff_h264_pic_held_for_compose(const H264Context *h,
+                                 const H264Picture *pic)
+{
+    for (int r = 0; r < 2; r++)
+        for (int i = 0; i < H264_SBS_PAIR_Q_SIZE; i++)
+            if ((const H264Picture *)h->sbs_pair_q[r][i] == pic)
+                return 1;
+    return 0;
+}
+
+/* Forget the compose pairing queues, retiring the hold pins of the halves
+ * still pending in them. Must run before any reference reset that could
+ * otherwise re-pin those halves through the keep-DELAYED path, so that
+ * forgetting the queues cannot strand a pin no list owns any more
+ * (ff_h264_flush_change()); h264_decode_end() clears them on the way out
+ * with the rest of the DPB. */
+static void h264_sbs_q_clear(H264Context *h)
+{
+    for (int r = 0; r < 2; r++) {
+        for (int i = 0; i < H264_SBS_PAIR_Q_SIZE; i++) {
+            H264Picture *p = h->sbs_pair_q[r][i];
+
+            if (p)
+                p->reference &= ~DELAYED_PIC_REF;
+            h->sbs_pair_q[r][i] = NULL;
+        }
+        h->sbs_pair_head[r]  = 0;
+        h->sbs_pair_count[r] = 0;
+    }
+}
+
 /**
  * Export the available multiview view IDs, notice the caller if it requested
  * no specific views (the base view is then decoded - by h264_view_selected(),
@@ -513,6 +563,11 @@ static av_cold int h264_decode_end(AVCodecContext *avctx)
     }
     for (i = 0; i < H264_MAX_MVC_VIEWS; i++)
         memset(h->views[i].delayed_pic, 0, sizeof(h->views[i].delayed_pic));
+    /* The compose pairing queues name DPB slots. What the loop above released
+     * is each picture's frames and references, not the slot array itself: the
+     * slots are context memory and still live here, which is what the clear
+     * has to touch to retire the hold pins of the halves left pending. */
+    h264_sbs_q_clear(h);
 
     h->cur_pic_ptr = NULL;
 
@@ -624,6 +679,13 @@ static void idr(H264Context *h)
 void ff_h264_flush_change(H264Context *h)
 {
     int i, j;
+
+    /* The composed-pairing FIFOs (h264_sbs_process) are decode-session
+     * state: a seek drops the halves that were waiting for each other. Retire
+     * their pins first and forget the queues before the reference reset below
+     * can re-pin them, so that the flush finds nothing held for the compose
+     * stage and no pin is stranded on a picture no list names any more. */
+    h264_sbs_q_clear(h);
 
     h->prev_interlaced_frame = 1;
     idr(h);
@@ -1368,7 +1430,44 @@ static void h264_post_receive_frame(AVCodecContext *avctx, AVFrame *frame)
     int64_t dts;
 
     shared = ff_thread_shared_priv_data(avctx);
-    if (!shared || shared->view_count <= 1)
+    if (!shared)
+        return;
+
+    /* Fail-visible runtime path: an allviews decode that is composing
+     * while frame-threaded. The avcodec_open2() gate turns frame threading
+     * off for any decode that opens with such a selection, so this can only
+     * be reached by a selection that arrives after the workers exist - which
+     * is reachable, because view_ids is a decoder option the caller may
+     * still write at any time (h264_slice.c copies a changed selection into
+     * the worker contexts precisely to support it, and the command line
+     * tool's deferred view setup does exactly that on a stream whose
+     * multiview sequence header appears after decoding has begun).
+     *
+     * Downgrading an active frame-threaded decode mid-stream is not
+     * something this codebase supports anywhere: FFCodec.init never ran on
+     * the user-facing context of a frame-threaded decode (avcodec.c skips it
+     * for FF_THREAD_FRAME), so there is no initialized decoder state to
+     * switch onto and no API to retire the workers. The composed pairing
+     * queues are per context and never pair across workers: halves that
+     * cannot pair ship standalone (queue overflow / end-of-stream drain), so
+     * the output degrades loudly instead of silently mis-pairing. Warn once
+     * per decode session here - the only main-thread site that sees both the
+     * threading mode and the adopted view list. */
+    if (!shared->sbs_threaded_compose_warned &&
+        (avctx->active_thread_type & FF_THREAD_FRAME) &&
+        shared->view_count == 2 &&
+        h264_view_selected(shared, 0) && h264_view_selected(shared, 1)) {
+        shared->sbs_threaded_compose_warned = 1;
+        av_log(avctx, AV_LOG_WARNING,
+               "multiview: allviews composition is decoding frame-threaded "
+               "because the view selection was made after the decoder was "
+               "opened; side-by-side pairing across decode threads cannot be "
+               "guaranteed and unpairable halves will be delivered "
+               "standalone. Select the views before opening the decoder, or "
+               "decode with -threads 1, to compose reliably.\n");
+    }
+
+    if (shared->view_count <= 1)
         return;
     dts = frame->pkt_dts;
     if (dts < 0)
@@ -1584,9 +1683,11 @@ static int send_next_delayed_frame(H264Context *h, AVFrame *dst_frame,
             out->output_delivered = 1;
             if (*got_frame)
                 break;
-            /* a held base half (SBS): got_frame was cleared, so keep
-             * draining this view's queue; the held base is assembled from
-             * the dependent half's LATER packet, not from this queue */
+            /* a half held by the SBS compose stage: got_frame was cleared,
+             * so keep draining this view's queue; the held half is paired
+             * with the other role's LATER output (or shipped standalone by
+             * the queue-overflow / end-of-stream drains), not from this
+             * queue */
         }
     }
 
@@ -1596,23 +1697,43 @@ static int send_next_delayed_frame(H264Context *h, AVFrame *dst_frame,
 /* ------------------------------------------------------------------------
  * Native side-by-side (SBS) output for 2-view H.264/MVC.
  *
- * When a 2-view MVC stream is decoded with both views selected (the
- * default), the two views of one access unit are assembled into one
- * side-by-side frame (twice the view width) with a single
- * AV_FRAME_DATA_STEREO3D (AV_STEREO3D_SIDEBYSIDE) entry, instead of two
- * interleaved full-size frames.
+ * When a 2-view MVC stream is decoded with both views selected (a single
+ * -1 in view_ids), the two views are assembled into one side-by-side frame
+ * (twice the view width) with a single AV_FRAME_DATA_STEREO3D
+ * (AV_STEREO3D_SIDEBYSIDE) entry, instead of two interleaved full-size
+ * frames.
  *
- * The halves come from two packets, possibly decoded by two frame-threaded
- * workers, so pairing relies only on worker-shared state: the held base
- * half stays in the shared DPB and is located by the access-unit base POC
- * latched in h264_field_start() (au_base_poc), not by the dependent half's
- * own POC (see h264_sbs_find_base()). Both halves make the same
- * deterministic "assemble?" decision from stream-wide information
- * (view_count, view_ids selection, stereo arrangement): the base half
- * (view 0) is kept in the DPB, never delivered standalone; the dependent
- * half (view 1) finds it by POC and delivers the combined frame (left eye
- * on the left, per the arrangement). Single-eye selection, non-repackable
- * arrangements and single-view H.264 keep the existing delivery.
+ * Pairing rule: the k-th output picture of the base view pairs
+ * with the k-th output picture of the dependent view - display-ordinal,
+ * FIFO structure, no counters, no POC/pts keys, no DPB slot indices. The
+ * halves finalize in emission order (global lowest-POC first), so the
+ * first half to arrive is held in the context-local queues in
+ * H264Context (h->sbs_pair_q, pinned with DELAYED_PIC_REF while held) and
+ * the next half of the other role pops the head of both (either role may
+ * be the one waiting). A half whose partner never caught up ships
+ * STANDALONE: the oldest pending half goes out unpaired when its role's
+ * queue overflows, and the end-of-stream drain pairs what pairs and ships
+ * the leftovers - fail-visible, never silently mis-paired, never silently
+ * dropped. A queued half is held state of the decode like a picture in a
+ * view's delayed output queue, and the buffer machinery is told so
+ * (ff_h264_pic_held_for_compose()), because a queued half has already left
+ * every list those scans read: without that, reference maintenance on the
+ * half would drop its pin, the slot would be released and recycled, and the
+ * queue would hand out whatever picture took the slot over.
+ *
+ * The queues are plain context-local state, not synced and never shared:
+ * composing runs single-threaded because the avcodec_open2() gate turns
+ * frame threading off for any decode that opens with an allviews selection
+ * (ff_h264_allviews_composition()); a decode that is composing while
+ * frame-threaded - reachable only through a selection made after the
+ * decoder was opened - warns once at delivery time
+ * (h264_post_receive_frame()) and degrades by this same standalone rule.
+ * ff_h264_flush_change() clears the queues: a seek drops the pending halves.
+ *
+ * Both halves make the same deterministic "assemble?" decision from
+ * stream-wide information (view_count, view_ids selection, stereo
+ * arrangement). Single-eye selection, non-repackable arrangements and
+ * single-view H.264 keep the existing delivery.
  * -------------------------------------------------------------------- */
 
 static int h264_sbs_should_assemble(H264Context *h, const AVFrame *frame)
@@ -1674,54 +1795,58 @@ static int h264_sbs_should_assemble(H264Context *h, const AVFrame *frame)
     return 1;
 }
 
-/* Locate the held base half of the access unit `dep` belongs to: the base
- * view's picture latched as the access unit's base in h264_field_start().
- * The dependent half's own POC is NOT a reliable key: on some 2D+delta
- * streams its active SPS carries mvc.present == 0 (compatibility SPS), so
- * it keeps a per-view-unwrapped POC offset from the base's, while the
- * base's POC is latched verbatim as au_base_poc. The dependent's POC is
- * only a defensive fallback when no latch is present.
- * Returns NULL when no matching base half is in the DPB. */
-static H264Picture *h264_sbs_find_base(H264Context *h,
-                                       const H264Picture *dep)
+/* Compose pairing queue primitives (context-local, see the block comment
+ * above). A held half is pinned with DELAYED_PIC_REF (added at hold, see
+ * h264_sbs_process()) so the DPB cannot recycle its slot, and the pin is
+ * retired when the half leaves the queue - into an assembled frame, a
+ * standalone shipment, or a flush. Identity is queue order only. */
+static void h264_sbs_q_push(H264Context *h, H264Picture *p, int role)
 {
-    const int target = h->au_base_valid ? h->au_base_poc : dep->poc;
-
-    for (int i = 0; i < H264_MAX_PICTURE_COUNT; i++) {
-        H264Picture *p = &h->DPB[i];
-
-        if (p->f && p->f->data[0] &&
-            p->view_idx == 0 && p->poc == target)
-            return p;
-    }
-    return NULL;
+    h->sbs_pair_q[role][(h->sbs_pair_head[role] + h->sbs_pair_count[role]) %
+                        H264_SBS_PAIR_Q_SIZE] = p;
+    h->sbs_pair_count[role]++;
 }
 
-/* Assemble the held base half with the dependent half `dep` into one
- * side-by-side frame in `pict`. Returns 1 on success, 0 when no assembly
- * happened (pict stays the dependent half, delivered standalone) or a
- * negative error code. */
-static int h264_sbs_assemble(H264Context *h, AVFrame *pict,
-                             const H264Picture *dep)
+/* Remove and return the head of a role's queue (NULL when empty). */
+static H264Picture *h264_sbs_q_pop(H264Context *h, int role)
 {
-    H264Picture *base;
+    H264Picture *p;
+
+    if (!h->sbs_pair_count[role])
+        return NULL;
+    p = h->sbs_pair_q[role][h->sbs_pair_head[role]];
+    h->sbs_pair_q[role][h->sbs_pair_head[role]] = NULL;
+    h->sbs_pair_head[role] = (h->sbs_pair_head[role] + 1) %
+                             H264_SBS_PAIR_Q_SIZE;
+    h->sbs_pair_count[role]--;
+    return p;
+}
+
+/* Look at the head of a role's queue (NULL when empty). */
+static H264Picture *h264_sbs_q_head(const H264Context *h, int role)
+{
+    if (!h->sbs_pair_count[role])
+        return NULL;
+    return h->sbs_pair_q[role][h->sbs_pair_head[role]];
+}
+
+/* Assemble the base half `base` with the dependent half `dep` into one
+ * side-by-side frame in `pict`, which carries the delivered dependent half
+ * and lends the combined frame its properties. Both halves come from the
+ * compose pairing queues (or are the arrival itself): either may carry the
+ * DELAYED_PIC_REF hold pin, which the assembly retires. Returns 1 on
+ * success, 0 when no assembly happened (pict stays the dependent half,
+ * delivered standalone) or a negative error code. */
+static int h264_sbs_assemble(H264Context *h, AVFrame *pict,
+                             H264Picture *base, H264Picture *dep)
+{
     const AVFrame *basef, *depf, *leftf, *rightf;
     const AVPixFmtDescriptor *desc;
     AVFrame *sbs = NULL;
     int ret;
 
-    base = h264_sbs_find_base(h, dep);
-    if (!base) {
-        static int sbs_nobase_logged;
-        if (!sbs_nobase_logged) {
-            sbs_nobase_logged = 1;
-            av_log(h->avctx, AV_LOG_WARNING,
-                   "multiview: held base-view picture (poc %d) is gone from "
-                   "the DPB; delivering the dependent view standalone\n",
-                   dep->poc);
-        }
-        return 0;
-    }
+    /* retire the hold pin of a queued dependent half (no-op otherwise) */
+    dep->reference &= ~DELAYED_PIC_REF;
 
     basef = base->needs_fg ? base->f_grain : base->f;
     depf  = dep->needs_fg  ? dep->f_grain  : dep->f;
@@ -1764,8 +1889,15 @@ static int h264_sbs_assemble(H264Context *h, AVFrame *pict,
     }
 
     desc = av_pix_fmt_desc_get(depf->format);
-    if (!desc)
+    if (!desc) {
+        /* no descriptor for a format this decoder just produced: leave the
+         * dependent half alone as the standalone delivery, like the size/format
+         * mismatch above - and, exactly as there, the base half's assembly pin
+         * has to be retired on the way out, because the failed assembly leaves
+         * it owned by nothing (see the fail: path) */
+        base->reference &= ~DELAYED_PIC_REF;
         return 0;
+    }
 
     sbs = av_frame_alloc();
     if (!sbs)
@@ -1816,7 +1948,7 @@ static int h264_sbs_assemble(H264Context *h, AVFrame *pict,
 
     /* Inherit the dependent half's delivered properties (timestamps,
      * flags, color, metadata, side data), including its decode-data
-     * private_ref: DR1 requires the delivered frame to carry one, and
+     * private_ref: a frame delivered to the caller always carries one, and
      * FrameDecodeData is a small generic marker, valid on the combined frame. */
     ret = av_frame_copy_props(sbs, pict);
     if (ret < 0)
@@ -1843,36 +1975,280 @@ static int h264_sbs_assemble(H264Context *h, AVFrame *pict,
     return ret < 0 ? ret : 1;
 
 fail:
+    /* the halves have left the pairing queues either way, so the base half's
+     * hold pin has to go with a failed assembly too - the success path retires
+     * it once the pixels are copied, and nothing else owns it any more */
+    base->reference &= ~DELAYED_PIC_REF;
     av_frame_free(&sbs);
     return ret;
 }
 
-/* Post-process a just-finalized multiview frame for native SBS:
- * 0 = deliver as-is, 1 = base half held (*got_frame 0), 2 = assembled
- * side-by-side frame in `pict`, or a negative error code. */
+/* Permanent composed-pair health audit: a gross-fault detector for the
+ * composed pairing, deliberately not a content-skew probe. The halves of one
+ * composed frame are matched by display ordinal, so how far apart their pts
+ * values sit says nothing by itself about whether the pairing is right. The
+ * two views of a stream routinely carry a per-view container offset, and on
+ * streams that timestamp their views independently that offset is not even
+ * steady: measured across a whole feature it runs from zero to four frame
+ * durations from pair to pair while every pair stays content-correct, so any
+ * frame-wise threshold here witnesses container noise rather than a defect.
+ * The audit therefore watches for gross faults only - a delta past twenty-five
+ * frame durations is about a second of display time, far outside what an
+ * inter-view offset can account for, and it does mean the two halves handed to
+ * the caller as one frame come from different moments of the program. Whether
+ * a pair is content-skewed is a pixel question, answered by comparing decoded
+ * frames offline, not by this witness. Rate-limited: the first ten trips log
+ * individually, then every hundredth, always with the running count. Falls
+ * open when no frame duration can be established. */
+static void h264_sbs_pair_audit(H264Context *h, const H264Picture *base,
+                                const H264Picture *dep)
+{
+    const AVFrame *bf = base->needs_fg ? base->f_grain : base->f;
+    const AVFrame *df = dep->needs_fg ? dep->f_grain : dep->f;
+    int64_t delta, frame_dur = 0;
+
+    if (!bf || !df || bf->pts == AV_NOPTS_VALUE || df->pts == AV_NOPTS_VALUE)
+        return;
+    delta = bf->pts - df->pts;
+    if (delta == INT64_MIN)
+        delta = INT64_MAX;
+    if (delta < 0)
+        delta = -delta;
+
+    if (df->duration > 0)
+        frame_dur = df->duration;
+    else if (bf->duration > 0)
+        frame_dur = bf->duration;
+    else if (h->avctx->framerate.num > 0 && h->avctx->framerate.den > 0)
+        frame_dur = av_rescale_q(1, av_inv_q(h->avctx->framerate),
+                                 h->avctx->time_base);
+    if (frame_dur <= 0)
+        return;                     /* no clock to judge by */
+    if (delta <= 25 * frame_dur)
+        return;
+
+    h->sbs_pair_delta_warnings++;
+    if (h->sbs_pair_delta_warnings <= 10 ||
+        (h->sbs_pair_delta_warnings % 100) == 0)
+        av_log(h->avctx, AV_LOG_WARNING,
+               "multiview composed pair display-time mismatch: base view %d "
+               "poc %d pts %lld vs dependent view %d poc %d pts %lld"
+               ": delta %lld exceeds twenty-five frame durations (%lld); "
+               "pairing trips so far: %d\n",
+               base->view_id, base->poc, (long long) bf->pts,
+               dep->view_id, dep->poc, (long long) df->pts,
+               (long long) delta, (long long) (25 * frame_dur),
+               h->sbs_pair_delta_warnings);
+}
+
+/* A composed half that leaves the decoder without its partner is visible
+ * in the output bandwidth (the filter graph sees a width change) but it used
+ * to be logged at best once, so a stream that keeps producing them looked
+ * silent. Count every such delivery and warn rate-limited: the first ten log
+ * individually, then every hundredth, always with the running total. This is
+ * deliberately broader than the existing unpaired-queue warnings: the
+ * output-band duplicate-predecessor frame is also a standalone half, and the
+ * RSS evidence showed that those halves need a counted witness. */
+static void h264_note_standalone_delivery(H264Context *h)
+{
+    if (h->view_count != 2 ||
+        !h264_view_selected(h, 0) || !h264_view_selected(h, 1))
+        return;
+
+    h->sbs_standalone_emitted++;
+    if (h->sbs_standalone_emitted <= 10 ||
+        (h->sbs_standalone_emitted % 100) == 0)
+        av_log(h->avctx, AV_LOG_WARNING,
+               "multiview: delivered a standalone composed half (%d delivered "
+               "so far); the pairing did not assemble it with a partner of "
+               "the other view\n", h->sbs_standalone_emitted);
+}
+
+/* Post-process a just-finalized multiview frame for native SBS
+ * (display-ordinal FIFO pairing, see the block comment above):
+ * 0 = deliver as-is, 1 = half held for its partner (*got_frame cleared),
+ * 2 = assembled side-by-side frame in `pict`, 3 = the oldest held half of
+ * this role shipped standalone (*got_frame set) while the new half is
+ * held, or a negative error code. */
 static int h264_sbs_process(H264Context *h, AVFrame *pict,
                             H264Picture *out, int *got_frame)
 {
+    int role, ret;
+
     if (!h264_sbs_should_assemble(h, pict))
         return 0;
 
-    if (out->view_idx == 0) {
-        /* Base half: keep it in the shared DPB (pinned even without its own
-         * reference) until the dependent half of the same access unit
-         * assembles it; never delivered standalone. */
-        out->reference |= DELAYED_PIC_REF;
+    /* should_assemble guarantees exactly two registered views with both
+     * selected, so the compose roles are the base half (view_idx 0) and
+     * the dependent half (view_idx 1). */
+    role = out->view_idx;
+
+    if (h264_sbs_q_head(h, 1 - role)) {
+        /* The other role holds a pending half: this arrival completes the
+         * next pair (k-th with k-th). The arrival is its role's head by
+         * construction, so the explicit heads are base/dependent. */
+        H264Picture *base = (role == 0) ? out : h264_sbs_q_head(h, 0);
+        H264Picture *dep  = (role == 1) ? out : h264_sbs_q_head(h, 1);
+
+        if (role == 0) {
+            /* `pict` still shows the arriving base half, which the caller has
+             * just delivered into it; the composed frame inherits the
+             * dependent half's delivery (timestamp, side data) like the
+             * dependent-first case, so blank it and deliver the queued
+             * dependent half into it. Blanking loses nothing: the base half is
+             * only a reference to its own picture, which the queue and the
+             * DPB still own, and the assembly copies from that picture. */
+            int got_dep = 0;
+
+            av_frame_unref(pict);
+            ret = finalize_frame(h, pict, dep, &got_dep);
+            if (ret < 0)
+                return ret;
+            if (!got_dep) {
+                /* finalize_frame() declined to show it (gray gap / corrupt
+                 * filtering): the pair is deferred, not consumed; hold this
+                 * (base) half like an ordinary arrival. */
+                goto hold;
+            }
+            *got_frame = 1;
+        }
+
+        /* consume both heads */
+        if (role != 0)
+            h264_sbs_q_pop(h, 0);
+        if (role != 1)
+            h264_sbs_q_pop(h, 1);
+
+        ret = h264_sbs_assemble(h, pict, base, dep);
+        if (ret < 0)
+            return ret;
+        if (ret == 0) {
+            h264_note_standalone_delivery(h);
+            return 0;               /* not assemblable: pict stays the
+                                     * dependent half, delivered standalone */
+        }
+        h264_sbs_pair_audit(h, base, dep);
+        return 2;
+    }
+
+hold:
+    /* No partner pending. If this role's queue overflowed, its partner
+     * view has stopped keeping up: ship the oldest pending half standalone
+     * first (fail-visible, count-preserving) before holding the new one. */
+    if (h->sbs_pair_count[role] >= H264_SBS_PAIR_Q_SIZE) {
+        H264Picture *old = h264_sbs_q_head(h, role);
+        int got_old = 0;
+
+        /* `pict` still shows this arrival; blank it before shipping a
+         * different picture out of the queue (see the pair branch). */
         av_frame_unref(pict);
-        *got_frame = 0;
-        return 1;
+        ret = finalize_frame(h, pict, old, &got_old);
+        if (ret < 0)
+            return ret;
+        if (got_old) {
+            h264_sbs_q_pop(h, role);
+            old->reference &= ~DELAYED_PIC_REF;
+            if (!h->sbs_pair_unpaired_warned) {
+                h->sbs_pair_unpaired_warned = 1;
+                av_log(h->avctx, AV_LOG_WARNING,
+                       "multiview: the composed pairing queue for view %d "
+                       "overflowed; delivering its oldest pending half "
+                       "(poc %d) unpaired - the partner view stops keeping "
+                       "up (further unpaired deliveries are not logged "
+                       "individually)\n", old->view_id, old->poc);
+            }
+            *got_frame = 1;
+            h264_note_standalone_delivery(h);
+            out->reference |= DELAYED_PIC_REF;
+            h264_sbs_q_push(h, out, role);
+            return 3;
+        }
+        /* The oldest half cannot be shown right now (gray gap / corrupt
+         * filtering) and the queue is full: holding the arrival would
+         * overwrite that head. Deliver the arrival standalone instead
+         * (fail-visible, count-preserving); the head stays queued for a
+         * retry with the next arrival. */
+        if (!h->sbs_pair_unpaired_warned) {
+            h->sbs_pair_unpaired_warned = 1;
+            av_log(h->avctx, AV_LOG_WARNING,
+                   "multiview: the composed pairing queue for view %d "
+                   "overflowed and its head cannot be shown yet; delivering "
+                   "the arriving half (poc %d) unpaired - the partner view "
+                   "stops keeping up\n", out->view_id, out->poc);
+        }
+        ret = finalize_frame(h, pict, out, &got_old);
+        if (ret < 0)
+            return ret;
+        *got_frame = got_old;
+        if (*got_frame)
+            h264_note_standalone_delivery(h);
+        return 0;
     }
 
-    if (out->view_idx == 1) {
-        int a = h264_sbs_assemble(h, pict, out);
-        if (a < 0)
-            return a;
-        return a ? 2 : 0;
+    /* Hold this half (pinned even without its own reference) until its
+     * partner arrives; never delivered while pending. */
+    out->reference |= DELAYED_PIC_REF;
+    h264_sbs_q_push(h, out, role);
+    av_frame_unref(pict);
+    *got_frame = 0;
+    return 1;
+}
+
+/* End-of-stream compose drain: ship one pending pair (or one leftover
+ * half standalone) per call. Pairs first; only when a role has no partner
+ * left does its head go out unpaired (fail-visible, count-preserving).
+ * Called from the end-of-stream path after the delayed-frame drain found
+ * nothing to deliver. Returns 0 once the drain has said its piece - a frame
+ * in pict, or nothing to ship - and a negative error when a delivery it
+ * attempted failed, which is the caller's to report and not another turn of
+ * the drain. */
+static int h264_sbs_drain_eof(H264Context *h, AVFrame *pict, int *got_frame)
+{
+    H264Picture *base, *dep;
+    int role, ret, got = 0;
+
+    if (!h->sbs_pair_count[0] || !h->sbs_pair_count[1]) {
+        /* Only one role has leftovers: their partner never arrived. */
+        if (!h->sbs_pair_count[0] && !h->sbs_pair_count[1])
+            return 0;
+        role = h->sbs_pair_count[0] ? 0 : 1;
+        base = h264_sbs_q_head(h, role);
+        ret = finalize_frame(h, pict, base, &got);
+        if (ret < 0)
+            return ret;               /* failed delivery, not an empty queue */
+        if (!got)
+            return 0;
+        h264_sbs_q_pop(h, role);
+        base->reference &= ~DELAYED_PIC_REF;
+        if (!h->sbs_pair_unpaired_warned) {
+            h->sbs_pair_unpaired_warned = 1;
+            av_log(h->avctx, AV_LOG_WARNING,
+                   "multiview: delivering held composed half (view %d poc "
+                   "%d) unpaired at end of stream - its partner never "
+                   "arrived\n", base->view_id, base->poc);
+        }
+        *got_frame = 1;
+        h264_note_standalone_delivery(h);
+        return 0;
     }
 
+    base = h264_sbs_q_head(h, 0);
+    dep  = h264_sbs_q_head(h, 1);
+    ret = finalize_frame(h, pict, dep, &got);
+    if (ret < 0)
+        return ret;                   /* failed delivery, not an empty queue */
+    if (!got)
+        return 0;                     /* retry on the next flush call */
+    h264_sbs_q_pop(h, 0);
+    h264_sbs_q_pop(h, 1);
+    ret = h264_sbs_assemble(h, pict, base, dep);
+    if (ret < 0)
+        return ret;
+    if (ret > 0)
+        h264_sbs_pair_audit(h, base, dep);
+    else /* ret == 0: not assemblable, pict stays the standalone half */
+        h264_note_standalone_delivery(h);
+    *got_frame = 1;
     return 0;
 }
 
@@ -1929,7 +2305,15 @@ static int h264_decode_frame(AVCodecContext *avctx, AVFrame *pict,
                 v->parked_pic = NULL;
             }
         }
-        return send_next_delayed_frame(h, pict, got_frame, 0);
+        ret = send_next_delayed_frame(h, pict, got_frame, 0);
+        /* Drain the compose pairing queues too: what pairs goes out as a
+         * composed frame, leftovers go out standalone (one frame per
+         * end-of-stream call; the caller keeps asking until nothing is
+         * delivered). A failed delivery inside the drain is an end-of-stream
+         * error like any other, so it travels out through this return. */
+        if (ret >= 0 && !*got_frame)
+            ret = h264_sbs_drain_eof(h, pict, got_frame);
+        return ret;
     }
 
     if (av_packet_get_side_data(avpkt, AV_PKT_DATA_NEW_EXTRADATA, NULL)) {
@@ -2011,16 +2395,58 @@ static int h264_decode_frame(AVCodecContext *avctx, AVFrame *pict,
                  * dependent picture: the duplicate goes out this packet,
                  * `out` stays committed for the parking loop below, and
                  * the predecessor keeps its delayed-queue entry for its
-                 * own reorder slot. */
+                 * own reorder slot.
+                 *
+                 * Composed mode is gated out here as well as at the capture,
+                 * so `emit` is `out` in that mode and the picture is handed to
+                 * h264_sbs_process() exactly once, like every other turn: a
+                 * duplicate delivered beside it would be a standalone half of
+                 * one view arriving inside the composed pairing. */
                 H264Picture *xsrc = NULL;
                 H264Picture *emit = out;
+                int64_t emit_dts = AV_NOPTS_VALUE;
 
-                if (h->view_count > 1 && out->output_dup_before &&
-                    !out->output_dup_done &&
-                    (xsrc = out->output_dup_src) &&
-                    xsrc->f && xsrc->f->data[0])
-                    emit = xsrc;
+                if (h->view_count > 1 && !h264_compose_active(h) &&
+                    out->output_dup_before && !out->output_dup_done) {
+                    xsrc = out->output_dup_src;
+                    if (xsrc && xsrc->slot_epoch &&
+                        xsrc->slot_epoch == out->output_dup_epoch &&
+                        xsrc->f && xsrc->f->data[0]) {
+                        emit = xsrc;
+                        emit_dts = emit->f->pkt_dts;
+                    } else if (xsrc) {
+                        /* The capture pointed at a DPB slot that is no longer
+                         * the predecessor picture. Emitting it would ship a
+                         * frame from somebody else's access unit; dropping it
+                         * is the fail-visible choice. */
+                        h->sbs_dup_stale++;
+                        if (h->sbs_dup_stale <= 10 ||
+                            (h->sbs_dup_stale % 100) == 0)
+                            av_log(h->avctx, AV_LOG_WARNING,
+                                   "multiview view %d: dropped a stale "
+                                   "duplicate-predecessor source for poc %d "
+                                   "(the DPB slot was recycled); stale "
+                                   "captures so far: %d\n",
+                                   h->views[out->view_idx].view_id, out->poc,
+                                   h->sbs_dup_stale);
+                        out->output_dup_before = 0;
+                        out->output_dup_done = 1;
+                        out->output_dup_src = NULL;
+                        out->output_dup_epoch = 0;
+                        xsrc = NULL;
+                    }
+                }
                 ret = finalize_frame(h, pict, emit, got_frame);
+                if (emit == xsrc && emit->f) {
+                    /* finalize_frame() monotonizes the *source* picture's
+                     * pkt_dts as a side effect of the delivery. The duplicate
+                     * is a throwaway copy ahead of `out`: `out` and the source
+                     * picture's own reorder delivery must keep their old
+                     * timestamps and source-side lifetime, even though the
+                     * frame already handed to the caller keeps the monotonized
+                     * dts it was delivered with. */
+                    emit->f->pkt_dts = emit_dts;
+                }
                 if (ret < 0)
                     return ret;
                 if (*got_frame) {
@@ -2052,6 +2478,14 @@ static int h264_decode_frame(AVCodecContext *avctx, AVFrame *pict,
                                xsrc->poc, xsrc->frame_num,
                                out->poc, out->frame_num);
                         out->output_dup_done = 1;
+                        /* The duplicate delivery consumed the one-shot source
+                         * capture. Drop the raw pointer (and the request) so a
+                         * recycled DPB slot can never be mistaken for a still
+                         * pending duplicate source. */
+                        out->output_dup_before = 0;
+                        out->output_dup_src = NULL;
+                        out->output_dup_epoch = 0;
+                        h264_note_standalone_delivery(h);
                         /* `out` is deliberately left in next_output_pic:
                          * the parking loop parks it for re-emission at the
                          * view's next select */
@@ -2150,6 +2584,37 @@ static const AVClass h264_class = {
     .option     = h264_options,
     .version    = LIBAVUTIL_VERSION_INT,
 };
+
+/* Is this decoder asked for the composed allviews output? Called by
+ * avcodec_open2() for the h264 decoder before ff_thread_init(), where a
+ * selection made in the private options is already parsed and the threading
+ * algorithm is not yet resolved.
+ *
+ * The selection is the whole test. Composed output needs every view of the
+ * stream selected, which is what a single -1 means and also what listing
+ * more than one view ID means for a two-view stream; a decode with no
+ * selection (the base-view default) or with one view selected delivers
+ * single views and composes nothing. The stream itself is deliberately not
+ * consulted: what it declares, and where it declares it (an in-band
+ * multiview sequence header, an extradata declaration, or both), is not
+ * known yet at this point, and a gate that needed it would silently do
+ * nothing for exactly the streams whose composed output is broken without
+ * it - see h264_sbs_process() for why the pairing needs a serialized
+ * pipeline. The cost of asking early is that a decode which selects every
+ * view of a stream that turns out to have only one, or more than two, also
+ * loses frame threading it could have used; that is a selection nobody
+ * makes on purpose, and the alternative is a force that misses its target. */
+int ff_h264_allviews_composition(AVCodecContext *avctx)
+{
+    const H264Context *h = avctx->priv_data;
+
+    if (!avctx->priv_data ||
+        *(const AVClass **)avctx->priv_data != &h264_class)
+        return 0;
+
+    return h->nb_view_ids >= 2 ||
+           (h->nb_view_ids == 1 && h->view_ids && h->view_ids[0] == -1);
+}
 
 const FFCodec ff_h264_decoder = {
     .p.name                = "h264",

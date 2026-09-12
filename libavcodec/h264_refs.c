@@ -168,7 +168,9 @@ static H264Picture *h264_find_inter_view_ref(H264Context *h, int view_id, int po
          * co-located anchor with no reference marking of its own is lost
          * to the scans; Annex E resolves inter-view references from the
          * DPB regardless of output state, and the DPB is fully synced
-         * across frame-thread workers (as in h264_sbs_find_base()).
+         * across frame-thread workers (the native SBS compose stage holds
+         * its pending halves pinned here the same way; its pairing in
+         * h264_sbs_process() is FIFO-order, not a DPB scan).
          *
          * POC epochs restart at 65536 while frame_num wraps at
          * 2^log2_max_frame_num, so a stale-epoch picture can carry the
@@ -830,6 +832,13 @@ static inline int unreference_pic(H264Context *h, H264Picture *pic, int refmask)
                     return 1;
                 }
         }
+        /* a half pending in a compose pairing queue is held for output too,
+         * and names itself in no list above: it has already been popped from
+         * its view's delayed queue on the way to the compose stage */
+        if (ff_h264_pic_held_for_compose(h, pic)) {
+            pic->reference = DELAYED_PIC_REF;
+            return 1;
+        }
         return 1;
     }
 }
@@ -936,6 +945,13 @@ static inline int h264_view_unref(H264Context *h, H264ViewState *v,
                     pic->reference = DELAYED_PIC_REF;
                     return 1;
                 }
+        }
+        /* and it may be pending in a compose pairing queue, which is not a
+         * list this function can see: the half reached it by being popped out
+         * of its own view's delayed queue */
+        if (ff_h264_pic_held_for_compose(h, pic)) {
+            pic->reference = DELAYED_PIC_REF;
+            return 1;
         }
         return 1;
     }
