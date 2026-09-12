@@ -322,6 +322,31 @@ int attribute_align_arg avcodec_open2(AVCodecContext *avctx, const AVCodec *code
     if (ret < 0)
         goto free_and_end;
 
+    /* An allviews H.264/MVC decode (view_ids selecting every view of
+     * the stream) delivers the composed side-by-side output, which pairs the
+     * k-th output picture of each view into one frame in the compose stage
+     * (h264_sbs_process() in h264dec.c). That pairing is context-local state
+     * and needs a serialized decode-to-output pipeline, so frame threading
+     * is turned off for this decoder here - after the private options are
+     * parsed (av_opt_set_dict2() above) and before ff_thread_init() resolves
+     * the threading algorithm (thread_count == 1 makes
+     * validate_thread_parameters() select no threading at all). The request
+     * alone is the signal: it is decided where it can still be honoured,
+     * whatever the container or bitstream format turns out to carry, and
+     * whether or not the stream declares its views in the extradata. An
+     * explicit -threads request cannot override the force; the decision is
+     * logged either way. A decode that selects no views or a single view -
+     * the base-view default every product consumer uses - and every other
+     * decoder keep the threading they had. */
+    if (HAVE_THREADS && avctx->codec_id == AV_CODEC_ID_H264 &&
+        ff_codec_is_decoder(codec) && avctx->thread_count != 1 &&
+        ff_h264_allviews_composition(avctx)) {
+        av_log(avctx, AV_LOG_INFO,
+               "allviews composition: frame threading disabled%s\n",
+               avctx->thread_count > 1 ? " (overriding the requested thread count)" : "");
+        avctx->thread_count = 1;
+    }
+
     if (HAVE_THREADS && !avci->frame_thread_encoder) {
         /* Frame-threaded decoders call FFCodec.init for their child contexts. */
         lock_avcodec(codec2);
