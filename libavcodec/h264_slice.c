@@ -129,7 +129,9 @@ static int h264_pic_held_for_output(const H264Context *h, const H264Picture *pic
             if (v->delayed_pic[i] == pic)
                 return 1;
     }
-    return 0;
+    /* a half waiting to be paired into a composed side-by-side frame is
+     * held for output as well, and is in none of the lists above */
+    return ff_h264_pic_held_for_compose(h, pic);
 }
 
 /**
@@ -663,13 +665,17 @@ static int h264_frame_start(H264Context *h)
     pic->view_idx                = h->cur_view;
     /* The picture slot was re-used from the DPB: reset the multiview
      * output latches a previous occupant may have left (the tail unref
-     * does not clear them). */
+     * does not clear them). Give the new occupant a fresh identity token so
+     * any stale raw pointer into this slot (the output-band duplicate
+     * source) can be recognized instead of following the slot's new owner. */
     pic->output_delivered        = 0;
     pic->flush_old_epoch         = 0;
     pic->output_omit             = 0;
     pic->output_dup_before       = 0;
     pic->output_dup_done         = 0;
     pic->output_dup_src          = NULL;
+    pic->output_dup_epoch        = 0;
+    pic->slot_epoch              = ++h->pic_slot_epoch;
     /*
      * Zero key_frame here; IDR markings per slice in frame or fields are ORed
      * in later.
@@ -1753,13 +1759,19 @@ static int h264_select_output_frame(H264Context *h)
             return 0;
         }
 
-        if (h->view_count > 1 && out->output_omit) {
+        if (h->view_count > 1 && out->output_omit && !h264_compose_active(h)) {
             /* Output-band fix: the correct output leaves this base picture
              * out. Retire it without delivering it and without advancing
              * the watermark, so the pictures behind it commit normally.
              * Marking it delivered keeps any stale alias of the queue entry
              * from resurrecting it (the gate decision is logged in
-             * ff_h264_build_ref_list). */
+             * ff_h264_build_ref_list).
+             *
+             * Composed mode is excluded: retiring a base picture here would
+             * remove it from the sequence the compose pairing consumes, and
+             * the other view has a half for it. The picture is committed
+             * normally instead and reaches the pairing queue like every
+             * other turn of its view. */
             out->reference &= ~DELAYED_PIC_REF;
             out->output_delivered = 1;
             for (i = out_idx; v->delayed_pic[i]; i++)
@@ -1825,7 +1837,8 @@ static int h264_select_output_frame(H264Context *h)
                     v->next_outputed_poc = out->poc;
                 }
 
-                if (out->output_dup_before && !out->output_dup_done &&
+                if (!h264_compose_active(h) &&
+                    out->output_dup_before && !out->output_dup_done &&
                     h->cur_pic_ptr && h->cur_pic_ptr != out &&
                     h->cur_pic_ptr->f && h->cur_pic_ptr->f->data[0]) {
                     /* Output-band fix: duplicate the picture currently
@@ -1833,8 +1846,17 @@ static int h264_select_output_frame(H264Context *h)
                      * output block of h264_decode_frame() emits it ahead of
                      * `out` (the picture is fully decoded - same access
                      * unit) and the original is still delivered at its own
-                     * reorder slot. */
+                     * reorder slot. Keep the source's identity token: if the
+                     * dependent half is parked for a later packet, the slot
+                     * can be reused before the duplicate is emitted.
+                     *
+                     * Composed mode is excluded at the capture, so the emit
+                     * site never sees a source: an extra frame inserted here
+                     * would be one more dependent half than the base view has
+                     * halves, and the pairing would carry that skew for the
+                     * rest of the run. */
                     out->output_dup_src = h->cur_pic_ptr;
+                    out->output_dup_epoch = h->cur_pic_ptr->slot_epoch;
                 }
 
                 // We have reached an recovery point and all frames after it in

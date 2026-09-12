@@ -81,6 +81,20 @@ int ff_thread_init(struct AVCodecContext *s);
 void ff_thread_free(struct AVCodecContext *s);
 
 /**
+ * H.264 only: true when this decoder context is configured to deliver the
+ * composed all-views output of a multiview stream - the view_ids option
+ * selects every view of the stream (a single -1, or more than one view ID
+ * listed), which for a two-view stream means the side-by-side output. Such
+ * decoding pairs the k-th output of each view in the (context-local) compose
+ * stage, which requires a serialized decode-to-output pipeline: the caller in
+ * avcodec_open2() turns frame threading off for it. The selection is the
+ * whole test - the stream itself is not examined, so the answer does not
+ * depend on the container or on where the stream declares its views.
+ * Implemented in h264dec.c.
+ */
+int ff_h264_allviews_composition(struct AVCodecContext *avctx);
+
+/**
  * Wait for decoding threads to finish and reset internal state.
  * Called by avcodec_flush_buffers().
  *

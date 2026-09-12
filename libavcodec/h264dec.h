@@ -176,6 +176,15 @@ typedef struct H264Picture {
     int view_idx;
 
     /**
+     * Identity token for the DPB slot's current occupant. h264_frame_start()
+     * gives every newly allocated picture a fresh, strictly increasing value;
+     * ff_h264_unref_picture() zeroes it with the picture tail. It lets
+     * cross-access-unit state (for example the output-band duplicate source)
+     * prove it still names the same picture rather than a recycled slot.
+     */
+    uint64_t slot_epoch;
+
+    /**
      * Multiview: set once the picture's frame has been delivered
      * (finalize_frame() succeeded). H264Picture objects are shared between
      * frame-thread worker contexts, so a context sync can alias a
@@ -217,6 +226,18 @@ typedef struct H264Picture {
     int output_dup_before;
     int output_dup_done;
     struct H264Picture *output_dup_src;
+
+    /**
+     * Output-band fix: identity token of output_dup_src at capture time
+     * (H264Picture.slot_epoch). The duplicate source is a raw DPB-slot
+     * pointer only because the same access unit normally emits it; when the
+     * dependent half is parked for a later packet, that slot may be released
+     * and reused before the duplicate is emitted. The token lets the emit
+     * site recognize a stale pointer (slot_epoch == 0 after unref, or a
+     * different epoch after reuse) instead of duplicating somebody else's
+     * picture. Zeroed with the rest of the picture tail.
+     */
+    uint64_t output_dup_epoch;
 } H264Picture;
 
 typedef struct H264Ref {
@@ -504,6 +525,62 @@ typedef struct H264Context {
     int64_t au_base_pts;
     int64_t au_base_pkt_dts;
     int au_base_valid;
+
+    /**
+     * Display-ordinal pairing FIFO for the allviews-composed (native SBS)
+     * output: the k-th output picture of the base view pairs with
+     * the k-th output picture of the dependent view. One pending queue per
+     * compose role ([0] = base view half, [1] = dependent view half) of
+     * committed pictures pinned with DELAYED_PIC_REF while held; heads pop
+     * together as soon as both queues hold a picture (see
+     * h264_sbs_process()). Plain context-local fields: composing runs with
+     * frame threading turned off (ff_h264_allviews_composition()), so
+     * a single context ever touches them; they are NOT shared and NOT
+     * synced by ff_h264_update_thread_context() (which copies field by
+     * field, so they never travel), and they key on nothing but queue order
+     * (never a DPB slot index or a POC). A queued half has already left its
+     * view's delayed output queue, so the queues are held state in their own
+     * right: ff_h264_pic_held_for_compose() reports them to the reference
+     * maintenance that keeps a pending picture's pin alive. Cleared - pins
+     * retired first - by ff_h264_flush_change(): a seek drops the pending
+     * halves.
+     */
+#define H264_SBS_PAIR_Q_SIZE 32
+    H264Picture *sbs_pair_q[2][H264_SBS_PAIR_Q_SIZE];
+    int sbs_pair_head[2];         ///< ring read position per role
+    int sbs_pair_count[2];        ///< queued halves per role
+
+    /** One-shot warning flag for unpaired composed deliveries (the pairing
+     *  queue overflow and the end-of-stream leftover shipment). */
+    int sbs_pair_unpaired_warned;
+
+    /** Trip counter for the rate-limited composed-pair pts-delta warning. */
+    int sbs_pair_delta_warnings;
+
+    /** Trip counter for standalone composed-half deliveries. The composed
+     *  output normally pairs every base half with a dependent half; a half
+     *  that goes out on its own (duplicate-predecessor emission, pairing
+     *  queue overflow, failed assembly, or end-of-stream leftovers) is
+     *  counted here so the failure is visible after the first occurrence. */
+    int sbs_standalone_emitted;
+
+    /** Trip counter for duplicate-predecessor sources whose DPB slot was
+     *  recycled before the output-band picture reached its emission slot.
+     *  Rate-limited: first ten individually, then every hundredth. */
+    int sbs_dup_stale;
+
+    /** Monotonic token generator for H264Picture.slot_epoch. Not synced:
+     *  composing with cross-context state requires a serialized pipeline, and
+     *  the output-band duplicate capture/emit sites run in the same
+     *  allviews decode context. */
+    uint64_t pic_slot_epoch;
+
+    /** One-shot warning flag for an allviews decode that is composing while
+     *  frame-threaded (a view selection made after the decoder was opened;
+     *  the runtime path of h264_post_receive_frame()). Latched in the
+     *  canonical context, so the main-thread warning fires once per decode
+     *  session. */
+    int sbs_threaded_compose_warned;
 
     int pixel_shift;    ///< 0 for 8-bit H.264, 1 for high-bit-depth H.264
 
@@ -952,6 +1029,42 @@ int ff_h264_update_thread_context_for_user(AVCodecContext *dst,
                                            const AVCodecContext *src);
 
 void ff_h264_flush_change(H264Context *h);
+
+/**
+ * True when the picture is pending in a compose pairing queue, i.e. held for
+ * the allviews side-by-side output (see the sbs_pair_q fields and
+ * h264_sbs_process()). A queued half has already left its view's delayed
+ * output queue, so the reference maintenance that keeps a pending picture
+ * pinned has to be told about the queues separately or it will let the slot
+ * be released and recycled under the queue. Implemented in h264dec.c.
+ */
+int ff_h264_pic_held_for_compose(const H264Context *h,
+                                 const H264Picture *pic);
+
+/**
+ * True while the allviews composed output is the one being produced: exactly
+ * two registered views, both selected. That is the view-count and
+ * view-selection half of the h264_sbs_should_assemble() gate in h264dec.c
+ * (its remaining terms judge the picture itself, which the callers of this
+ * helper have no picture for), i.e. the condition under which
+ * h264_sbs_process() owns a picture's delivery and pairs it, by display
+ * ordinal, with the other view's picture.
+ *
+ * The output-band repair (see H264Picture.output_omit and .output_dup_before)
+ * must stay out of that mode: it retires a base picture undelivered and
+ * inserts an out-of-band duplicate ahead of a dependent picture, so both of
+ * its moves perturb the per-view display sequences the compose pairing
+ * consumes. The pairing has no clock of its own - it never re-syncs after a
+ * perturbation - so what it ships afterwards is a pairing shifted against the
+ * grid, permanently, and the receiver sees both eyes re-anchor at the mark.
+ * A single-view selection (either view alone, or the bare default) is not this
+ * predicate and keeps the repair exactly as it was; so does plain H.264.
+ */
+static inline int h264_compose_active(const H264Context *h)
+{
+    return h->view_count == 2 &&
+           h264_view_selected(h, 0) && h264_view_selected(h, 1);
+}
 
 void ff_h264_free_tables(H264Context *h);
 
