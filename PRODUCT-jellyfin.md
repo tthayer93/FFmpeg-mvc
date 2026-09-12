@@ -346,4 +346,36 @@ verbatim - one attribution and one test inconsistency - on the record.
   content. `-mvc2` is unchanged and stays true: not one of the wave's 96
   commits touches the fork delta that counter counts, which this branch shares
   with the release lines.
+- **Composed display-order pairing ship (2026-09-12).** The composed
+  multiview route - the explicit request for every view in one decode,
+  answered with one side-by-side picture per output slot - now pairs each
+  view's pictures by their output order in context-local state instead of
+  keying on decoder state that a frame-threaded decode does not share, and
+  it delivers an unpairable half rather than losing it. That fix builds and
+  ships here as **`n8.1.2-mvc3-jf4`**, superseding `n8.1.2-mvc2-jf4`. On top
+  of the jf98-complete tree recorded above, the delta is exactly two
+  commits: the squashed fix `3ccfe7e3c5` and the version commit that names
+  the build `n8.1.2-mvc3-jf4`; the release tag for this state is that same
+  string, so tag, `VERSION` file and banner state one identity over one
+  tree.
+- **Why the name moved, and what did not (2026-09-12).** The `mvc` part of
+  the name is the revision of the fork's own code delta - one counter,
+  shared by every tagged line that carries the delta - and this fix changes
+  that delta, so the part moves to 3 here as it does on the release lines
+  carrying the same fix. The `-jf4` part does not move: this ship lands no
+  entry from the jellyfin-ffmpeg patch queue, so the compatibility line is
+  **unchanged - `jellyfin-ffmpeg v8.1.2-4`** - and with it the containment
+  recorded above stands whole, including the queue entry refused on licence
+  (`0054`: AC-4 is not provided, the finding and the route back are
+  unchanged).
+- **What this fix does not touch (2026-09-12).** The product default is
+  untouched: an invocation that names no views still decodes the base view
+  and still logs the base-view notice exactly once, and an explicit view
+  selection still beats the default. The fix acts only on the opt-in
+  composed route requested with `-view_ids -1`. And the single-view
+  invariant holds: every single-view selection on this build decodes
+  byte-for-byte identical to the build this ship supersedes - the frozen
+  payload rows of the acceptance suite, including a deep-seek dependent-view
+  leg and the single-view selections beside the composed route, replayed
+  equal on the gated binary at this tip.
 
