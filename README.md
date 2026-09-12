@@ -38,9 +38,9 @@ See the "Multiview video (H.264/MVC)" section of the ffmpeg docs
 
 ## Building
 
-Building needs the usual FFmpeg prerequisites: a C compiler (gcc or
-clang), `nasm` or `yasm` on x86, `make`, and `pkg-config`; see
-`INSTALL.md` for the full list. The examples below encode with
+Building needs the usual FFmpeg build tools: a C compiler (gcc or
+clang), `make`, `pkg-config` (used to locate external libraries such
+as x264), and `nasm` on x86. The examples below encode with
 `libx264`, which is GPL-licensed, so configure with GPL enabled and the
 x264 development files installed:
 
@@ -115,11 +115,13 @@ the upstream `stereo3d` filter:
         -vf "stereo3d=in=sbsl:out=arcd" -c:v libx264 -crf 20 anaglyph.mp4
 
 If the first view of the title is its **right** eye, say so with
-`in=sbsr` instead of `in=sbsl`. Composed (`-view_ids -1`) decoding runs
-both views through one single-threaded pipeline to keep them correctly
-paired, so it is slower than single-view decoding; damage near a broken
-access unit is concealed symmetrically in both views, with a warning on
-the console. The `-map` view specifiers (`-map 0:v:view:0`,
+`in=sbsr` instead of `in=sbsl`. Composed decoding (`-view_ids -1` or
+`-map 0:v:view:all`) runs both views through one single-threaded
+pipeline to keep them correctly paired, so it is slower than
+single-view decoding. A damaged dependent view is completed against
+the base view with a console warning; when the two halves cannot be
+paired, standalone half frames are delivered rather than dropped.
+The `-map` view specifiers (`-map 0:v:view:0`,
 `-map 0:v:view:1`, or `-map 0:v:view:all` for the composed pair) are
 the recommended, non-legacy form of the same selection; the two forms
 cannot be mixed in one invocation.
