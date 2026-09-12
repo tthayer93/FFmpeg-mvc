@@ -73,15 +73,21 @@ transcode yields the plain 2D video:
 
     ffmpeg -i in.mkv -c:v libx264 -crf 20 out.mp4
 
-To reach the other views, this fork adds a `view_ids` option that
-selects views when the stream is opened, so it must be placed **before**
-`-i`. The examples below convert a two-view `.mkv` remux of a 3D movie;
-swap in your own encoder settings.
+To reach the other views, select them explicitly. The legacy `view_ids`
+option picks views when the stream is opened, so it must be placed
+**before** `-i`; the same selection can be made with `-map` view
+specifiers after `-i`, which the ffmpeg docs recommend (the legacy
+form prints a non-fatal hint saying so). The examples below convert a
+two-view `.mkv` remux of a 3D movie; swap in your own encoder settings.
 
 One view only (the two eyes of the title as separate files):
 
     ffmpeg -view_ids 0 -i in.mkv -c:v libx264 -crf 20 view0.mp4
     ffmpeg -view_ids 1 -i in.mkv -c:v libx264 -crf 20 view1.mp4
+
+The output-side form of the same selection:
+
+    ffmpeg -i in.mkv -map 0:v:view:1 -c:v libx264 -crf 20 view1.mp4
 
 View 0 is the base view; which physical eye each view feeds depends on
 the release, so render a short clip and check before committing to a
@@ -104,7 +110,7 @@ the upstream `stereo3d` filter:
     ffmpeg -view_ids -1 -i in.mkv \
         -vf "stereo3d=in=sbsl:out=tb2l" -c:v libx264 -crf 20 tab.mp4
 
-    # red/cyan anaglyph (other styles: agmg, aghs)
+    # red/cyan anaglyph (other red/cyan styles: arch, arcc; green/magenta: agmg)
     ffmpeg -view_ids -1 -i in.mkv \
         -vf "stereo3d=in=sbsl:out=arcd" -c:v libx264 -crf 20 anaglyph.mp4
 
@@ -113,14 +119,17 @@ If the first view of the title is its **right** eye, say so with
 both views through one single-threaded pipeline to keep them correctly
 paired, so it is slower than single-view decoding; damage near a broken
 access unit is concealed symmetrically in both views, with a warning on
-the console. `-map 0:v:view:N` (and `-map 0:v:view:all`) work as
-alternative selectors.
+the console. The `-map` view specifiers (`-map 0:v:view:0`,
+`-map 0:v:view:1`, or `-map 0:v:view:all` for the composed pair) are
+the recommended, non-legacy form of the same selection; the two forms
+cannot be mixed in one invocation.
 
 For media servers (for example Jellyfin or Emby), build the
-`jellyfin-8.1` branch: transcodes run without view options behave
-exactly like plain FFmpeg (base view, plain 2D), and the multiview
-paths above are available wherever the server allows custom
-encoder or filter arguments. Operator notes: `PRODUCT-jellyfin.md`.
+`jellyfin-8.1` branch (operator notes: `PRODUCT-jellyfin.md` on that
+branch): transcodes run without view options behave exactly like plain
+FFmpeg (base view, plain 2D), and the multiview paths above are
+available wherever the server allows custom encoder or filter
+arguments.
 
 ## Branches and releases
 
