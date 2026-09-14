@@ -133,6 +133,17 @@ cropping from the @emph{dependent} half of the access unit; in particular
 reference, which DR1 (@code{AV_CODEC_CAP_RECEIVE_FRAME} frame-threaded)
 decoders require every delivered frame to carry.
 
+When a two-view SBS decode cannot pair both views for an access unit - because
+one view is still delayed, one view ends before the other, or a partner is
+otherwise unavailable - the half that must be delivered is still emitted as a
+full double-width frame: the half occupies the eye position it would have
+occupied inside a real pair, and the opposite half is filled with black
+(limited- or full-range luma black according to the frame's own
+@code{color_range}, with neutral chroma). The degraded frame keeps the plain
+side-by-side tag of an assembled frame, rather than a per-view tag, so the
+fault remains visible while the output geometry stays stable for downstream
+filters and encoders.
+
 The dependent view references a co-located picture of the base view: in the
 single-eye decode that anchor sits in the base view's delay queue when the
 dependent half parses its reference list; in the all-views decode it has
