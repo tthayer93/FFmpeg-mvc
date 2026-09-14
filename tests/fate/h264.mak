@@ -200,9 +200,13 @@ FATE_H264  := $(FATE_H264:%=fate-h264-conformance-%)                    \
               fate-h264-mvc-2view-allviews                              \
               fate-h264-mvc-2view-base                                  \
               fate-h264-mvc-2view-view1                                 \
-              fate-h264-mvc-diffcontent-allviews                        \
-              fate-h264-mvc-diffcontent-default                         \
-              fate-h264-mvc-diffcontent-view1                           \
+               fate-h264-mvc-diffcontent-allviews                        \
+               fate-h264-mvc-diffcontent-default                         \
+               fate-h264-mvc-diffcontent-view1                           \
+               fate-h264-mvc-uneven-base-allviews                        \
+               fate-h264-mvc-uneven-base-default                         \
+               fate-h264-mvc-uneven-base-view1                           \
+               fate-h264-mvc-uneven-dep-allviews                         \
               fate-h264-ref-pic-mod-overflow                            \
               fate-h264-timecode                                        \
 
@@ -507,6 +511,40 @@ fate-h264-mvc-2view-view1:                        CMD = framecrc -view_ids 1 -i 
 fate-h264-mvc-diffcontent-default:                CMD = framecrc -i $(TARGET_SAMPLES)/h264-mvc/2view-diffcontent.h264
 fate-h264-mvc-diffcontent-allviews:               CMD = framecrc -view_ids -1 -i $(TARGET_SAMPLES)/h264-mvc/2view-diffcontent.h264
 fate-h264-mvc-diffcontent-view1:                  CMD = framecrc -view_ids 1 -i $(TARGET_SAMPLES)/h264-mvc/2view-diffcontent.h264
+
+# The same two-view layout again, this time with the two view lists ending at
+# different access units (tests/fate/h264-mvc/mvc-mkfix.pl writes them). One
+# view therefore carries a picture the other never pairs with, and the
+# composed output has to deliver it: the end-of-stream drain ships the leftover
+# half as a full double-width frame with the opposite half black, so the
+# composed stream keeps one geometry from its first frame to its last.
+#
+# 2view-uneven-base.h264 ends with a base picture, so the half that ships
+# alone is the left eye and the black half is the right one; in
+# 2view-uneven-dep.h264 it is the dependent picture, so the black half is the
+# left one (a half keeps the side its view owns, inverted arrangement aside).
+#
+# -allviews pins the composed run as a whole: its #dimensions line says every
+# frame is 32x16 - nothing ships at single-view width - and each frame CRC says
+# the pixels. The -left/-right rows read that run one eye at a time, so the
+# black eye and the real eye are each pinned on their own: in the base fixture
+# the -right row ends on the black frame (flat luma 16, chroma 128) while its
+# -left row ends on the same luma-158 picture the -default row delivers for
+# that access unit, and the dep fixture is the mirror image. -default and
+# -view1 decode the same fixtures one view at a time, which is what the
+# degraded composed delivery must leave alone.
+fate-h264-mvc-uneven-base-default:                CMD = framecrc -i $(TARGET_SAMPLES)/h264-mvc/2view-uneven-base.h264
+fate-h264-mvc-uneven-base-view1:                  CMD = framecrc -view_ids 1 -i $(TARGET_SAMPLES)/h264-mvc/2view-uneven-base.h264
+fate-h264-mvc-uneven-base-allviews:               CMD = framecrc -view_ids -1 -i $(TARGET_SAMPLES)/h264-mvc/2view-uneven-base.h264
+fate-h264-mvc-uneven-dep-allviews:                CMD = framecrc -view_ids -1 -i $(TARGET_SAMPLES)/h264-mvc/2view-uneven-dep.h264
+
+FATE_H264-$(call FRAMECRC, H264, H264, H264_PARSER CROP_FILTER) +=      \
+                        fate-h264-mvc-uneven-base-left                  \
+                        fate-h264-mvc-uneven-base-right                 \
+                        fate-h264-mvc-uneven-dep-left
+fate-h264-mvc-uneven-base-left:                   CMD = framecrc -view_ids -1 -i $(TARGET_SAMPLES)/h264-mvc/2view-uneven-base.h264 -vf crop=iw/2:ih:0:0
+fate-h264-mvc-uneven-base-right:                  CMD = framecrc -view_ids -1 -i $(TARGET_SAMPLES)/h264-mvc/2view-uneven-base.h264 -vf crop=iw/2:ih:iw/2:0
+fate-h264-mvc-uneven-dep-left:                    CMD = framecrc -view_ids -1 -i $(TARGET_SAMPLES)/h264-mvc/2view-uneven-dep.h264 -vf crop=iw/2:ih:0:0
 
 fate-h264-reinit-%:                               CMD = framecrc -i $(TARGET_SAMPLES)/h264/$(@:fate-h264-%=%).h264 -vf scale,format=yuv444p10le,scale=w=352:h=288
 
