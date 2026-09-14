@@ -216,6 +216,10 @@ FATE_H264  := $(FATE_H264:%=fate-h264-conformance-%)                    \
 
 FATE_H264-$(call FRAMECRC, H264, H264, H264_PARSER SCALE_FILTER) += $(FATE_H264_REINIT_TESTS:%=fate-h264-reinit-%)
 FATE_H264-$(call FRAMECRC, H264, H264, H264_PARSER) += $(FATE_H264)
+FATE_H264-$(call FRAMECRC, H264, H264, H264_PARSER CROP_FILTER) +=      \
+                         fate-h264-mvc-uneven-base-left                  \
+                         fate-h264-mvc-uneven-base-right                 \
+                         fate-h264-mvc-uneven-dep-left
 FATE_H264-$(call FRAMEMD5, H264, H264, H264_PARSER) += fate-h264-extreme-plane-pred
 FATE_H264-$(call FRAMEMD5, MOV,  H264) += fate-h264-crop-to-container
 FATE_H264-$(call DEMDEC,   H264, H264, H264_PARSER)   += fate-h264-encparams
@@ -553,10 +557,6 @@ fate-h264-mvc-uneven-base-view1:                  CMD = framecrc -view_ids 1 -i 
 fate-h264-mvc-uneven-base-allviews:               CMD = framecrc -view_ids -1 -i $(TARGET_SAMPLES)/h264-mvc/2view-uneven-base.h264
 fate-h264-mvc-uneven-dep-allviews:                CMD = framecrc -view_ids -1 -i $(TARGET_SAMPLES)/h264-mvc/2view-uneven-dep.h264
 
-FATE_H264-$(call FRAMECRC, H264, H264, H264_PARSER CROP_FILTER) +=      \
-                        fate-h264-mvc-uneven-base-left                  \
-                        fate-h264-mvc-uneven-base-right                 \
-                        fate-h264-mvc-uneven-dep-left
 fate-h264-mvc-uneven-base-left:                   CMD = framecrc -view_ids -1 -i $(TARGET_SAMPLES)/h264-mvc/2view-uneven-base.h264 -vf crop=iw/2:ih:0:0
 fate-h264-mvc-uneven-base-right:                  CMD = framecrc -view_ids -1 -i $(TARGET_SAMPLES)/h264-mvc/2view-uneven-base.h264 -vf crop=iw/2:ih:iw/2:0
 fate-h264-mvc-uneven-dep-left:                    CMD = framecrc -view_ids -1 -i $(TARGET_SAMPLES)/h264-mvc/2view-uneven-dep.h264 -vf crop=iw/2:ih:0:0
