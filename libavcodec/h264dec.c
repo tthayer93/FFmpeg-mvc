@@ -33,6 +33,7 @@
 #include "libavutil/avassert.h"
 #include "libavutil/emms.h"
 #include "libavutil/imgutils.h"
+#include "libavutil/intreadwrite.h"
 #include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/stereo3d.h"
@@ -1767,10 +1768,16 @@ static int send_next_delayed_frame(H264Context *h, AVFrame *dst_frame,
  * STANDALONE: the oldest pending half goes out unpaired when its role's
  * queue overflows, and the end-of-stream drain pairs what pairs and ships
  * the leftovers - fail-visible, never silently mis-paired, never silently
- * dropped. A queued half is held state of the decode like a picture in a
- * view's delayed output queue, and the buffer machinery is told so
- * (ff_h264_pic_held_for_compose()), because a queued half has already left
- * every list those scans read: without that, reference maintenance on the
+ * dropped. Such a half leaves composed into a full double-width frame with a
+ * black opposite half (see h264_sbs_compose_half_black()), so that a degraded
+ * composed stream keeps one output geometry from its first frame to its last
+ * rather than changing width at every unpaired frame; the missing eye is what
+ * the viewer sees, and it is not the filter graph reconfiguring and the
+ * encoder reinitialising around it. A queued half is held state of the decode
+ * like a picture in a view's delayed output queue, and the buffer machinery
+ * is told so (ff_h264_pic_held_for_compose()), because a queued half has
+ * already left every list those scans read: without that, reference
+ * maintenance on the
  * half would drop its pin, the slot would be released and recycled, and the
  * queue would hand out whatever picture took the slot over.
  *
@@ -1888,8 +1895,9 @@ static H264Picture *h264_sbs_q_head(const H264Context *h, int role)
  * and lends the combined frame its properties. Both halves come from the
  * compose pairing queues (or are the arrival itself): either may carry the
  * DELAYED_PIC_REF hold pin, which the assembly retires. Returns 1 on
- * success, 0 when no assembly happened (pict stays the dependent half,
- * delivered standalone) or a negative error code. */
+ * success, 0 when no assembly happened (pict stays the dependent half, for
+ * its caller to deliver unpaired - see h264_sbs_compose_half_black()) or a
+ * negative error code. */
 static int h264_sbs_assemble(H264Context *h, AVFrame *pict,
                              H264Picture *base, H264Picture *dep)
 {
@@ -1914,8 +1922,8 @@ static int h264_sbs_assemble(H264Context *h, AVFrame *pict,
             sbs_mismatch_logged = 1;
             av_log(h->avctx, AV_LOG_WARNING,
                    "multiview: the two views of one access unit are not "
-                   "assemblable (size/format); delivering the dependent "
-                   "view standalone\n");
+                   "assemblable (size/format); the dependent view goes out "
+                   "unpaired\n");
         }
         /* release the assembly pin so a droppable (non-reference) base is
          * not leaked; normal reference bits, if any, are unaffected */
@@ -2101,8 +2109,12 @@ static void h264_sbs_pair_audit(H264Context *h, const H264Picture *base,
  * individually, then every hundredth, always with the running total. This is
  * deliberately broader than the existing unpaired-queue warnings: the
  * output-band duplicate-predecessor frame is also a standalone half, and the
- * RSS evidence showed that those halves need a counted witness. */
-static void h264_note_standalone_delivery(H264Context *h)
+ * RSS evidence showed that those halves need a counted witness.
+ *
+ * `composed` tells whether the half went out through
+ * h264_sbs_compose_half_black(), i.e. whether the delivery kept the composed
+ * geometry, so that the witness always names what the caller received. */
+static void h264_note_standalone_delivery(H264Context *h, int composed)
 {
     if (h->view_count != 2 ||
         !h264_view_selected(h, 0) || !h264_view_selected(h, 1))
@@ -2114,19 +2126,206 @@ static void h264_note_standalone_delivery(H264Context *h)
         av_log(h->avctx, AV_LOG_WARNING,
                "multiview: delivered a standalone composed half (%d delivered "
                "so far); the pairing did not assemble it with a partner of "
-               "the other view\n", h->sbs_standalone_emitted);
+               "the other view%s\n", h->sbs_standalone_emitted,
+               composed ? "; it ships composed into a full-width frame with a "
+                        "black opposite half, so the output geometry stays put"
+                        : "");
+}
+
+/* Paint a rectangle of one plane at a constant sample value. Sample sizes of
+ * one byte are memset; the two-byte formats (the deep 4:2:0/4:2:2/4:4:4
+ * variants this decoder produces) go through AV_WN16A so the sample lands in
+ * the frame's native byte order. */
+static void h264_sbs_fill_plane(uint8_t *plane, ptrdiff_t linesize,
+                                int width, int height, int bps,
+                                unsigned value)
+{
+    for (int y = 0; y < height; y++) {
+        uint8_t *row = plane + (size_t)y * linesize;
+
+        if (bps == 1) {
+            memset(row, value, width);
+        } else {
+            for (int x = 0; x < width; x++)
+                AV_WN16A(row + (size_t)x * 2, value);
+        }
+    }
+}
+
+/* Deliver a standalone composed half without changing the output geometry:
+ * `pict` carries the half that has no partner (already finalized for
+ * delivery); rebuild it as a full double-width frame whose opposite half is
+ * black, exactly as h264_sbs_assemble() would have placed this half inside a
+ * real pair - the same physical side for the same role under the same
+ * arrangement metadata (AV_STEREO3D_FLAG_INVERT moves the base view to the
+ * right), the same property inheritance from the half, and the same plain
+ * (non-inverted) side-by-side tag in place of the two-view one.
+ *
+ * The bare single-view frame this used to deliver is half the width of the
+ * frames around it, and every consumer downstream reads that as a size
+ * change: a filter graph is reconfigured, an encoder is reinitialised, and
+ * whatever frames were in flight with it are flushed. Composing the half with
+ * a black opposite half keeps the fault visible - one eye is black for as
+ * long as the pairing cannot deliver two views - while the stream keeps one
+ * geometry from its first frame to its last, so the degradation costs the
+ * frames it is about and nothing else.
+ *
+ * The black level is the black of the frame's own color range (zero for the
+ * full range, setup black otherwise, neutral chroma), scaled to the sample
+ * depth, and the plane geometry comes from the pixel format descriptor.
+ *
+ * Returns 1 when `pict` now holds the composed frame and 0 when it was left
+ * as the half that arrived - a half that cannot be composed (no descriptor
+ * for its format, an odd width, an allocation failure) still goes out as it
+ * came in. A frame always travels out of here; nothing on this path is ever
+ * dropped. */
+static int h264_sbs_compose_half_black(H264Context *h, AVFrame *pict, int role)
+{
+    const AVPixFmtDescriptor *desc;
+    AVFrame *keep = NULL, *sbs = NULL;
+    int base_is_left = 1, half_is_left, planes, ret = 0;
+
+    /* Only the composed output is geometry-stable by construction: a decode
+     * that is not producing it (whatever made h264_sbs_should_assemble()
+     * decline) delivers selected views as they come, exactly as it always
+     * did. Every caller below is inside that mode already; the test here is
+     * what keeps this helper from ever repacking a frame of a decode that
+     * stopped composing. */
+    if (!h264_compose_active(h))
+        return 0;
+
+    /* an odd width cannot be repacked: the halves of a combined frame must
+     * start on a chroma sample boundary (see h264_sbs_assemble()) */
+    if (!pict->data[0] || (pict->width & 1))
+        return 0;
+    desc = av_pix_fmt_desc_get(pict->format);
+    if (!desc)
+        return 0;
+
+    {
+        const AVFrameSideData *sd =
+            av_frame_get_side_data(pict, AV_FRAME_DATA_STEREO3D);
+
+        if (sd) {
+            const AVStereo3D *s3d = (const AVStereo3D *)sd->data;
+
+            if (s3d->type == AV_STEREO3D_FRAMESEQUENCE ||
+                s3d->type == AV_STEREO3D_SIDEBYSIDE)
+                base_is_left = !(s3d->flags & AV_STEREO3D_FLAG_INVERT);
+        }
+    }
+    /* role 0 is the base half and role 1 the dependent half; the half keeps
+     * the side the arrangement gives its role, so a viewer that sees one eye
+     * go black loses the same eye it would have lost inside the pair */
+    half_is_left = (role == 0) == base_is_left;
+
+    planes = desc->nb_components == 1 ? 1 : 3;
+
+    sbs  = av_frame_alloc();
+    keep = av_frame_alloc();
+    if (!sbs || !keep) {
+        ret = AVERROR(ENOMEM);
+        goto out;
+    }
+    sbs->format = pict->format;
+    sbs->width  = pict->width * 2;
+    sbs->height = pict->height;
+    ret = av_frame_get_buffer(sbs, 0);
+    if (ret < 0)
+        goto out;
+    /* inherit the half's delivered properties (timestamps, flags, colour
+     * description, cropping, metadata, decode-data private reference) just as
+     * an assembled frame inherits them from its dependent half */
+    ret = av_frame_copy_props(sbs, pict);
+    if (ret < 0)
+        goto out;
+
+    for (int p = 0; p < planes; p++) {
+        const int    shx      = p ? desc->log2_chroma_w : 0;
+        const int    shy      = p ? desc->log2_chroma_h : 0;
+        const int    depth    = desc->comp[p].depth;
+        const int    bps      = (depth + 7) / 8;
+        const int    w_p      = pict->width  >> shx;
+        const int    h_p      = pict->height >> shy;
+        const size_t rowbytes = (size_t)w_p * bps;
+        /* the fill level of this plane at the frame's own range and depth: the
+         * setup black of a limited-range luma (zero for a full-range one) and
+         * the mid-point of the sample range, which is neutral chroma */
+        const unsigned black  = p ? 1u << (depth - 1)
+                                  : (pict->color_range == AVCOL_RANGE_JPEG ? 0u : 16u)
+                                    << (depth > 8 ? depth - 8 : 0);
+
+        for (int y = 0; y < h_p; y++) {
+            uint8_t *dst = sbs->data[p] + (size_t)y * sbs->linesize[p];
+            const uint8_t *src = pict->data[p] + (size_t)y * pict->linesize[p];
+
+            memcpy(half_is_left ? dst : dst + rowbytes, src, rowbytes);
+        }
+
+        h264_sbs_fill_plane(sbs->data[p] + (half_is_left ? rowbytes : 0),
+                            sbs->linesize[p], w_p, h_p, bps, black);
+    }
+
+    /* the two-view tag and the per-view id describe a half of a pair, not the
+     * frame that is going out: replace them with the plain side-by-side tag */
+    av_frame_remove_side_data(sbs, AV_FRAME_DATA_STEREO3D);
+    av_frame_remove_side_data(sbs, AV_FRAME_DATA_VIEW_ID);
+    {
+        AVStereo3D *s3d = av_stereo3d_create_side_data(sbs);
+
+        if (!s3d) {
+            ret = AVERROR(ENOMEM);
+            goto out;
+        }
+        s3d->type  = AV_STEREO3D_SIDEBYSIDE;
+        s3d->flags = 0;
+        s3d->view  = AV_STEREO3D_VIEW_PACKED;
+    }
+    av_dict_set(&sbs->metadata, "view_id", NULL, 0);
+    av_dict_set(&sbs->metadata, "stereo_mode", NULL, 0);
+
+    /* Swap the composed frame into `pict`. Keep a reference to the half until
+     * the swap succeeded: a failed reference transfer would otherwise leave
+     * the caller with nothing to deliver, and a standalone half is not a
+     * droppable frame. */
+    ret = av_frame_ref(keep, pict);
+    if (ret < 0)
+        goto out;
+    av_frame_unref(pict);
+    ret = av_frame_ref(pict, sbs);
+    if (ret < 0)
+        av_frame_move_ref(pict, keep);
+    else
+        ret = 1;
+
+out:
+    if (ret < 0) {
+        static int sbs_halfblack_fail_logged;
+
+        if (!sbs_halfblack_fail_logged) {
+            sbs_halfblack_fail_logged = 1;
+            av_log(h->avctx, AV_LOG_WARNING,
+                   "multiview: a standalone composed half could not be "
+                   "composed with a black opposite half (%s); delivering it "
+                   "as a single view\n", av_err2str(ret));
+        }
+        ret = 0;
+    }
+    av_frame_free(&keep);
+    av_frame_free(&sbs);
+    return ret;
 }
 
 /* Post-process a just-finalized multiview frame for native SBS
  * (display-ordinal FIFO pairing, see the block comment above):
  * 0 = deliver as-is, 1 = half held for its partner (*got_frame cleared),
  * 2 = assembled side-by-side frame in `pict`, 3 = the oldest held half of
- * this role shipped standalone (*got_frame set) while the new half is
- * held, or a negative error code. */
+ * this role shipped standalone, composed with a black opposite half
+ * (*got_frame set) while the new half is held, or a negative error code. */
 static int h264_sbs_process(H264Context *h, AVFrame *pict,
                             H264Picture *out, int *got_frame)
 {
-    int role, ret;
+    int role, ret, composed;
 
     if (!h264_sbs_should_assemble(h, pict))
         return 0;
@@ -2176,9 +2375,12 @@ static int h264_sbs_process(H264Context *h, AVFrame *pict,
         if (ret < 0)
             return ret;
         if (ret == 0) {
-            h264_note_standalone_delivery(h);
-            return 0;               /* not assemblable: pict stays the
-                                     * dependent half, delivered standalone */
+            /* not assemblable: pict stayed the dependent half, so this is the
+             * base side that is missing - ship the half with a black base side
+             * like any other standalone (see h264_sbs_compose_half_black()) */
+            composed = h264_sbs_compose_half_black(h, pict, 1);
+            h264_note_standalone_delivery(h, composed);
+            return 0;
         }
         h264_sbs_pair_audit(h, base, dep);
         return 2;
@@ -2201,17 +2403,21 @@ hold:
         if (got_old) {
             h264_sbs_q_pop(h, role);
             old->reference &= ~DELAYED_PIC_REF;
+            /* geometry-stable degradation: the half goes out composed into a
+             * double-width frame with its partner's side black */
+            composed = h264_sbs_compose_half_black(h, pict, role);
             if (!h->sbs_pair_unpaired_warned) {
                 h->sbs_pair_unpaired_warned = 1;
                 av_log(h->avctx, AV_LOG_WARNING,
                        "multiview: the composed pairing queue for view %d "
                        "overflowed; delivering its oldest pending half "
-                       "(poc %d) unpaired - the partner view stops keeping "
+                       "(poc %d) unpaired%s - the partner view stops keeping "
                        "up (further unpaired deliveries are not logged "
-                       "individually)\n", old->view_id, old->poc);
+                       "individually)\n", old->view_id, old->poc,
+                       composed ? " with a black opposite half" : "");
             }
             *got_frame = 1;
-            h264_note_standalone_delivery(h);
+            h264_note_standalone_delivery(h, composed);
             out->reference |= DELAYED_PIC_REF;
             h264_sbs_q_push(h, out, role);
             return 3;
@@ -2221,20 +2427,22 @@ hold:
          * overwrite that head. Deliver the arrival standalone instead
          * (fail-visible, count-preserving); the head stays queued for a
          * retry with the next arrival. */
+        ret = finalize_frame(h, pict, out, &got_old);
+        if (ret < 0)
+            return ret;
+        composed = got_old ? h264_sbs_compose_half_black(h, pict, role) : 0;
         if (!h->sbs_pair_unpaired_warned) {
             h->sbs_pair_unpaired_warned = 1;
             av_log(h->avctx, AV_LOG_WARNING,
                    "multiview: the composed pairing queue for view %d "
                    "overflowed and its head cannot be shown yet; delivering "
-                   "the arriving half (poc %d) unpaired - the partner view "
-                   "stops keeping up\n", out->view_id, out->poc);
+                   "the arriving half (poc %d) unpaired%s - the partner view "
+                   "stops keeping up\n", out->view_id, out->poc,
+                   composed ? " with a black opposite half" : "");
         }
-        ret = finalize_frame(h, pict, out, &got_old);
-        if (ret < 0)
-            return ret;
         *got_frame = got_old;
         if (*got_frame)
-            h264_note_standalone_delivery(h);
+            h264_note_standalone_delivery(h, composed);
         return 0;
     }
 
@@ -2258,7 +2466,7 @@ hold:
 static int h264_sbs_drain_eof(H264Context *h, AVFrame *pict, int *got_frame)
 {
     H264Picture *base, *dep;
-    int role, ret, got = 0;
+    int role, ret, got = 0, composed;
 
     if (!h->sbs_pair_count[0] || !h->sbs_pair_count[1]) {
         /* Only one role has leftovers: their partner never arrived. */
@@ -2273,15 +2481,19 @@ static int h264_sbs_drain_eof(H264Context *h, AVFrame *pict, int *got_frame)
             return 0;
         h264_sbs_q_pop(h, role);
         base->reference &= ~DELAYED_PIC_REF;
+        /* geometry-stable degradation: the leftover half goes out composed
+         * into a double-width frame with its partner's side black */
+        composed = h264_sbs_compose_half_black(h, pict, role);
         if (!h->sbs_pair_unpaired_warned) {
             h->sbs_pair_unpaired_warned = 1;
             av_log(h->avctx, AV_LOG_WARNING,
                    "multiview: delivering held composed half (view %d poc "
-                   "%d) unpaired at end of stream - its partner never "
-                   "arrived\n", base->view_id, base->poc);
+                   "%d) unpaired%s at end of stream - its partner never "
+                   "arrived\n", base->view_id, base->poc,
+                   composed ? " with a black opposite half" : "");
         }
         *got_frame = 1;
-        h264_note_standalone_delivery(h);
+        h264_note_standalone_delivery(h, composed);
         return 0;
     }
 
@@ -2297,10 +2509,14 @@ static int h264_sbs_drain_eof(H264Context *h, AVFrame *pict, int *got_frame)
     ret = h264_sbs_assemble(h, pict, base, dep);
     if (ret < 0)
         return ret;
-    if (ret > 0)
+    if (ret > 0) {
         h264_sbs_pair_audit(h, base, dep);
-    else /* ret == 0: not assemblable, pict stays the standalone half */
-        h264_note_standalone_delivery(h);
+    } else {
+        /* ret == 0: not assemblable, pict stayed the dependent half; ship it
+         * with a black base side like any other standalone half */
+        composed = h264_sbs_compose_half_black(h, pict, 1);
+        h264_note_standalone_delivery(h, composed);
+    }
     *got_frame = 1;
     return 0;
 }
@@ -2538,7 +2754,7 @@ static int h264_decode_frame(AVCodecContext *avctx, AVFrame *pict,
                         out->output_dup_before = 0;
                         out->output_dup_src = NULL;
                         out->output_dup_epoch = 0;
-                        h264_note_standalone_delivery(h);
+                        h264_note_standalone_delivery(h, 0);
                         /* `out` is deliberately left in next_output_pic:
                          * the parking loop parks it for re-emission at the
                          * view's next select */
