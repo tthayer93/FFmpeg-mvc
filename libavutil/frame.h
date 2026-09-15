@@ -338,8 +338,9 @@ enum AVFrameSideDataType {
      *   [2..3]           origin_x, a signed 16-bit little-endian value: the
      *                    centre-x of the union bounding box of the caption
      *                    rectangles for this display epoch, in subtitle-canvas
-     *                    pixel units (the subtitle canvas is sized to the video,
-     *                    not to the subtitle's authored resolution)
+     *                    pixel units (the subtitle canvas is sized to the
+     *                    subtitle's declared canvas, falling back to the video
+     *                    dimensions)
      *   [4..5]           extent_w, a signed 16-bit little-endian value: the
      *                    width of that union bounding box
      *   [6..7]           reserved, zero
