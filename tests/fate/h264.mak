@@ -278,6 +278,7 @@ FATE_H264_MVC_OFMD-$(call PARSERDEMDEC, H264, H264, H264) +=              \
               fate-h264-mvc-ofmd-view1                                    \
               fate-h264-mvc-ofmd-threads4                                 \
               fate-h264-mvc-ofmd-allviews                                 \
+              fate-h264-mvc-ofmd-seq32                                    \
               fate-h264-mvc-ofmd-base
 
 FATE_SAMPLES_AVCONV += $(FATE_H264-yes)
@@ -617,6 +618,35 @@ fate-h264-mvc-uneven-dep-left:                    CMD = framecrc -view_ids -1 -i
 # travels wrapped in a nesting message the SEI walk used to report as unknown, so
 # the reference pins that it no longer does (0 lines) and that the block behind
 # the wrapper was read (1 line).
+#
+# ---------------------------------------------------------------------------
+# Regenerating these fixtures (tests/fate/h264-mvc/mvc-mkfix.pl).  The .h264
+# files are authored, hand-editing a reference or a stream is never the way; a
+# change here means regenerating the stream and, if the decoded answer moved,
+# refreshing the .rejected reference through the usual FATE flow.  The generator
+# copies every non-picture NAL verbatim from its DNA (2view-p128.h264, beside it)
+# and authors only the slice payloads and the OFMD SEI, so the two commands
+# below fully determine the two streams - run them from the tests/fate/h264-mvc
+# directory:
+#
+#   # 2view-ofmd.h264: two views of 4 pictures each, DC +100 base / -100
+#   # dependent (the FATE pair convention), and an OFMD block of 4 offset
+#   # sequences describing the first 3 dependent pictures.
+#   perl mvc-mkfix.pl --ofmd --ofmd-seq=4  --ofmd-frames=3 \
+#                     --base-frames=4 --dep-frames=4 --base=100 --dep=-100 \
+#                     --out=2view-ofmd.h264
+#
+#   # 2view-ofmd-32seq.h264: identical, but the block fills the widest offset
+#   # sequence count the format carries (32, the 6-bit field's authored maximum)
+#   # rather than 4 - it exercises the same three covered pictures across the
+#   # full sequence width, and sequences 4..31 repeat sequence 3 (a flat ramp).
+#   perl mvc-mkfix.pl --ofmd --ofmd-seq=32 --ofmd-frames=3 \
+#                     --base-frames=4 --dep-frames=4 --base=100 --dep=-100 \
+#                     --out=2view-ofmd-32seq.h264
+#
+# Neither stream is on the FATE sample server yet; the gate stages both into
+# $(TARGET_SAMPLES)/h264-mvc/ from this directory (see .ci/gate.sh step 4b).
+# ---------------------------------------------------------------------------
 fate-h264-mvc-ofmd-view1:                           libavcodec/tests/h264_ofmd$(EXESUF)
 fate-h264-mvc-ofmd-view1:                           CMD = run libavcodec/tests/h264_ofmd$(EXESUF) \
                                                           $(TARGET_SAMPLES)/h264-mvc/2view-ofmd.h264 1
@@ -626,6 +656,15 @@ fate-h264-mvc-ofmd-threads4:                        CMD = run libavcodec/tests/h
 fate-h264-mvc-ofmd-allviews:                        libavcodec/tests/h264_ofmd$(EXESUF)
 fate-h264-mvc-ofmd-allviews:                        CMD = run libavcodec/tests/h264_ofmd$(EXESUF) \
                                                           $(TARGET_SAMPLES)/h264-mvc/2view-ofmd.h264 -1
+# The widest block the format carries: the dependent view alone, the same three
+# covered pictures, but each depth row now answers across all 32 offset sequences
+# (sequences 4..31 repeat the flat ramp of 3) rather than across 4.  Pinning it
+# here is what keeps a consumer's per-plane lookup honest at the ceiling of the
+# 6-bit sequence_count field, not just at the four-sequence size the fixture
+# above happens to author.
+fate-h264-mvc-ofmd-seq32:                           libavcodec/tests/h264_ofmd$(EXESUF)
+fate-h264-mvc-ofmd-seq32:                           CMD = run libavcodec/tests/h264_ofmd$(EXESUF) \
+                                                          $(TARGET_SAMPLES)/h264-mvc/2view-ofmd-32seq.h264 1
 fate-h264-mvc-ofmd-base:                            libavcodec/tests/h264_ofmd$(EXESUF)
 fate-h264-mvc-ofmd-base:                            CMD = run libavcodec/tests/h264_ofmd$(EXESUF) \
                                                           $(TARGET_SAMPLES)/h264-mvc/2view-ofmd.h264 ""
