@@ -141,13 +141,56 @@ typedef struct H264SEIContext {
  * display order inside a sequence, one byte per picture - bit7 the
  * direction_flag (set = behind the screen) and bits0..6 the magnitude in
  * native pixels, so 0x80 is the authored flat entry.
+ *
+ * The timestamp is NOT kept as it arrives: it names the group on the DISC's own
+ * 90 kHz timeline, which is not the timeline the pictures of a demuxed file are
+ * addressed by (a Matroska or MPEG-TS re-stamps from its own base, and a title
+ * authored as several clips restarts that base per clip).  One number carries
+ * the difference, base_shift90k, measured from the access unit the message
+ * travelled in - see below.
  */
 #define H264_OFMD_MAX_SEQUENCES 32   ///< sequence_count is a 6-bit field, <= 32 in practice
 #define H264_OFMD_MAX_FRAMES    64   ///< GOP size guard; the authored GOPs seen so far are <= 40
 
+/**
+ * Largest base offset a block may be calibrated by, in 90 kHz units: 2 hours.
+ *
+ * The block's own timestamp and the container timestamp of the access unit that
+ * carried it are two readings of ONE instant, so their difference is the stream's
+ * base offset - the disc's start time, of the order of tens of seconds for a
+ * disc image.  A shift beyond this bound is not a base offset at all: the
+ * anchor does not belong to this block (a stream re-based in a way this decoder
+ * cannot follow, or a block that has drifted away from its own group), and
+ * looking pictures up through such a shift would answer with the depth of some
+ * unrelated group.  The block is then used unshifted, which is what it was
+ * before calibration existed: possibly no picture matches it, which is a depth
+ * the consumer does not get, never a wrong one.
+ */
+#define H264_OFMD_MAX_BASE_SHIFT90K (2LL * 60 * 60 * 90000)
+
 typedef struct H264OFMD {
     int        present;
-    int64_t    pts90k;          ///< 90 kHz timestamp of the described GOP start
+    int64_t    pts90k;          ///< 90 kHz timestamp of the described GOP start,
+                                ///<   as it arrives on the wire (the disc's time)
+    /**
+     * What to subtract from pts90k to get the start of the described group on
+     * the timeline the pictures are addressed by: the block's disc timestamp
+     * minus the container timestamp of the access unit in which the message was
+     * parsed.  The SEI rides the start of the group it describes, so that access
+     * unit's display time IS the group's start as the container sees it, and the
+     * difference is constant across the group (reordering moves a picture's
+     * output time, not its place in the group).  Zero when the block could not
+     * be anchored: no container timestamp was known, or the measured offset was
+     * absurd (see H264_OFMD_MAX_BASE_SHIFT90K).
+     */
+    int64_t    base_shift90k;
+    /**
+     * Whether the absurd-offset case above has already been reported through
+     * this storage.  Sticky across blocks on purpose - the report is about the
+     * session reading the blocks, not about one block - and cleared with the
+     * rest of the state on a flush.
+     */
+    int        base_warned;
     AVRational fps;             ///< picture rate the block was authored at
     unsigned   sequence_count;  ///< 1 .. H264_OFMD_MAX_SEQUENCES
     unsigned   frame_count;     ///< entries per sequence (the GOP size)
@@ -158,7 +201,7 @@ struct H264ParamSets;
 
 int ff_h264_sei_decode(H264SEIContext *h, GetBitContext *gb,
                        const struct H264ParamSets *ps, H264OFMD *ofmd,
-                       void *logctx);
+                       int64_t ofmd_anchor90k, void *logctx);
 
 /**
  * Reset SEI values at the beginning of the frame.
@@ -186,18 +229,28 @@ int ff_h264_sei_process_picture_timing(H264SEIPictureTiming *h, const SPS *sps,
  * one-byte and the two-byte forms of that header occur on authored discs (and
  * the message also occurs unwrapped).
  *
+ * @param anchor90k display time of the access unit this payload was parsed in,
+ *                  in 90 kHz units on the timeline the pictures of the stream
+ *                  are addressed by, or AV_NOPTS_VALUE when that is not known.
+ *                  Every block found here is calibrated against it (see
+ *                  H264OFMD.base_shift90k), which is why it is the caller's
+ *                  access unit and not the block's own timestamp.
+ *
  * @return the number of blocks found in this payload (0, 1 or 2+; more than
  *         one is malformed, the last one then wins) or a negative error code
  *         when the payload holds a message that cannot be read.
  */
 int ff_h264_ofmd_scan(H264OFMD *ofmd, const uint8_t *payload, size_t size,
-                      void *logctx);
+                      int64_t anchor90k, void *logctx);
 
 /**
  * Resolve the subtitle-depth offsets one picture of the described group is
  * entitled to.
  *
- * @param pts90k display time of the picture in 90 kHz units
+ * @param pts90k display time of the picture in 90 kHz units, on the timeline of
+ *               the stream being decoded: the block's range is compared here
+ *               after moving it off the disc time it was stamped on, so this is
+ *               the container's time and not the block's own
  * @param offsets caller-supplied array of H264_OFMD_MAX_SEQUENCES bytes;
  *                filled with one signed offset per offset sequence when this
  *                returns > 0 (positive = toward the viewer, negative = behind

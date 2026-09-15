@@ -526,6 +526,22 @@ typedef struct H264Context {
     int64_t au_base_pkt_dts;
     int au_base_valid;
 
+    /** Subtitle-depth calibration anchor: the display time of the last packet
+     *  this context decoded, in 90 kHz units on its container's timeline
+     *  (AV_NOPTS_VALUE until a packet with a usable pts and time base arrives).
+     *  Latched per packet in h264_decode_frame() and consumed by the SEI parse of
+     *  the same packet, which stamps it into the block it reads as that block's
+     *  base offset (see H264OFMD.base_shift90k); it is not the block's own
+     *  timestamp and it is not derived once per stream, because a title authored
+     *  as several clips restarts its container timeline per clip and every clip's
+     *  blocks must be measured against its own times. Not cleared per packet: the
+     *  fragment carrying a dependent view's metadata may carry no timestamp at
+     *  all, exactly as for the au_base_* latches above. Multiview only: a
+     *  single-view context never collects a block and never reads this. Cleared by
+     *  ff_h264_flush_change() along with the block it anchors, and copied to the
+     *  next frame-thread worker with it */
+    int64_t ofmd_anchor_pts90k;
+
     /**
      * Display-ordinal pairing FIFO for the allviews-composed (native SBS)
      * output: the k-th output picture of the base view pairs with
@@ -845,11 +861,12 @@ typedef struct H264Context {
     H264SEIContext sei;
 
     /* BD3D subtitle-depth block of the group last announced in this context's
-     * stream, with its display-time range (see H264OFMD and the ofmd field
-     * documentation in h264_sei.h). Decode-session state of the context that
-     * parsed it: ff_h264_update_thread_context() hands it to the next worker
-     * the same way it hands the access-unit latches over, and
-     * ff_h264_flush_change() drops it on a seek. Never shared mutable state. */
+     * stream, with its display-time range calibrated onto this stream's timeline
+     * by ofmd_anchor_pts90k (see H264OFMD and the ofmd field documentation in
+     * h264_sei.h). Decode-session state of the context that parsed it:
+     * ff_h264_update_thread_context() hands it to the next worker the same way it
+     * hands the access-unit latches over, and ff_h264_flush_change() drops it on a
+     * seek. Never shared mutable state. */
     H264OFMD ofmd;
 
     struct AVRefStructPool *qscale_table_pool;

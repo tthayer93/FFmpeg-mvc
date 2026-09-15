@@ -579,6 +579,10 @@ int ff_h264_update_thread_context(AVCodecContext *dst,
     h->au_base_pts       = h1->au_base_pts;
     h->au_base_pkt_dts   = h1->au_base_pkt_dts;
     h->au_base_valid     = h1->au_base_valid;
+    /* Same argument for the depth anchor: it is latched by whichever context
+     * decoded the packet and consumed by whichever context parses the SEI, and
+     * under frame threading those are not the same context. */
+    h->ofmd_anchor_pts90k = h1->ofmd_anchor_pts90k;
 
     /* Subtitle-depth block: announced once per group of pictures by an SEI of
      * the access unit that starts it, and read back when a picture of that
