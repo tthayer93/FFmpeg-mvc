@@ -278,7 +278,8 @@ FATE_H264_MVC_OFMD-$(call PARSERDEMDEC, H264, H264, H264) +=              \
               fate-h264-mvc-ofmd-view1                                    \
               fate-h264-mvc-ofmd-threads4                                 \
               fate-h264-mvc-ofmd-allviews                                 \
-              fate-h264-mvc-ofmd-base
+              fate-h264-mvc-ofmd-base                                     \
+              fate-h264-mvc-ofmd-shift48
 
 FATE_SAMPLES_AVCONV += $(FATE_H264-yes)
 FATE_SAMPLES_FFPROBE += $(FATE_H264_FFPROBE-yes)
@@ -617,9 +618,38 @@ fate-h264-mvc-uneven-dep-left:                    CMD = framecrc -view_ids -1 -i
 # travels wrapped in a nesting message the SEI walk used to report as unknown, so
 # the reference pins that it no longer does (0 lines) and that the block behind
 # the wrapper was read (1 line).
+#
+# -shift48 is the calibration proof, and its evidence is a comparison rather than
+# a table. 2view-ofmd-base.h264 (mvc-mkfix.pl --ofmd --ofmd-base=48) differs from
+# 2view-ofmd.h264 in ONE thing: the block's own 90 kHz timestamp, which is stamped
+# 48 pictures of the block's declared rate later - 172800 rather than 0 - while
+# the pictures, their order and their access units are the same bytes. That is
+# what a demuxer does to a disc: it copies the metadata verbatim, disc timestamp
+# and all, while re-stamping the pictures from its own base. A decoder that
+# answers a picture's depth by comparing the picture's time against the block's
+# timestamp would then answer for the 48th picture of the group instead of the
+# first, and on a real file (whose containers start at 0 while their OFMD blocks
+# carry the disc's start time, 11.65 s ahead for Ready Player One) it would answer
+# nothing at all.
+#
+# The decoder calibrates instead: it measures each block's distance from the
+# display time of the access unit that carried it and reads the group at that
+# offset, so the two fixtures are the same group at two different distances and
+# must deliver the same rows. Hence the reference of this test,
+# tests/ref/fate/h264-mvc-ofmd-shift48, is a line-for-line copy of
+# tests/ref/fate/h264-mvc-ofmd-view1 - same rows at the same pts, the fourth
+# picture still uncovered. diff says nothing moved:
+#
+#   diff tests/ref/fate/h264-mvc-ofmd-{view1,shift48}   # no output
+#
+# and that equality is the whole point: had the shift been applied on one side
+# only, or applied in the wrong direction, the rows would land 48 pictures away.
 fate-h264-mvc-ofmd-view1:                           libavcodec/tests/h264_ofmd$(EXESUF)
 fate-h264-mvc-ofmd-view1:                           CMD = run libavcodec/tests/h264_ofmd$(EXESUF) \
                                                           $(TARGET_SAMPLES)/h264-mvc/2view-ofmd.h264 1
+fate-h264-mvc-ofmd-shift48:                         libavcodec/tests/h264_ofmd$(EXESUF)
+fate-h264-mvc-ofmd-shift48:                         CMD = run libavcodec/tests/h264_ofmd$(EXESUF) \
+                                                          $(TARGET_SAMPLES)/h264-mvc/2view-ofmd-base.h264 1
 fate-h264-mvc-ofmd-threads4:                        libavcodec/tests/h264_ofmd$(EXESUF)
 fate-h264-mvc-ofmd-threads4:                        CMD = run libavcodec/tests/h264_ofmd$(EXESUF) \
                                                           $(TARGET_SAMPLES)/h264-mvc/2view-ofmd.h264 1 4

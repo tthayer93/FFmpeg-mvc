@@ -50,6 +50,7 @@
 # usage: mvc-mkfix.pl [--dna=FILE] [--out=FILE] [--base=N] [--dep=N]
 #                     [--base-frames=N] [--dep-frames=N] [--copy] [--zero]
 #                     [--ofmd] [--ofmd-frames=N] [--ofmd-pts=N] [--ofmd-rate=N]
+#                     [--ofmd-base=N]
 #   --base/--dep     signed Intra16x16 DC coefficient of view 0 / view 1
 #   --base-frames    pictures carried by the base view (default 2)
 #   --dep-frames     pictures carried by the dependent view (default 2)
@@ -65,6 +66,17 @@
 #   --ofmd-rate      picture-rate code of the block (default 3 = 25 fps, the
 #                    rate the elementary-stream demuxer timestamps this stream
 #                    at, so every picture is covered)
+#   --ofmd-base      stamp the block this many picture durations of its own
+#                    declared rate later than --ofmd-pts says, without touching
+#                    anything else in the stream: same pictures, same order,
+#                    same access units. That is what a demuxer does to a disc:
+#                    it copies the pictures and their metadata verbatim while
+#                    re-stamping the pictures from its own base, so the block's
+#                    timestamp is left on the disc's timeline and the pictures
+#                    are not. A decoder that reads depth by the pictures' time
+#                    therefore has to move the block over by that base offset,
+#                    and a fixture that differs from another one only in this
+#                    number is the test that it does.
 #
 # The --zero check is the reason this script is kept next to the fixtures it
 # writes: authored payloads that reproduce a shipped sample byte for byte are
@@ -111,7 +123,8 @@ my ($base_lvl, $dep_lvl) = (0, 0);
 my ($base_frames, $dep_frames) = (2, 2);
 my $copy_only  = 0;
 my $zero_check = 0;
-my ($ofmd, $ofmd_frames, $ofmd_seq, $ofmd_pts, $ofmd_rate) = (0, -1, 4, 0, 3);
+my ($ofmd, $ofmd_frames, $ofmd_seq, $ofmd_pts, $ofmd_rate, $ofmd_base) =
+    (0, -1, 4, 0, 3, 0);
 
 for my $a (@ARGV) {
     $dnafile     = $1 if $a =~ /^--dna=(.+)$/;
@@ -124,6 +137,7 @@ for my $a (@ARGV) {
     $ofmd_seq    = $1 if $a =~ /^--ofmd-seq=(\d+)$/;
     $ofmd_pts    = $1 if $a =~ /^--ofmd-pts=(\d+)$/;
     $ofmd_rate   = $1 if $a =~ /^--ofmd-rate=(\d+)$/;
+    $ofmd_base   = $1 if $a =~ /^--ofmd-base=(\d+)$/;
     $ofmd        = 1  if $a eq '--ofmd';
     $copy_only   = 1  if $a eq '--copy';
     $zero_check  = 1  if $a eq '--zero';
@@ -139,6 +153,35 @@ die "--ofmd-frames must describe at most the $dep_frames dependent pictures\n"
 die "the sequence count is a 6-bit field with 32 the largest one authored\n"
     if $ofmd && ($ofmd_seq < 1 || $ofmd_seq > 32);
 die "--ofmd has nothing to do with --copy/--zero\n" if $ofmd && ($copy_only || $zero_check);
+die "--ofmd-base has nothing to shift without --ofmd\n" if !$ofmd && $ofmd_base;
+
+# frame_rate_code to {numerator, denominator} of the picture rate, the same
+# table the decoder reads the field with (libavcodec/h264_sei.c
+# ofmd_frame_rates).  --ofmd-base states its shift in pictures of this rate, so
+# the two have to agree about what one picture is worth.
+my %ofmd_rates = (
+     1 => [24000, 1001],   2 => [24, 1],   3 => [25, 1],   4 => [30000, 1001],
+     5 => [30, 1],         6 => [50, 1],   7 => [60000, 1001],
+     8 => [60, 1],         9 => [100, 1], 10 => [120, 1], 11 => [200, 1],
+    12 => [240, 1],       13 => [300, 1],
+);
+
+# one picture of the declared rate, in 90 kHz units, rounded the way the
+# decoder rounds a group length (av_rescale_rnd to nearest)
+my $ofmd_step = 0;
+if ($ofmd) {
+    my $r = $ofmd_rates{$ofmd_rate}
+        or die "--ofmd-rate=$ofmd_rate declares no picture rate\n";
+    $ofmd_step = int(90000 * $r->[1] / $r->[0] + 0.5);
+}
+
+# The timestamp of the described group as it goes on the wire: --ofmd-pts with
+# --ofmd-base added to it.  The field is 3 + 15 + 15 bits, so refuse to write a
+# timestamp that would not survive the packing.
+my $ofmd_wire_pts = $ofmd_pts + $ofmd_base * $ofmd_step;
+die sprintf("--ofmd-base=%d --ofmd-pts=%d is %d, past the 33 bits of the field\n",
+            $ofmd_base, $ofmd_pts, $ofmd_wire_pts)
+    if $ofmd && $ofmd_wire_pts > 2**33 - 1;
 
 
 open(my $fh, '<:raw', $dnafile) or die "open $dnafile: $!";
@@ -389,7 +432,7 @@ for my $k (0 .. 5) {
     $body .= $sc . ($r eq 'idr0' ? base_picture(0, 1) : $nal[$k]{raw});
 }
 # the subtitle-depth SEI of the group, ahead of the first picture it describes
-$body .= $sc . ofmd_sei_nal($ofmd_seq, $ofmd_frames, $ofmd_pts, $ofmd_rate)
+$body .= $sc . ofmd_sei_nal($ofmd_seq, $ofmd_frames, $ofmd_wire_pts, $ofmd_rate)
     if $ofmd && $dep_frames >= 1;
 $body .= $sc . dep_picture(0) if $dep_frames >= 1;
 
