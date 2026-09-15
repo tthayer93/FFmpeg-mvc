@@ -307,6 +307,10 @@ static int h264_init_context(AVCodecContext *avctx, H264Context *h)
     h->sei.common.frame_packing.arrangement_cancel_flag = -1;
     h->sei.common.unregistered.x264_build = -1;
     h->ofmd.present = 0;
+    /* not zero on purpose: 0 is a legitimate container timestamp, and an
+     * uncalibrated block must not be calibrated against a timestamp that was
+     * never seen (see ofmd_anchor_pts90k) */
+    h->ofmd_anchor_pts90k = AV_NOPTS_VALUE;
 
     /* base view (slot 0) is always registered */
     h->view_count = 1;
@@ -719,8 +723,16 @@ void ff_h264_flush_change(H264Context *h)
      * next - and a block of the group being seeked into has not been read
      * yet. Drop it and let the next access unit's metadata re-arm it; until
      * then the frames of the seeked-to group simply carry no depth, which is
-     * the same as an authored-flat picture. */
-    h->ofmd.present = 0;
+     * the same as an authored-flat picture.
+     *
+     * The anchor goes with the block rather than surviving the seek: whatever
+     * packet last set it belongs to the other side of the seek, and an anchor
+     * from there against a block read here would misplace the block's range by
+     * the seek distance - silently answering with the depth of another picture
+     * - where no anchor at all answers with no depth. Both are cleared here, so
+     * the calibration cannot outlive the state it calibrates. */
+    memset(&h->ofmd, 0, sizeof(h->ofmd));
+    h->ofmd_anchor_pts90k = AV_NOPTS_VALUE;
     /* The shared delivery watermark is per decode session: reset the single
      * canonical instance (workers are parked during avcodec_flush_buffers,
      * so no claim can interleave). The frame-threaded user-facing context
@@ -1164,10 +1176,13 @@ static int decode_nal_units(H264Context *h, AVBufferRef *buf_ref,
              * the message is authored in the dependent view of a multiview
              * stream, and the block it yields is only ever read back for a
              * picture of that view. A single-view stream passes NULL and is
-             * not touched by the scan at all. */
+             * not touched by the scan at all. The anchor travels with it: this
+             * packet's access-unit display time, which is what the block's own
+             * disc timestamp gets calibrated against (0-sized and untimestamped
+             * packets leave the last anchor in place, see h264_decode_frame). */
             ret = ff_h264_sei_decode(&h->sei, &nal->gb, &h->ps,
                                      h->view_count > 1 ? &h->ofmd : NULL,
-                                     avctx);
+                                     h->ofmd_anchor_pts90k, avctx);
             h->has_recovery_point = h->has_recovery_point || h->sei.recovery_point.recovery_frame_cnt != -1;
             if (avctx->debug & FF_DEBUG_GREEN_MD)
                 debug_green_metadata(&h->sei.green_metadata, h->avctx);
@@ -2605,6 +2620,33 @@ static int h264_decode_frame(AVCodecContext *avctx, AVFrame *pict,
         h->pkt_dts = dts;
     } else
         h->pkt_dts = avpkt->dts;
+
+    /* Subtitle-depth anchor for any block this packet carries: the display time
+     * of this access unit on the timeline its pictures are addressed by, in
+     * 90 kHz units (see H264OFMD.base_shift90k).
+     *
+     * Latched per packet rather than read where the SEI is parsed, because a
+     * demuxer that splits an access unit hands its timestamp to the first
+     * fragment only (see h264_adopt_base_view_poc()): the fragment carrying the
+     * dependent view's metadata then has no timestamp of its own, and the last
+     * one seen - from any view - is that access unit's instant. A packet without
+     * a usable timestamp therefore leaves the anchor alone rather than unsetting
+     * it; before the first one there is no anchor, and a block parsed that early
+     * stays uncalibrated.
+     *
+     * The latch is deliberately not gated on h->view_count. The packet that
+     * first reveals a multiview stream (its SPS) can carry the first depth block
+     * too, and at this point in the call that SPS has not been parsed yet.
+     * Outside a multiview stream the value is simply unused.
+     *
+     * avctx->pkt_timebase is the scale to count in, because it is the scale the
+     * picture's own display time is read in with at the lookup site
+     * (h264_slice.c): the two sides of a calibration must be counted in units the
+     * caller agreed on. */
+    if (avpkt->pts != AV_NOPTS_VALUE &&
+        avctx->pkt_timebase.num > 0 && avctx->pkt_timebase.den > 0)
+        h->ofmd_anchor_pts90k = av_rescale_q(avpkt->pts, avctx->pkt_timebase,
+                                             (AVRational){ 1, 90000 });
 
     ff_h264_unref_picture(&h->last_pic_for_ec);
 

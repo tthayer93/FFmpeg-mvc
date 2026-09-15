@@ -444,7 +444,8 @@ static inline int parse_nal_units(AVCodecParserContext *s,
              * later SEIs (e.g. the dependent view's in a merged access
              * unit) must not disturb the consumed picture-timing state. */
             if (!got_slice)
-                ff_h264_sei_decode(&p->sei, &nal.gb, &p->ps, NULL, avctx);
+                ff_h264_sei_decode(&p->sei, &nal.gb, &p->ps, NULL,
+                                   AV_NOPTS_VALUE, avctx);
             break;
         case H264_NAL_AUXILIARY_SLICE:
         case H264_NAL_EXTEN_SLICE:
