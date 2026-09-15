@@ -25,6 +25,7 @@
 
 #include "config.h"
 #include "libavutil/ffversion.h"
+#include "sub2video_plane.h"
 
 #include <string.h>
 #include <math.h>
@@ -1427,6 +1428,21 @@ static void show_subtitle(AVTextFormatContext *tfc, AVSubtitle *sub, AVStream *s
 static void print_iamf_param_definition(AVTextFormatContext *tfc, const char *name,
                                         const AVIAMFParamDefinition *param, SectionID section_id);
 
+static void print_mvc_sub_plane(AVTextFormatContext *tfc, const uint8_t *p)
+{
+    int flags = p[1];
+
+    /* a subtitle-as-video marker: which depth sequence the track maps to and,
+     * while a caption is painted, where its bounding box sits (canvas pixels) */
+    print_int("plane_valid", !!(flags & FF_SUB_PLANE_FLAG_PLANE));
+    print_int("plane_id",    (flags & FF_SUB_PLANE_FLAG_PLANE) ? p[0] : -1);
+    print_int("bbox_valid",  !!(flags & FF_SUB_PLANE_FLAG_BBOX));
+    if (flags & FF_SUB_PLANE_FLAG_BBOX) {
+        print_int("origin_x", (int16_t)AV_RL16(p + 2));
+        print_int("extent_w", (int16_t)AV_RL16(p + 4));
+    }
+}
+
 static void print_frame_side_data(AVTextFormatContext *tfc,
                                   const AVFrame *frame,
                                   const AVStream *stream)
@@ -1503,6 +1519,11 @@ static void print_frame_side_data(AVTextFormatContext *tfc,
             print_int("ss_covered", p[1] & 1);
             print_str("ss_offsets", sbuf.str);
             av_bprint_finalize(&sbuf, NULL);
+        } else if (sd->type == AV_FRAME_DATA_MVC_SUB_PLANE &&
+                   sd->size >= FF_SUB_PLANE_DATA_SIZE) {
+            /* the subtitle-plane marker the transcoder stamps on a
+             * subtitle-as-video frame (see fftools/ffmpeg_filter.c) */
+            print_mvc_sub_plane(tfc, sd->data);
         } else if (sd->type == AV_FRAME_DATA_EXIF) {
             print_int("size", sd->size);
         } else if (sd->type == AV_FRAME_DATA_IAMF_MIX_GAIN_PARAM ||
