@@ -175,6 +175,8 @@ typedef struct InputFilterPriv {
         int             bbox_valid;
         int             origin_x;   /* centre-x of the union box */
         int             extent_w;   /* width of the union box     */
+        /// one-shot guard for the side-data allocation failure warning
+        int             plane_warned;
     } sub2video;
 } InputFilterPriv;
 
@@ -368,6 +370,12 @@ static void sub2video_stamp_plane(InputFilterPriv *ifp, AVFrame *frame)
     uint8_t buf[FF_SUB_PLANE_DATA_SIZE] = { 0 };
 
     av_frame_remove_side_data(frame, AV_FRAME_DATA_MVC_SUB_PLANE);
+    /* The geometry is int16 in the payload.  Never advertise a wrong bbox:
+     * an out-of-range caption box simply drops bit1 while the plane byte
+     * remains valid. */
+    if (ifp->sub2video.bbox_valid &&
+        (ifp->sub2video.origin_x > 32767 || ifp->sub2video.extent_w > 32767))
+        has_bbox = 0;
     if (!has_plane && !has_bbox)
         return;
 
@@ -385,8 +393,12 @@ static void sub2video_stamp_plane(InputFilterPriv *ifp, AVFrame *frame)
                                        AV_FRAME_DATA_MVC_SUB_PLANE,
                                        FF_SUB_PLANE_DATA_SIZE);
         if (!sd) {
-            av_log(ifp->ifilter.graph, AV_LOG_WARNING, "Could not attach a "
-                   "subtitle plane marker; it will not reach the filtergraph\n");
+            if (!ifp->sub2video.plane_warned) {
+                av_log(ifp->ifilter.graph, AV_LOG_WARNING, "Could not attach a "
+                       "subtitle plane marker; it will not reach the "
+                       "filtergraph\n");
+                ifp->sub2video.plane_warned = 1;
+            }
             return;
         }
         memcpy(sd->data, buf, sizeof(buf));
@@ -2023,6 +2035,7 @@ static void sub2video_prepare(InputFilterPriv *ifp)
     ifp->sub2video.bbox_valid = 0;
     ifp->sub2video.origin_x   = 0;
     ifp->sub2video.extent_w   = 0;
+    ifp->sub2video.plane_warned = 0;
 
     /* sub2video structure has been (re-)initialized.
        Mark it as such so that the system will be

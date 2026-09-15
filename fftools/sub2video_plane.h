@@ -106,8 +106,9 @@ static inline void ff_sub_bbox_add(FFSubBBox *b, int x, int w)
     b->nb++;
 }
 
-/* centre-x of the union, rounded to the nearest canvas pixel (undefined when
- * the union is empty - check ff_sub_bbox_valid first) */
+/* centre-x of the union as an integer pixel coordinate (the floor of the
+ * exact midpoint; undefined when the union is empty - check
+ * ff_sub_bbox_valid first) */
 static inline int ff_sub_bbox_center_x(const FFSubBBox *b)
 {
     return (b->min_x + b->max_x) / 2;
