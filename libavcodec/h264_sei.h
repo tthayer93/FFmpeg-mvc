@@ -19,6 +19,8 @@
 #ifndef AVCODEC_H264_SEI_H
 #define AVCODEC_H264_SEI_H
 
+#include "libavutil/frame.h"
+#include "libavutil/rational.h"
 #include "get_bits.h"
 #include "h2645_sei.h"
 #include "h264_ps.h"
@@ -124,10 +126,39 @@ typedef struct H264SEIContext {
     H264SEIGreenMetaData green_metadata;
 } H264SEIContext;
 
+/**
+ * BD3D subtitle-depth (offset-metadata) block, as carried by the OFMD
+ * user-data SEI of the dependent view of a multiview stream.
+ *
+ * This is deliberately NOT part of H264SEIContext: the SEI context is reset
+ * for every access unit (ff_h264_sei_uninit()), while one of these blocks
+ * describes a whole group of pictures and has to outlive the unit that
+ * carries it.  The block is decode-session state of the context that parsed
+ * it - see the ofmd field of H264Context, its copy in
+ * ff_h264_update_thread_context() and ff_h264_flush_change().
+ *
+ * The table is kept exactly as it arrives on the wire: sequence-major, in
+ * display order inside a sequence, one byte per picture - bit7 the
+ * direction_flag (set = behind the screen) and bits0..6 the magnitude in
+ * native pixels, so 0x80 is the authored flat entry.
+ */
+#define H264_OFMD_MAX_SEQUENCES 32   ///< sequence_count is a 6-bit field, <= 32 in practice
+#define H264_OFMD_MAX_FRAMES    64   ///< GOP size guard; the authored GOPs seen so far are <= 40
+
+typedef struct H264OFMD {
+    int        present;
+    int64_t    pts90k;          ///< 90 kHz timestamp of the described GOP start
+    AVRational fps;             ///< picture rate the block was authored at
+    unsigned   sequence_count;  ///< 1 .. H264_OFMD_MAX_SEQUENCES
+    unsigned   frame_count;     ///< entries per sequence (the GOP size)
+    uint8_t    table[H264_OFMD_MAX_SEQUENCES * H264_OFMD_MAX_FRAMES];
+} H264OFMD;
+
 struct H264ParamSets;
 
 int ff_h264_sei_decode(H264SEIContext *h, GetBitContext *gb,
-                       const struct H264ParamSets *ps, void *logctx);
+                       const struct H264ParamSets *ps, H264OFMD *ofmd,
+                       void *logctx);
 
 /**
  * Reset SEI values at the beginning of the frame.
@@ -144,5 +175,38 @@ const char *ff_h264_sei_stereo_mode(const H2645SEIFramePacking *h);
  */
 int ff_h264_sei_process_picture_timing(H264SEIPictureTiming *h, const SPS *sps,
                                        void *logctx);
+
+/**
+ * Look for a BD3D subtitle-depth (OFMD) message in the payload of one SEI NAL
+ * unit and store it in *ofmd, replacing any block held there.
+ *
+ * The payload must have had its emulation prevention bytes removed already.
+ * The message is searched for by its UUID and tag rather than by walking the
+ * scalable-nesting header it is usually wrapped in, because both the
+ * one-byte and the two-byte forms of that header occur on authored discs (and
+ * the message also occurs unwrapped).
+ *
+ * @return the number of blocks found in this payload (0, 1 or 2+; more than
+ *         one is malformed, the last one then wins) or a negative error code
+ *         when the payload holds a message that cannot be read.
+ */
+int ff_h264_ofmd_scan(H264OFMD *ofmd, const uint8_t *payload, size_t size,
+                      void *logctx);
+
+/**
+ * Resolve the subtitle-depth offsets one picture of the described group is
+ * entitled to.
+ *
+ * @param pts90k display time of the picture in 90 kHz units
+ * @param offsets caller-supplied array of H264_OFMD_MAX_SEQUENCES bytes;
+ *                filled with one signed offset per offset sequence when this
+ *                returns > 0 (positive = toward the viewer, negative = behind
+ *                the screen, 0 = flat), left untouched otherwise
+ *
+ * @return the number of offset sequences written to offsets, i.e. the frame
+ *         is covered by the block, or 0 when it is not (no block stored, no
+ *         usable timestamp, or a display time outside the described group).
+ */
+int ff_h264_ofmd_lookup(const H264OFMD *ofmd, int64_t pts90k, int8_t *offsets);
 
 #endif /* AVCODEC_H264_SEI_H */

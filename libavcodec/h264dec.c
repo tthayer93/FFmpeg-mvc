@@ -306,6 +306,7 @@ static int h264_init_context(AVCodecContext *avctx, H264Context *h)
     h->frame_recovered       = 0;
     h->sei.common.frame_packing.arrangement_cancel_flag = -1;
     h->sei.common.unregistered.x264_build = -1;
+    h->ofmd.present = 0;
 
     /* base view (slot 0) is always registered */
     h->view_count = 1;
@@ -713,6 +714,13 @@ void ff_h264_flush_change(H264Context *h)
     h->mmco_reset = 1;
     h->last_in_dts = 0;
     h->last_out_dts = AV_NOPTS_VALUE;
+    /* A seek lands in the middle of a group, where the subtitle-depth block
+     * of the group before it says nothing about the pictures that come out
+     * next - and a block of the group being seeked into has not been read
+     * yet. Drop it and let the next access unit's metadata re-arm it; until
+     * then the frames of the seeked-to group simply carry no depth, which is
+     * the same as an authored-flat picture. */
+    h->ofmd.present = 0;
     /* The shared delivery watermark is per decode session: reset the single
      * canonical instance (workers are parked during avcodec_flush_buffers,
      * so no claim can interleave). The frame-threaded user-facing context
@@ -1152,7 +1160,14 @@ static int decode_nal_units(H264Context *h, AVBufferRef *buf_ref,
                 avpriv_request_sample(avctx, "Late SEI");
                 break;
             }
-            ret = ff_h264_sei_decode(&h->sei, &nal->gb, &h->ps, avctx);
+            /* Only a multiview context collects the subtitle-depth metadata:
+             * the message is authored in the dependent view of a multiview
+             * stream, and the block it yields is only ever read back for a
+             * picture of that view. A single-view stream passes NULL and is
+             * not touched by the scan at all. */
+            ret = ff_h264_sei_decode(&h->sei, &nal->gb, &h->ps,
+                                     h->view_count > 1 ? &h->ofmd : NULL,
+                                     avctx);
             h->has_recovery_point = h->has_recovery_point || h->sei.recovery_point.recovery_frame_cnt != -1;
             if (avctx->debug & FF_DEBUG_GREEN_MD)
                 debug_green_metadata(&h->sei.green_metadata, h->avctx);
@@ -1890,6 +1905,30 @@ static H264Picture *h264_sbs_q_head(const H264Context *h, int role)
     return h->sbs_pair_q[role][h->sbs_pair_head[role]];
 }
 
+/* Subtitle depth travels with the dependent view, whose half is what the
+ * composed frame shows next to the base view. The property inheritance of the
+ * assembly above already brought that half's entry over with the rest of its
+ * side data; this is the explicit copy of it, done after the side-data surgery
+ * that retires the per-view tags, so that the composed frame answers the depth
+ * question for the pair exactly as the dependent view did on its own. A frame
+ * left without the entry has no authored depth. */
+static int h264_sbs_copy_ss_offsets(AVFrame *dst, const AVFrame *dep)
+{
+    const AVFrameSideData *sd =
+        av_frame_get_side_data(dep, AV_FRAME_DATA_MVC_SS_OFFSETS);
+    AVFrameSideData *out;
+
+    if (!sd || av_frame_get_side_data(dst, AV_FRAME_DATA_MVC_SS_OFFSETS))
+        return 0;
+
+    out = av_frame_new_side_data(dst, AV_FRAME_DATA_MVC_SS_OFFSETS, sd->size);
+    if (!out)
+        return AVERROR(ENOMEM);
+    memcpy(out->data, sd->data, sd->size);
+
+    return 0;
+}
+
 /* Assemble the base half `base` with the dependent half `dep` into one
  * side-by-side frame in `pict`, which carries the delivered dependent half
  * and lends the combined frame its properties. Both halves come from the
@@ -2029,6 +2068,11 @@ static int h264_sbs_assemble(H264Context *h, AVFrame *pict,
     }
     av_dict_set(&sbs->metadata, "view_id", NULL, 0);
     av_dict_set(&sbs->metadata, "stereo_mode", NULL, 0);
+
+    /* the subtitle-depth entry of the dependent half belongs to the pair */
+    ret = h264_sbs_copy_ss_offsets(sbs, depf);
+    if (ret < 0)
+        goto fail;
 
     av_frame_unref(pict);
     ret = av_frame_ref(pict, sbs);
@@ -2235,7 +2279,10 @@ static int h264_sbs_compose_half_black(H264Context *h, AVFrame *pict, int role)
         goto out;
     /* inherit the half's delivered properties (timestamps, flags, colour
      * description, cropping, metadata, decode-data private reference) just as
-     * an assembled frame inherits them from its dependent half */
+     * an assembled frame inherits them from its dependent half - including its
+     * subtitle-depth entry when this half is a dependent picture; a base half
+     * has none, since that metadata is authored in the dependent view, and the
+     * composed frame then goes out without one, which means flat */
     ret = av_frame_copy_props(sbs, pict);
     if (ret < 0)
         goto out;
