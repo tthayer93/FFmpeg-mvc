@@ -378,4 +378,54 @@ verbatim - one attribution and one test inconsistency - on the record.
   payload rows of the acceptance suite, including a deep-seek dependent-view
   leg and the single-view selections beside the composed route, replayed
   equal on the gated binary at this tip.
+- **Docs wave and geometry-stable composition ship (2026-09-15).** This
+  tree builds and ships as **`n8.1.2-mvc4-jf4`**, superseding
+  `n8.1.2-mvc3-jf4`. On top of the tree recorded above, the delta is
+  twelve commits: the five documentation commits, the four commits of the
+  decoder change and the merge that carries them (`11b3bd7546`), the
+  version commit that names this build, and this entry. The release tag
+  for this state is that same string, so tag, `VERSION` file and banner
+  state one identity over one tree.
+- **The documentation wave (2026-09-15).** Five commits over the README
+  and the contributor guide, approved by the owner as one wave: how to
+  build this branch and install the result, the everyday multiview usage
+  patterns in the shapes people actually run them, the statement that
+  hardware acceleration is not available for H.264/MVC - a request for it
+  warns and decoding falls back to software - and where a patch belongs,
+  which is here for multiview work and upstream for general FFmpeg work.
+  Documentation only: no source, test or build file moves with any of the
+  five, so what this ledger describes is the build under it.
+- **Geometry-stable standalone composition (2026-09-15).** The composed
+  route now ships a half it cannot pair the way it ships a paired frame:
+  composed into a full double-width frame, that half in the eye position
+  its view owns and the opposite half black. Before this change such a
+  half went out at single-view width, so a composed run whose pairing
+  degraded changed its output width at every unpaired frame, and every
+  one of those changes flushed the frames a filter graph or encoder had
+  in hand. After it one output geometry holds from the first frame of the
+  run to the last: what a viewer sees is the missing eye, what a consumer
+  sees is a frame that never changes size. The delivery is deterministic
+  and pinned on this tree - generated two-view streams whose view lists
+  end one access unit apart, decoded as a whole and eye by eye, with the
+  black halves CRC-matching an independently generated black frame. The
+  composed route a caller requests before the decoder opens is untouched,
+  and every single-view decode stays byte-for-byte frozen.
+- **What this ship was measured on (2026-09-15).** Product gate on this
+  exact tree: `checkasm` 14903 checks, FATE 343 tests with 0 failures -
+  the 336 this branch already gated on plus the 7 new `h264-mvc-uneven-*`
+  entries - and the provenance self-test harness at 191 passed, 0 failed.
+  On the live composed route, 720 of 720 frames of the reference title
+  were delivered over a 30 s run in which the build this ship supersedes
+  lost 145, with zero filter-graph reconfigures and one output geometry
+  throughout.
+- **Compatibility, unchanged (2026-09-15).** The `-jf4` part of the new
+  name points where it has always pointed: **`jellyfin-ffmpeg v8.1.2-4`**,
+  unmoved, because no update from that build line landed on this ship. The
+  part a wave of ours increments is the `mvc` counter, which counts this
+  fork's own code delta and moves on every tagged line carrying the same
+  change. The containment recorded above therefore stands whole under the
+  new number - 94 queue entries landed as individual commits, 3 already
+  carried by earlier ports, 1 refused on licence with its finding and its
+  route back (`0054`: AC-4 is not provided) - and this ship neither
+  restates nor relaxes any of it.
 
