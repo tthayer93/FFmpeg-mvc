@@ -1285,9 +1285,15 @@ int ist_filter_add(InputStream *ist, InputFilter *ifilter, int is_simple,
                                                         "language", NULL, 0);
             const AVDictionaryEntry *tag  = NULL;
 
-            if (lang && lang->value[0]) {
-                char key[64];
-                av_strlcpy(key, "3d-plane-", sizeof(key));
+            const char plane_prefix[] = "3d-plane-";
+            char key[64];
+
+            /* A language tag too long to fit the whole key cannot match the
+             * language-specific tag exactly; use the bare tag rather than
+             * silently truncating the key. */
+            if (lang && lang->value[0] &&
+                strlen(lang->value) < sizeof(key) - strlen(plane_prefix)) {
+                av_strlcpy(key, plane_prefix, sizeof(key));
                 av_strlcat(key, lang->value, sizeof(key));
                 tag = av_dict_get(ist->st->metadata, key, NULL, 0);
             }
