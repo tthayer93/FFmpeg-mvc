@@ -49,7 +49,7 @@
 #
 # usage: mvc-mkfix.pl [--dna=FILE] [--out=FILE] [--base=N] [--dep=N]
 #                     [--base-frames=N] [--dep-frames=N] [--copy] [--zero]
-#                     [--ofmd] [--ofmd-frames=N] [--ofmd-pts=N] [--ofmd-rate=N]
+#                     [--ofmd] [--ofmd-frames=N] [--ofmd-seq=N] [--ofmd-pts=N] [--ofmd-rate=N]
 #   --base/--dep     signed Intra16x16 DC coefficient of view 0 / view 1
 #   --base-frames    pictures carried by the base view (default 2)
 #   --dep-frames     pictures carried by the dependent view (default 2)

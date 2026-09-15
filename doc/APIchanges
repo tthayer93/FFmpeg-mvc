@@ -4,6 +4,7 @@ API changes, most recent first:
 
 2026-09-xx - xxxxxxxxxx - lavu 61.8.100 - frame.h
   Add AV_FRAME_DATA_MVC_SS_OFFSETS.
+  Add AV_FRAME_DATA_MVC_SUB_PLANE.
 
 2026-09-xx - xxxxxxxxxx - lavu 61.7.100 - samplefmt.h
   Add AV_SAMPLE_FMT_DSD.
