@@ -276,6 +276,10 @@ typedef struct InputFilterOptions {
     int                 sub2video_width;
     int                 sub2video_height;
 
+    /* OFMD depth sequence (plane) a subtitle-as-video stream maps to, read from
+     * the stream's metadata; -1 when the stream names none. */
+    int                 sub_plane_id;
+
     // a combination of IFILTER_FLAG_*
     unsigned            flags;
 
