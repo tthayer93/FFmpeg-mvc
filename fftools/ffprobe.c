@@ -1489,6 +1489,20 @@ static void print_frame_side_data(AVTextFormatContext *tfc,
             print_film_grain_params(tfc, fgp);
         } else if (sd->type == AV_FRAME_DATA_VIEW_ID) {
             print_int("view_id", *(int*)sd->data);
+        } else if (sd->type == AV_FRAME_DATA_MVC_SS_OFFSETS && sd->size >= 2) {
+            /* the per-frame subtitle-depth row: one signed offset per offset
+             * sequence, positive toward the viewer (see the h264 decoder) */
+            const uint8_t *p = sd->data;
+            unsigned n = p[0];
+            AVBPrint sbuf;
+
+            av_bprint_init(&sbuf, 0, AV_BPRINT_SIZE_AUTOMATIC);
+            for (unsigned j = 0; j < n && (size_t)(2 + j) < sd->size; j++)
+                av_bprintf(&sbuf, "%s%d", j ? " " : "", (int)(int8_t)p[2 + j]);
+            print_int("ss_sequence_count", n);
+            print_int("ss_covered", p[1] & 1);
+            print_str("ss_offsets", sbuf.str);
+            av_bprint_finalize(&sbuf, NULL);
         } else if (sd->type == AV_FRAME_DATA_EXIF) {
             print_int("size", sd->size);
         } else if (sd->type == AV_FRAME_DATA_IAMF_MIX_GAIN_PARAM ||

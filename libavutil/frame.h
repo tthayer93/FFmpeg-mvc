@@ -305,6 +305,26 @@ enum AVFrameSideDataType {
      * The data is the AVDownmixMatrix struct defined in libavutil/downmix_info.h.
      */
     AV_FRAME_DATA_DOWNMIX_MATRIX,
+
+    /**
+     * Per-frame subtitle depth offsets for multiview (stereoscopic) video, as
+     * carried by the BD3D offset-metadata (OFMD) SEI of the dependent view.
+     *
+     * The payload is a byte array:
+     *   [0]              sequence_count, 1..32
+     *   [1]              flags; bit0 set when the frame is covered by an
+     *                    authored block, the remaining bits are 0
+     *   [2..2+n-1]       sequence_count signed 8-bit offsets for THIS frame,
+     *                    positive = toward the viewer, negative = behind the
+     *                    screen, 0 = flat
+     *
+     * Each entry addresses one offset sequence; a consumer that knows which
+     * sequence a subtitle plane belongs to uses that entry as the horizontal
+     * per-eye displacement for the frame, in video-native pixels. Absent side
+     * data means no authored depth is known for the frame, which is to be
+     * rendered flat; a zero entry is authored flat.
+     */
+    AV_FRAME_DATA_MVC_SS_OFFSETS,
 };
 
 enum AVActiveFormatDescription {

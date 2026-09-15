@@ -269,10 +269,21 @@ FATE_H264_FFPROBE-$(call DEMDEC, MATROSKA, H264) += fate-h264-skip-pred-pts
 FATE_H264_FFPROBE-$(call PARSERDEMDEC, H264, H264, H264) += fate-h264-afd
 FATE_H264_FFPROBE-$(call PARSERDEMDEC, H264, H264, H264) += fate-h264-skip-pred \
                                                             fate-h264-skip-pred-fields
+FATE_H264_FFPROBE-$(call PARSERDEMDEC, H264, H264, H264) +=               \
+              fate-h264-mvc-ofmd-sei
+# The depth reads themselves go through the decoder's public interface rather
+# than through a media tool, because only a caller can hand an elementary stream
+# the schedule a container would have carried (see the tests below).
+FATE_H264_MVC_OFMD-$(call PARSERDEMDEC, H264, H264, H264) +=              \
+              fate-h264-mvc-ofmd-view1                                    \
+              fate-h264-mvc-ofmd-threads4                                 \
+              fate-h264-mvc-ofmd-allviews                                 \
+              fate-h264-mvc-ofmd-base
 
 FATE_SAMPLES_AVCONV += $(FATE_H264-yes)
 FATE_SAMPLES_FFPROBE += $(FATE_H264_FFPROBE-yes)
-fate-h264: $(FATE_H264-yes) $(FATE_H264_FFPROBE-yes)
+FATE_SAMPLES_AVCONV += $(FATE_H264_MVC_OFMD-yes)
+fate-h264: $(FATE_H264-yes) $(FATE_H264_FFPROBE-yes) $(FATE_H264_MVC_OFMD-yes)
 
 fate-h264-conformance-aud_mw_e:                   CMD = framecrc -i $(TARGET_SAMPLES)/h264-conformance/AUD_MW_E.264
 
@@ -560,6 +571,70 @@ fate-h264-mvc-uneven-dep-allviews:                CMD = framecrc -view_ids -1 -i
 fate-h264-mvc-uneven-base-left:                   CMD = framecrc -view_ids -1 -i $(TARGET_SAMPLES)/h264-mvc/2view-uneven-base.h264 -vf crop=iw/2:ih:0:0
 fate-h264-mvc-uneven-base-right:                  CMD = framecrc -view_ids -1 -i $(TARGET_SAMPLES)/h264-mvc/2view-uneven-base.h264 -vf crop=iw/2:ih:iw/2:0
 fate-h264-mvc-uneven-dep-left:                    CMD = framecrc -view_ids -1 -i $(TARGET_SAMPLES)/h264-mvc/2view-uneven-dep.h264 -vf crop=iw/2:ih:0:0
+
+# The same two-view layout once more, this time with subtitle depth authored
+# into it: 2view-ofmd.h264 (tests/fate/h264-mvc/mvc-mkfix.pl --ofmd) carries the
+# dependent view's offset-metadata block for its first group of pictures, and
+# these tests read that depth back off the decoded frames. What the message says
+# is documented with the generator and with the decoder; what the rows below pin
+# is the answer a consumer gets.
+#
+# An elementary stream carries no schedule - nothing in it says when a picture is
+# to be displayed - so libavcodec/tests/h264_ofmd.c supplies one: it cuts the
+# stream at its access unit delimiters, hands each access unit the display time a
+# container would have carried, one twenty-fifth of a second apart in 90 kHz
+# units (the picture rate the block itself declares), and prints what every
+# delivered frame says about its depth. The block describes four offset sequences
+# over the first three pictures - one sequence per thing a presentation might
+# place at a depth of its own - so the fixture's four pictures are answered:
+#
+#   pts     0: 5 -1  0  0     pts  3600: 6  0  0  1
+#   pts  7200: 7  1  0  2     pts 10800: (no row: outside the described group)
+#
+# Those three rows are the whole wire format of an entry at once - the direction
+# bit, both encodings of a flat entry, and the sequence-major order of the table -
+# and the fourth picture is the other half of the contract: a picture the block
+# does not describe is delivered with no row at all, because an unknown depth is
+# rendered flat and is not for the decoder to invent. A run of the same fixture
+# without any schedule delivers no rows either, which is the same contract seen
+# from the side of a picture whose display time is simply not known.
+#
+# The deliveries are the ones a consumer can ask for, plus one more degree of
+# freedom:
+#   -view1     the dependent view alone, the view the metadata is authored in
+#   -allviews  the composed side-by-side route, where the pair has to answer the
+#              depth question that the dependent half alone answered before the
+#              repack, and whose arrangement side data says the repack happened
+#   -base      the base view alone, which carries none of this: a decode of it
+#              that grew depth rows would show them here
+#   -threads4  the rows of -view1 again at four decoder threads rather than one.
+#              A frame can be delivered several access units after it was decoded
+#              while the block the decoder holds has moved on to a later group,
+#              which is why a row travels with its picture: the rows of these two
+#              runs have to be identical.
+#
+# -sei is evidence of the third kind, and all of it is in the log: the block
+# travels wrapped in a nesting message the SEI walk used to report as unknown, so
+# the reference pins that it no longer does (0 lines) and that the block behind
+# the wrapper was read (1 line).
+fate-h264-mvc-ofmd-view1:                           libavcodec/tests/h264_ofmd$(EXESUF)
+fate-h264-mvc-ofmd-view1:                           CMD = run libavcodec/tests/h264_ofmd$(EXESUF) \
+                                                          $(TARGET_SAMPLES)/h264-mvc/2view-ofmd.h264 1
+fate-h264-mvc-ofmd-threads4:                        libavcodec/tests/h264_ofmd$(EXESUF)
+fate-h264-mvc-ofmd-threads4:                        CMD = run libavcodec/tests/h264_ofmd$(EXESUF) \
+                                                          $(TARGET_SAMPLES)/h264-mvc/2view-ofmd.h264 1 4
+fate-h264-mvc-ofmd-allviews:                        libavcodec/tests/h264_ofmd$(EXESUF)
+fate-h264-mvc-ofmd-allviews:                        CMD = run libavcodec/tests/h264_ofmd$(EXESUF) \
+                                                          $(TARGET_SAMPLES)/h264-mvc/2view-ofmd.h264 -1
+fate-h264-mvc-ofmd-base:                            libavcodec/tests/h264_ofmd$(EXESUF)
+fate-h264-mvc-ofmd-base:                            CMD = run libavcodec/tests/h264_ofmd$(EXESUF) \
+                                                          $(TARGET_SAMPLES)/h264-mvc/2view-ofmd.h264 ""
+fate-h264-mvc-ofmd-sei:                             CMD = count_match "unknown SEI type 37" \
+                                                            ffprobe$(PROGSSUF)$(EXESUF) -loglevel debug \
+                                                            $(TARGET_SAMPLES)/h264-mvc/2view-ofmd.h264 ; \
+                                                        count_match "Subtitle depth metadata: 4 sequences" \
+                                                            ffprobe$(PROGSSUF)$(EXESUF) -loglevel debug \
+                                                            $(TARGET_SAMPLES)/h264-mvc/2view-ofmd.h264
 
 fate-h264-reinit-%:                               CMD = framecrc -i $(TARGET_SAMPLES)/h264/$(@:fate-h264-%=%).h264 -vf scale,format=yuv444p10le,scale=w=352:h=288
 

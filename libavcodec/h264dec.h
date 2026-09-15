@@ -844,6 +844,14 @@ typedef struct H264Context {
 
     H264SEIContext sei;
 
+    /* BD3D subtitle-depth block of the group last announced in this context's
+     * stream, with its display-time range (see H264OFMD and the ofmd field
+     * documentation in h264_sei.h). Decode-session state of the context that
+     * parsed it: ff_h264_update_thread_context() hands it to the next worker
+     * the same way it hands the access-unit latches over, and
+     * ff_h264_flush_change() drops it on a seek. Never shared mutable state. */
+    H264OFMD ofmd;
+
     struct AVRefStructPool *qscale_table_pool;
     struct AVRefStructPool *mb_type_pool;
     struct AVRefStructPool *motion_val_pool;
