@@ -157,14 +157,14 @@ typedef struct H264SEIContext {
  *
  * The block's own timestamp and the container timestamp of the access unit that
  * carried it are two readings of ONE instant, so their difference is the stream's
- * base offset - the disc's start time, of the order of tens of seconds for a
- * disc image.  A shift beyond this bound is not a base offset at all: the
- * anchor does not belong to this block (a stream re-based in a way this decoder
- * cannot follow, or a block that has drifted away from its own group), and
- * looking pictures up through such a shift would answer with the depth of some
- * unrelated group.  The block is then used unshifted, which is what it was
- * before calibration existed: possibly no picture matches it, which is a depth
- * the consumer does not get, never a wrong one.
+ * base offset - the source's start time, of the order of tens of seconds for a
+ * full image.  A shift beyond this bound is not a base offset at all: the anchor
+ * does not belong to this block (a stream re-based in a way this decoder cannot
+ * follow, or a block that has drifted away from its own group), and looking
+ * pictures up through such a shift would answer with the depth of some unrelated
+ * group.  Calibration is then refused and the block is used unshifted, which is
+ * what it was before calibration existed: possibly no picture matches it, which
+ * is a depth the consumer does not get, never a wrong one.
  */
 #define H264_OFMD_MAX_BASE_SHIFT90K (2LL * 60 * 60 * 90000)
 

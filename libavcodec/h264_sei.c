@@ -26,6 +26,7 @@
  */
 
 #include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "libavutil/error.h"
@@ -353,8 +354,19 @@ static int ofmd_read_message(H264OFMD *dst, const uint8_t *msg, size_t avail,
      * container counts milliseconds, a disc 90 kHz ticks, and a picture rate
      * such as 24000/1001 is neither) at the start of every group instead of
      * letting it accumulate across a film. */
-    if (anchor90k != AV_NOPTS_VALUE)
+    if (anchor90k != AV_NOPTS_VALUE && anchor90k != INT64_MIN &&
+        anchor90k != INT64_MAX)
         shift = (int64_t)pts - anchor90k;
+    else if (anchor90k != AV_NOPTS_VALUE) {
+        /* A saturated anchor is as unusable as a missing one: refuse the
+         * calibration rather than measure the block against a fake instant. */
+        if (!dst->base_warned) {
+            dst->base_warned = 1;
+            av_log(logctx, AV_LOG_WARNING,
+                   "Subtitle depth metadata has an unusable anchor time; "
+                   "reading it uncalibrated\n");
+        }
+    }
     if (shift > H264_OFMD_MAX_BASE_SHIFT90K ||
         shift < -H264_OFMD_MAX_BASE_SHIFT90K) {
         /* Not a base offset - refuse the calibration rather than answer depth
