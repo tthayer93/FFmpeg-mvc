@@ -18,11 +18,10 @@
 
 /*
  * The arithmetic behind the mvcsubdepth filter, kept apart from the filter so
- * that it can be read as a page of arithmetic and exercised on its own (see
- * the note at the foot of this file).  Everything here is pure: it turns the
- * two frame markers a composed multiview stream hands a consumer, plus the
- * user's options, into the window each eye must read out of the subtitle
- * canvas.
+ * that it can be read as a page of arithmetic.  Everything here is pure: it
+ * turns the two frame markers a composed multiview stream hands a consumer,
+ * plus the user's options, into the window each eye must read out of the
+ * subtitle canvas.
  *
  * Self-contained on purpose (standard headers plus libavutil/defs only), so a
  * small harness can compile this exact code without the filter around it.
