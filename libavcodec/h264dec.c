@@ -306,6 +306,11 @@ static int h264_init_context(AVCodecContext *avctx, H264Context *h)
     h->frame_recovered       = 0;
     h->sei.common.frame_packing.arrangement_cancel_flag = -1;
     h->sei.common.unregistered.x264_build = -1;
+    h->ofmd.present = 0;
+    /* not zero on purpose: 0 is a legitimate container timestamp, and an
+     * uncalibrated block must not be calibrated against a timestamp that was
+     * never seen (see ofmd_anchor_pts90k) */
+    h->ofmd_anchor_pts90k = AV_NOPTS_VALUE;
 
     /* base view (slot 0) is always registered */
     h->view_count = 1;
@@ -406,6 +411,80 @@ static void h264_sbs_q_clear(H264Context *h)
         h->sbs_pair_head[r]  = 0;
         h->sbs_pair_count[r] = 0;
     }
+}
+
+/* --------------------------------------------------------------------
+ * Composed inter-view anchor queue.
+ *
+ * The SBS pairing consumes a base half as soon as it has copied its pixels
+ * into the composed frame. The dependent picture of that same access unit,
+ * however, may not have reached its Annex E inter-view reference lookup yet:
+ * display-ordinal pairing can deliver base N before dependent N has decoded.
+ * The single-eye path survives that because the base view is unselected and
+ * its pictures are parked in views[0].delayed_pic (h264_select_output_frame()).
+ * The composed path needs the same anchor lifetime without changing its
+ * pairing: keep the consumed base picture in a small FIFO and leave its
+ * DELAYED_PIC_REF pin set. The DPB slot then still names the same pixels while
+ * h264_find_inter_view_ref() resolves the dependent picture.
+ * ------------------------------------------------------------------ */
+int ff_h264_pic_held_for_iv_anchor(const H264Context *h,
+                                   const H264Picture *pic)
+{
+    for (int i = 0; i < H264_MVC_ANCHOR_Q_DEPTH; i++)
+        if ((const H264Picture *)h->iv_anchor_q[i] == pic)
+            return 1;
+    return 0;
+}
+
+/* Forget the composed inter-view anchor queue and retire its hold pins. This
+ * runs before any reference reset, exactly as the compose pairing clear does,
+ * so an IDR or seek cannot strand pins on anchors no list owns any more. */
+static void h264_iv_anchor_clear(H264Context *h)
+{
+    for (int i = 0; i < H264_MVC_ANCHOR_Q_DEPTH; i++) {
+        H264Picture *p = h->iv_anchor_q[i];
+
+        if (p)
+            p->reference &= ~DELAYED_PIC_REF;
+        h->iv_anchor_q[i] = NULL;
+    }
+    h->iv_anchor_head  = 0;
+    h->iv_anchor_count = 0;
+}
+
+/* Take over a base half from the compose stage (or an otherwise delivered
+ * base standalone) as an inter-view anchor. The queue is fixed-size and
+ * context-local, like the SBS pairing FIFO itself; overflow retires the oldest
+ * pin instead of growing the DPB occupancy. */
+static void h264_iv_anchor_retain(H264Context *h, H264Picture *p)
+{
+    int tail;
+
+    if (!h264_compose_active(h) || !p)
+        return;
+
+    for (int i = 0; i < H264_MVC_ANCHOR_Q_DEPTH; i++) {
+        if (h->iv_anchor_q[i] == p) {
+            p->reference |= DELAYED_PIC_REF;
+            return;
+        }
+    }
+
+    while (h->iv_anchor_count >= H264_MVC_ANCHOR_Q_DEPTH) {
+        H264Picture *old = h->iv_anchor_q[h->iv_anchor_head];
+
+        if (old)
+            old->reference &= ~DELAYED_PIC_REF;
+        h->iv_anchor_q[h->iv_anchor_head] = NULL;
+        h->iv_anchor_head = (h->iv_anchor_head + 1) %
+                            H264_MVC_ANCHOR_Q_DEPTH;
+        h->iv_anchor_count--;
+    }
+
+    p->reference |= DELAYED_PIC_REF;
+    tail = (h->iv_anchor_head + h->iv_anchor_count) % H264_MVC_ANCHOR_Q_DEPTH;
+    h->iv_anchor_q[tail] = p;
+    h->iv_anchor_count++;
 }
 
 /**
@@ -569,6 +648,7 @@ static av_cold int h264_decode_end(AVCodecContext *avctx)
      * slots are context memory and still live here, which is what the clear
      * has to touch to retire the hold pins of the halves left pending. */
     h264_sbs_q_clear(h);
+    h264_iv_anchor_clear(h);
 
     h->cur_pic_ptr = NULL;
 
@@ -664,6 +744,12 @@ static av_cold int h264_decode_init(AVCodecContext *avctx)
  */
 static void idr(H264Context *h)
 {
+    /* Anchors held by the composed path are decode-order state from the
+     * group being refreshed; retire their pins before the reference reset so
+     * the IDR is not blocked by stale base halves no dependent picture of the
+     * new group can name. */
+    h264_iv_anchor_clear(h);
+
     ff_h264_remove_all_refs(h);
     for (int i = 0; i < h->view_count; i++) {
         H264ViewState *w = &h->views[i];
@@ -685,8 +771,12 @@ void ff_h264_flush_change(H264Context *h)
      * state: a seek drops the halves that were waiting for each other. Retire
      * their pins first and forget the queues before the reference reset below
      * can re-pin them, so that the flush finds nothing held for the compose
-     * stage and no pin is stranded on a picture no list names any more. */
+     * stage and no pin is stranded on a picture no list names any more. The
+     * same applies to the recently composed inter-view anchors: they are the
+     * continuation of that composed lifecycle, not references allowed to
+     * outlive a seek. */
     h264_sbs_q_clear(h);
+    h264_iv_anchor_clear(h);
 
     h->prev_interlaced_frame = 1;
     idr(h);
@@ -713,6 +803,21 @@ void ff_h264_flush_change(H264Context *h)
     h->mmco_reset = 1;
     h->last_in_dts = 0;
     h->last_out_dts = AV_NOPTS_VALUE;
+    /* A seek lands in the middle of a group, where the subtitle-depth block
+     * of the group before it says nothing about the pictures that come out
+     * next - and a block of the group being seeked into has not been read
+     * yet. Drop it and let the next access unit's metadata re-arm it; until
+     * then the frames of the seeked-to group simply carry no depth, which is
+     * the same as an authored-flat picture.
+     *
+     * The anchor goes with the block rather than surviving the seek: whatever
+     * packet last set it belongs to the other side of the seek, and an anchor
+     * from there against a block read here would misplace the block's range by
+     * the seek distance - silently answering with the depth of another picture
+     * - where no anchor at all answers with no depth. Both are cleared here, so
+     * the calibration cannot outlive the state it calibrates. */
+    memset(&h->ofmd, 0, sizeof(h->ofmd));
+    h->ofmd_anchor_pts90k = AV_NOPTS_VALUE;
     /* The shared delivery watermark is per decode session: reset the single
      * canonical instance (workers are parked during avcodec_flush_buffers,
      * so no claim can interleave). The frame-threaded user-facing context
@@ -1101,7 +1206,17 @@ static int decode_nal_units(H264Context *h, AVBufferRef *buf_ref,
                 avpriv_request_sample(avctx, "Late SEI");
                 break;
             }
-            ret = ff_h264_sei_decode(&h->sei, &nal->gb, &h->ps, avctx);
+            /* Only a multiview context collects the subtitle-depth metadata:
+             * the message is authored in the dependent view of a multiview
+             * stream, and the block it yields is only ever read back for a
+             * picture of that view. A single-view stream passes NULL and is
+             * not touched by the scan at all. The anchor travels with it: this
+             * packet's access-unit display time, which is what the block's own
+             * disc timestamp gets calibrated against (0-sized and untimestamped
+             * packets leave the last anchor in place, see h264_decode_frame). */
+            ret = ff_h264_sei_decode(&h->sei, &nal->gb, &h->ps,
+                                     h->view_count > 1 ? &h->ofmd : NULL,
+                                     h->ofmd_anchor_pts90k, avctx);
             h->has_recovery_point = h->has_recovery_point || h->sei.recovery_point.recovery_frame_cnt != -1;
             if (avctx->debug & FF_DEBUG_GREEN_MD)
                 debug_green_metadata(&h->sei.green_metadata, h->avctx);
@@ -1838,6 +1953,30 @@ static H264Picture *h264_sbs_q_head(const H264Context *h, int role)
     return h->sbs_pair_q[role][h->sbs_pair_head[role]];
 }
 
+/* Subtitle depth travels with the dependent view, whose half is what the
+ * composed frame shows next to the base view. The property inheritance of the
+ * assembly above already brought that half's entry over with the rest of its
+ * side data; this is the explicit copy of it, done after the side-data surgery
+ * that retires the per-view tags, so that the composed frame answers the depth
+ * question for the pair exactly as the dependent view did on its own. A frame
+ * left without the entry has no authored depth. */
+static int h264_sbs_copy_ss_offsets(AVFrame *dst, const AVFrame *dep)
+{
+    const AVFrameSideData *sd =
+        av_frame_get_side_data(dep, AV_FRAME_DATA_MVC_SS_OFFSETS);
+    AVFrameSideData *out;
+
+    if (!sd || av_frame_get_side_data(dst, AV_FRAME_DATA_MVC_SS_OFFSETS))
+        return 0;
+
+    out = av_frame_new_side_data(dst, AV_FRAME_DATA_MVC_SS_OFFSETS, sd->size);
+    if (!out)
+        return AVERROR(ENOMEM);
+    memcpy(out->data, sd->data, sd->size);
+
+    return 0;
+}
+
 /* Assemble the base half `base` with the dependent half `dep` into one
  * side-by-side frame in `pict`, which carries the delivered dependent half
  * and lends the combined frame its properties. Both halves come from the
@@ -1944,10 +2083,14 @@ static int h264_sbs_assemble(H264Context *h, AVFrame *pict,
         }
     }
 
-    /* the base half's pixels are now fully copied into the combined
-     * frame: clear the assembly pin so a droppable (non-reference) base
-     * can be reclaimed; a base still referenced keeps its normal bits */
-    base->reference &= ~DELAYED_PIC_REF;
+    /* The base half's pixels are now fully copied into the combined frame.
+     * Its compose-pairing pin cannot simply be dropped: the dependent picture
+     * of the same access unit may still need this base picture as its Annex E
+     * inter-view anchor, and the SBS queue has already removed it from every
+     * output list the normal anchor scan reads. Transfer the hold to the small
+     * inter-view anchor queue (bounded, like the standalone unselected-view
+     * parking) instead of changing the composed frame pairing. */
+    h264_iv_anchor_retain(h, base);
     /* The base half is consumed by the combined frame: mark it delivered
      * so the committed-picture machinery retires it. Without this it is
      * parked, re-emitted and re-held at every subsequent access unit, and
@@ -1977,6 +2120,11 @@ static int h264_sbs_assemble(H264Context *h, AVFrame *pict,
     }
     av_dict_set(&sbs->metadata, "view_id", NULL, 0);
     av_dict_set(&sbs->metadata, "stereo_mode", NULL, 0);
+
+    /* the subtitle-depth entry of the dependent half belongs to the pair */
+    ret = h264_sbs_copy_ss_offsets(sbs, depf);
+    if (ret < 0)
+        goto fail;
 
     av_frame_unref(pict);
     ret = av_frame_ref(pict, sbs);
@@ -2183,7 +2331,10 @@ static int h264_sbs_compose_half_black(H264Context *h, AVFrame *pict, int role)
         goto out;
     /* inherit the half's delivered properties (timestamps, flags, colour
      * description, cropping, metadata, decode-data private reference) just as
-     * an assembled frame inherits them from its dependent half */
+     * an assembled frame inherits them from its dependent half - including its
+     * subtitle-depth entry when this half is a dependent picture; a base half
+     * has none, since that metadata is authored in the dependent view, and the
+     * composed frame then goes out without one, which means flat */
     ret = av_frame_copy_props(sbs, pict);
     if (ret < 0)
         goto out;
@@ -2350,7 +2501,14 @@ hold:
             return ret;
         if (got_old) {
             h264_sbs_q_pop(h, role);
-            old->reference &= ~DELAYED_PIC_REF;
+            if (role == 0) {
+                /* A base half shipped without its partner has still left the
+                 * normal delayed list; retain it briefly as an inter-view
+                 * anchor just as a paired base half is. */
+                h264_iv_anchor_retain(h, old);
+            } else {
+                old->reference &= ~DELAYED_PIC_REF;
+            }
             /* geometry-stable degradation: the half goes out composed into a
              * double-width frame with its partner's side black */
             composed = h264_sbs_compose_half_black(h, pict, role);
@@ -2428,7 +2586,14 @@ static int h264_sbs_drain_eof(H264Context *h, AVFrame *pict, int *got_frame)
         if (!got)
             return 0;
         h264_sbs_q_pop(h, role);
-        base->reference &= ~DELAYED_PIC_REF;
+        if (role == 0) {
+            /* Leftover base halves can still be inter-view anchors while the
+             * end-of-stream dependent pictures flush; pair lifetime is done,
+             * anchor lifetime is not. */
+            h264_iv_anchor_retain(h, base);
+        } else {
+            base->reference &= ~DELAYED_PIC_REF;
+        }
         /* geometry-stable degradation: the leftover half goes out composed
          * into a double-width frame with its partner's side black */
         composed = h264_sbs_compose_half_black(h, pict, role);
@@ -2506,6 +2671,33 @@ static int h264_decode_frame(AVCodecContext *avctx, AVFrame *pict,
         h->pkt_dts = dts;
     } else
         h->pkt_dts = avpkt->dts;
+
+    /* Subtitle-depth anchor for any block this packet carries: the display time
+     * of this access unit on the timeline its pictures are addressed by, in
+     * 90 kHz units (see H264OFMD.base_shift90k).
+     *
+     * Latched per packet rather than read where the SEI is parsed, because a
+     * demuxer that splits an access unit hands its timestamp to the first
+     * fragment only (see h264_adopt_base_view_poc()): the fragment carrying the
+     * dependent view's metadata then has no timestamp of its own, and the last
+     * one seen - from any view - is that access unit's instant. A packet without
+     * a usable timestamp therefore leaves the anchor alone rather than unsetting
+     * it; before the first one there is no anchor, and a block parsed that early
+     * stays uncalibrated.
+     *
+     * The latch is deliberately not gated on h->view_count. The packet that
+     * first reveals a multiview stream (its SPS) can carry the first depth block
+     * too, and at this point in the call that SPS has not been parsed yet.
+     * Outside a multiview stream the value is simply unused.
+     *
+     * avctx->pkt_timebase is the scale to count in, because it is the scale the
+     * picture's own display time is read in with at the lookup site
+     * (h264_slice.c): the two sides of a calibration must be counted in units the
+     * caller agreed on. */
+    if (avpkt->pts != AV_NOPTS_VALUE &&
+        avctx->pkt_timebase.num > 0 && avctx->pkt_timebase.den > 0)
+        h->ofmd_anchor_pts90k = av_rescale_q(avpkt->pts, avctx->pkt_timebase,
+                                             (AVRational){ 1, 90000 });
 
     ff_h264_unref_picture(&h->last_pic_for_ec);
 

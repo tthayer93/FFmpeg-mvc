@@ -26,11 +26,13 @@
  */
 
 #include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "libavutil/error.h"
 #include "libavutil/log.h"
 #include "libavutil/macros.h"
+#include "libavutil/mathematics.h"
 #include "libavutil/mem.h"
 #include "bytestream.h"
 #include "get_bits.h"
@@ -226,8 +228,301 @@ static int decode_green_metadata(H264SEIGreenMetaData *h, GetByteContext *gb)
     return 0;
 }
 
+/* ------------------------------------------------------------------------
+ * BD3D subtitle-depth offset metadata (the "OFMD" user data unregistered SEI)
+ *
+ * The BD3D OFMD format per public implementations (LAVFilters msdk_mvc,
+ * MPC-BE MSDKDecoder ParseOffsetMetadata, Kodi BlurayOffsetMetadata), which
+ * are the de-facto reference for this message: no normative text for its body
+ * is freely available.  The field layout, the sign convention and the
+ * picture-rate table below are ported from those parsers; the discovery on
+ * which this task is based is recorded in the project discovery notes.
+ *
+ * Transport: the dependent view of a multiview stream carries it once per
+ * group of pictures, as a user_data_unregistered (payload type 5) message with
+ * the UUID below and the four-byte tag "OFMD", usually - but not always -
+ * wrapped in a scalable-nesting (payload type 37) message.  This parser does
+ * not walk that nesting: the operation-point header of the wrapper comes in a
+ * one-byte and in a two-byte form in the wild, and the message is also seen
+ * unwrapped, so the payload of the SEI NAL unit is scanned for the UUID and
+ * tag instead (the payload arrives with its emulation prevention bytes
+ * already removed, by the NAL unit splitter).
+ *
+ * Body, immediately after the tag (a 10-byte header, then the table):
+ *   0     marker_bit, reserved, frame_rate_code (low nibble, see below)
+ *   1-5   reserved, then the 36 bit 90 kHz presentation timestamp of the
+ *         described group in 3 + 15 + 15 bits with the marker bits between
+ *   6     two marker bits, then sequence_count (6 bits, 1..32)
+ *   7     frame_count (8 bits): the pictures of the described group
+ *   8-9   opaque to every implementation that reads this message
+ *   10..  sequence_count * frame_count bytes: the offset table, sequence-major
+ *         and in display order inside a sequence, one byte per picture - bit7
+ *         direction_flag (set = behind the screen), bits0..6 magnitude in
+ *         native pixels.  0x80 therefore means flat.
+ * ------------------------------------------------------------------------ */
+
+static const uint8_t ofmd_uuid[16] = {
+    0x17, 0xee, 0x8c, 0x60, 0xf8, 0x4d, 0x11, 0xd9,
+    0x8c, 0xd6, 0x08, 0x00, 0x20, 0x0c, 0x9a, 0x66
+};
+static const uint8_t ofmd_tag[4] = { 'O', 'F', 'M', 'D' };
+
+/* frame_rate_code to picture rate, the table the public parsers key the field
+ * with (1 = 24000/1001, 2 = 24, 3 = 25, 4 = 30000/1001, 5 = 30, 6 = 50,
+ * 7 = 60000/1001), completed over the whole 4-bit field.  A zero numerator
+ * means the code carries no rate. */
+static const AVRational ofmd_frame_rates[16] = {
+    {    0, 1 }, /*  0: no rate */
+    {24000, 1001}, {   24, 1 }, {   25, 1 }, {30000, 1001},
+    {   30, 1 }, {   50, 1 }, {60000, 1001}, {   60, 1 },
+    {  100, 1 }, {  120, 1 }, {  200, 1 }, {  240, 1 }, {  300, 1 },
+    {    0, 1 }, /* 14: reserved */
+    {    0, 1 }, /* 15: reserved */
+};
+
+/* One message, with msg pointing at its UUID. The block is assembled locally
+ * and published only when the whole table is there, so a malformed message
+ * cannot leave a half-updated block behind.
+ *
+ * anchor90k is the display time of the access unit this message travelled in,
+ * counted on the timeline the pictures of the stream are addressed by (90 kHz
+ * units), or AV_NOPTS_VALUE when the caller does not know it.  It calibrates
+ * the block: pts90k below names the group on the disc's own timeline, while a
+ * picture is looked up by the time its container gave it, and the two differ by
+ * whatever the demuxer re-based to - which for a title made of several clips is
+ * a different amount per clip, so the calibration is measured per block from the
+ * instant its own message arrived rather than derived once per stream.  One
+ * correction is made to that per-block measurement: an access unit can carry the
+ * message some pictures into the group the message describes, and the reading
+ * is then short by that lag, so within a run of agreeing blocks the largest
+ * reading is taken to be the base offset and every block of the run is placed
+ * by it (see H264OFMD.base_run90k). */
+static int ofmd_read_message(H264OFMD *dst, const uint8_t *msg, size_t avail,
+                             int64_t anchor90k, void *logctx)
+{
+    const uint8_t *hdr = msg + 20;  /* the UUID (16) and the tag (4) precede it */
+    H264OFMD parsed;
+    GetBitContext gb;
+    unsigned sequence_count, frame_count;
+    int64_t shift = 0;
+    int measured  = 0;   /* shift holds a calibration measured against an anchor */
+    uint64_t pts;
+    int hi, marker1, marker2, mid, lo, ret;
+
+    if (avail < 30) {
+        av_log(logctx, AV_LOG_WARNING,
+               "Truncated subtitle depth metadata (%zu of 30 bytes)\n", avail);
+        return AVERROR_INVALIDDATA;
+    }
+
+    /* the 36 bit timestamp of the group, in 3 + 15 + 15 bits with the marker
+     * bits between, after five reserved bits */
+    ret = init_get_bits8(&gb, hdr + 1, 5);
+    if (ret < 0)
+        return ret;
+    skip_bits(&gb, 5);
+    hi      = get_bits(&gb, 3);
+    marker1 = get_bits1(&gb);
+    mid     = get_bits(&gb, 15);
+    marker2 = get_bits1(&gb);
+    lo      = get_bits(&gb, 15);
+    if (!marker1 || !marker2)
+        av_log(logctx, AV_LOG_DEBUG,
+               "Subtitle depth metadata without marker bits in its timestamp\n");
+    pts = ((uint64_t)hi << 30) | ((uint64_t)mid << 15) | (uint64_t)lo;
+
+    sequence_count = hdr[6] & 0x3F;
+    frame_count    = hdr[7];
+    /* hdr[8] and hdr[9] are opaque: every implementation that reads this
+     * message skips them */
+
+    if (sequence_count == 0 || sequence_count > H264_OFMD_MAX_SEQUENCES ||
+        frame_count == 0 || frame_count > H264_OFMD_MAX_FRAMES) {
+        av_log(logctx, AV_LOG_WARNING,
+               "Unsupported subtitle depth metadata shape "
+               "(%u sequences x %u frames)\n", sequence_count, frame_count);
+        return AVERROR_INVALIDDATA;
+    }
+    if (10 + (size_t)sequence_count * frame_count > avail) {
+        av_log(logctx, AV_LOG_WARNING,
+               "Truncated subtitle depth metadata table "
+               "(%u x %u entries in %zu bytes)\n",
+               sequence_count, frame_count, avail - 10);
+        return AVERROR_INVALIDDATA;
+    }
+
+    /* Calibrate (raw).  Where the access unit carrying this message rides the
+     * start of the group the message describes, the distance between the
+     * block's own stamp and that access unit's is the whole correction - see
+     * H264OFMD.base_shift90k.  An access unit riding into the middle of its own
+     * group reads that correction short by the lag, and the run estimate below
+     * replaces it with the reading of a block that was not short whenever the
+     * run holds one.
+     *
+     * Measuring it per block also absorbs the difference of timescales (a
+     * container counts milliseconds, a disc 90 kHz ticks, and a picture rate
+     * such as 24000/1001 is neither) at the start of every group instead of
+     * letting it accumulate across a film. */
+    if (anchor90k != AV_NOPTS_VALUE && anchor90k != INT64_MIN &&
+        anchor90k != INT64_MAX) {
+        shift = (int64_t)pts - anchor90k;
+        measured = 1;
+    }
+    else if (anchor90k != AV_NOPTS_VALUE) {
+        /* A saturated anchor is as unusable as a missing one: refuse the
+         * calibration rather than measure the block against a fake instant. */
+        if (!dst->base_warned) {
+            dst->base_warned = 1;
+            av_log(logctx, AV_LOG_WARNING,
+                   "Subtitle depth metadata has an unusable anchor time; "
+                   "reading it uncalibrated\n");
+        }
+    }
+    if (shift > H264_OFMD_MAX_BASE_SHIFT90K ||
+        shift < -H264_OFMD_MAX_BASE_SHIFT90K) {
+        /* Not a base offset - refuse the calibration rather than answer depth
+         * questions out of an unrelated group (see the bound's documentation). */
+        if (!dst->base_warned) {
+            dst->base_warned = 1;
+            av_log(logctx, AV_LOG_WARNING,
+                   "Subtitle depth metadata stamped %.1f s away from the display "
+                   "time of its own access unit; reading it uncalibrated\n",
+                   (double)shift / 90000);
+        }
+        shift    = 0;
+        measured = 0;
+    }
+
+    parsed = (H264OFMD) {
+        .present        = 1,
+        .pts90k         = (int64_t)pts,
+        .base_shift90k  = shift,
+        .base_warned    = dst->base_warned, /* the report is per session, not
+                                             * per block: carry it over */
+        .fps            = ofmd_frame_rates[hdr[0] & 0x0F],
+        .sequence_count = sequence_count,
+        .frame_count    = frame_count,
+    };
+    if (!parsed.fps.num)
+        av_log(logctx, AV_LOG_WARNING,
+               "Subtitle depth metadata with an unusable picture rate "
+               "(code %u); ignoring it\n", hdr[0] & 0x0F);
+    else
+        memcpy(parsed.table, hdr + 10, (size_t)sequence_count * frame_count);
+
+    if (!parsed.fps.num)
+        return AVERROR_INVALIDDATA;
+
+    /* Max-run phase estimate (see H264OFMD.base_run90k).  A measured block
+     * joins the run of blocks whose raw calibrations agree within twice one
+     * block duration of each other; the run's base is the largest raw reading
+     * in it, because an access unit can carry its message into the group the
+     * message describes but never ahead of that group's start, so a raw
+     * calibration can only be short of the true base offset, never long, and
+     * the block of the run that arrived earliest reads closest to the truth.
+     * A block whose raw reading lies outside that window reopens the run at
+     * its own value: the base of the title moved (a clip restart), and the
+     * on-time behavior of measuring each block from its own access unit takes
+     * over again until the new run locks.  While no block of the run has been
+     * seen to arrive on time the estimate is provisional - the first block's
+     * raw reading stands for the whole run, which places every group of the
+     * run by the same amount: tiling without per-block jitter, a constant
+     * small distance from the truth if every message of the run rides late by
+     * that much, and nothing to correct once an on-time block shows up. */
+    if (measured) {
+        int64_t block_dur = av_rescale_rnd((int64_t)90000 * frame_count,
+                                           parsed.fps.den, parsed.fps.num,
+                                           AV_ROUND_NEAR_INF);
+
+        if (!dst->base_run_valid ||
+            FFABS(shift - dst->base_run90k) > 2 * block_dur)
+            dst->base_run90k = shift;                    /* provisional/reinit */
+        else if (shift > dst->base_run90k)
+            dst->base_run90k = shift;                    /* the run locks here */
+        parsed.base_shift90k  = dst->base_run90k;
+        parsed.base_run90k    = dst->base_run90k;
+        parsed.base_run_valid = 1;
+    } else {
+        /* Uncalibrated blocks are published as before (read unshifted) and say
+         * nothing about the run: the state travels through them untouched. */
+        parsed.base_run90k    = dst->base_run90k;
+        parsed.base_run_valid = dst->base_run_valid;
+    }
+
+    *dst = parsed;
+
+    av_log(logctx, AV_LOG_DEBUG,
+           "Subtitle depth metadata: %u sequences x %u frames at pts %lld "
+           "(stream pts %lld, measured %lld, run %lld)\n", sequence_count,
+           frame_count, (long long)pts, (long long)(pts - shift),
+           (long long)(measured ? shift : 0),
+           (long long)dst->base_run90k);
+
+    return 0;
+}
+
+int ff_h264_ofmd_scan(H264OFMD *ofmd, const uint8_t *payload, size_t size,
+                      int64_t anchor90k, void *logctx)
+{
+    size_t i;
+    int found = 0;
+
+    for (i = 0; i + 30 <= size; i++) {
+        if (memcmp(payload + i, ofmd_uuid, sizeof(ofmd_uuid)) ||
+            memcmp(payload + i + 16, ofmd_tag, sizeof(ofmd_tag)))
+            continue;
+        found++;
+        /* the last message of a payload wins, as it does everywhere else:
+         * one message describes the group that is about to be decoded */
+        ofmd_read_message(ofmd, payload + i, size - i, anchor90k, logctx);
+    }
+
+    return found;
+}
+
+int ff_h264_ofmd_lookup(const H264OFMD *ofmd, int64_t pts90k, int8_t *offsets)
+{
+    int64_t gop_units, start, delta, index;
+    unsigned seq, frame;
+
+    if (!ofmd->present || !ofmd->fps.num || pts90k == AV_NOPTS_VALUE)
+        return 0;
+
+    /* The block describes the group [start, start + duration) on the timeline of
+     * the stream being decoded: its own timestamp is the disc's, so move the
+     * group over by the offset the run estimate settled on for this block (0
+     * whenever the two timelines are the same, which is what a block that could
+     * not be anchored also gets). A picture outside the group is not covered,
+     * and the caller then reports no depth at all rather than an invented one. */
+    start     = ofmd->pts90k - ofmd->base_shift90k;
+    gop_units = av_rescale_rnd((int64_t)90000 * ofmd->frame_count,
+                               ofmd->fps.den, ofmd->fps.num, AV_ROUND_NEAR_INF);
+    if (pts90k < start || pts90k - start >= gop_units)
+        return 0;
+
+    /* Which picture of the group this display time names, rounded to nearest:
+     * container timestamps are integers while a picture rate such as
+     * 24000/1001 is not, so the arithmetic is never exact. The rounding is
+     * well inside half a picture interval for any authored rate. */
+    delta = pts90k - start;
+    index = av_rescale_rnd(delta, ofmd->fps.num, (int64_t)90000 * ofmd->fps.den,
+                           AV_ROUND_NEAR_INF);
+    index = FFMIN(FFMAX(index, 0), (int64_t)ofmd->frame_count - 1);
+    frame = (unsigned)index;
+
+    for (seq = 0; seq < ofmd->sequence_count; seq++) {
+        uint8_t entry = ofmd->table[seq * ofmd->frame_count + frame];
+        int value     = entry & 0x7F;
+
+        offsets[seq] = (int8_t)((entry & 0x80) ? -value : value);
+    }
+
+    return ofmd->sequence_count;
+}
+
 int ff_h264_sei_decode(H264SEIContext *h, GetBitContext *gb,
-                       const H264ParamSets *ps, void *logctx)
+                       const H264ParamSets *ps, H264OFMD *ofmd,
+                       int64_t ofmd_anchor90k, void *logctx)
 {
     GetByteContext gbyte;
     int master_ret = 0;
@@ -235,6 +530,18 @@ int ff_h264_sei_decode(H264SEIContext *h, GetBitContext *gb,
     av_assert1((get_bits_count(gb) % 8) == 0);
     bytestream2_init(&gbyte, gb->buffer + get_bits_count(gb) / 8,
                      get_bits_left(gb) / 8);
+
+    /* A decoder that outputs pictures of a multiview stream collects the
+     * subtitle-depth metadata of this access unit; everyone else (the parser,
+     * a single-view decode) passes NULL and pays nothing for the look. The
+     * scan runs over the whole payload rather than over the messages the walk
+     * below recognises, because the message travels wrapped in a nesting whose
+     * header form varies - and wrapped in a type this walk does not decode.
+     * A caller that passes a block to fill also passes this access unit's
+     * display time to calibrate it with (AV_NOPTS_VALUE if it has none). */
+    if (ofmd)
+        ff_h264_ofmd_scan(ofmd, gbyte.buffer, bytestream2_get_bytes_left(&gbyte),
+                          ofmd_anchor90k, logctx);
 
     while (bytestream2_get_bytes_left(&gbyte) > 2 && bytestream2_peek_ne16(&gbyte)) {
         GetByteContext gbyte_payload;
@@ -278,6 +585,12 @@ int ff_h264_sei_decode(H264SEIContext *h, GetBitContext *gb,
             break;
         case SEI_TYPE_GREEN_METADATA:
             ret = decode_green_metadata(&h->green_metadata, &gbyte_payload);
+            break;
+        case SEI_TYPE_MVC_SCALABLE_NESTING:
+            /* Authored multiview streams wrap the subtitle-depth metadata (and
+             * other messages) in this payload type. Its content is read by the
+             * payload scan above; here it only has to be claimed, so that a
+             * wrapper is not reported as an unknown message. */
             break;
         default:
             ret = ff_h2645_sei_message_decode(&h->common, type, AV_CODEC_ID_H264,
