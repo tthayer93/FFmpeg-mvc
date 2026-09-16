@@ -120,7 +120,7 @@ static const AVOption mvcsubdepth_options[] = {
     { NULL }
 };
 
-FRAMESYNC_DEFINE_CLASS(mvcsubdepth, MVCSubDepthContext, fs)
+FRAMESYNC_DEFINE_CLASS(mvcsubdepth, MVCSubDepthContext, fs);
 
 static int check_marker(MVCSubDepthContext *s, AVFilterContext *ctx,
                         const AVFrame *main)
