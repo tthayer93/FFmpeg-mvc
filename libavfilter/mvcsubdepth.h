@@ -129,10 +129,15 @@ static inline int ff_mvc_sub_center_x(const uint8_t *data, int size)
 }
 
 /* ---------------------------------------------------------------------------
- * Geometry.  All three functions work in the pixels of the padded subtitle
- * canvas the filter composites from: the subtitle frame scaled to one eye,
- * with margin columns of slack added on both sides so a shift has somewhere
- * to go.  A window is one eye's worth of columns read out of that canvas.
+ * Geometry.  The functions work in the pixels of the padded subtitle canvas
+ * the filter composites from: the subtitle frame scaled to one eye, with margin
+ * columns of slack added on both sides so a shift has somewhere to go.  A
+ * window is one eye's worth of columns read out of that canvas.
+ *
+ * The unshifted window starts where the subtitle canvas itself starts - the
+ * margin - so the caption keeps the horizontal position that the
+ * subtitle-to-video path painted for it.  Depth only walks the window away from
+ * that start; it never recentres the caption.
  * ------------------------------------------------------------------------ */
 
 /* A window start is a column of the padded canvas, and the canvas has room for
@@ -177,45 +182,22 @@ static inline int ff_mvc_sub_eye_shift(int offset, int eye)
 }
 
 /**
- * Where the eye's window would start if the canvas were infinite.
- *
- * A caption placed by its own centre keeps its centre in the middle of the
- * eye: the window is then centred on the caption's centre, and the shift above
- * walks it off the eye's own centre from there.  With no caption centre to
- * work from, the window starts where the unshifted canvas starts - the margin
- * - and the caption keeps the position it was authored at.  Both branches are
- * then shifted by the same per-eye amount, so a caption of unknown position
- * still floats; it just is not moved to the centre on the way.
- *
- * @param has_centre   whether the caption's centre-x is known
- * @param centre_x     that centre-x, in padded-canvas pixels (margin included)
- * @param eye_w        the width of one eye, in the same pixels
- * @param margin       the slack added on each side of the canvas
- */
-static inline int ff_mvc_sub_base_start(int has_centre, int centre_x,
-                                        int eye_w, int margin)
-{
-    return has_centre ? centre_x - eye_w / 2 : margin;
-}
-
-/**
  * The first canvas column one eye reads, clamped into the padded canvas.
  *
+ * The unshifted window starts at @p margin, where the subtitle canvas starts.
  * Clamping is the graceful degradation at the extremes: a requested shift
  * larger than the slack added for it cannot be had, so the eye gets the
  * furthest window the canvas can serve and the pair stops being symmetric
  * about the centre.  That is a smaller depth error than losing the caption,
  * and it is visible in the log.
  *
- * @param base     the unshifted window start, from ff_mvc_sub_base_start()
  * @param offset   the signed depth for this frame
  * @param eye      FF_MVC_SUB_EYE_LEFT or FF_MVC_SUB_EYE_RIGHT
  * @param margin   the slack added on each side of the canvas
  */
-static inline int ff_mvc_sub_window_start(int base, int offset, int eye,
-                                          int margin)
+static inline int ff_mvc_sub_window_start(int offset, int eye, int margin)
 {
-    int sum = base + ff_mvc_sub_eye_shift(offset, eye);
+    int sum = margin + ff_mvc_sub_eye_shift(offset, eye);
 
     return ff_mvc_sub_clamp(sum, 0, ff_mvc_sub_max_start(margin));
 }

@@ -299,10 +299,8 @@ static int place_frame(FFFrameSync *fs)
     MVCSubDepthContext *s = ctx->priv;
     AVFrame *main, *sub = NULL;
     const AVFrame *layer;
-    const AVFrameSideData *sd;
-    int eye_w, eye_h, plane, off, centre_x, raw_centre_x, base;
+    int eye_w, eye_h, plane, off;
     int start_l, start_r, ret;
-    int has_centre;
 
     ret = ff_framesync_dualinput_get_writable(fs, &main, &sub);
     if (ret < 0)
@@ -320,30 +318,21 @@ static int place_frame(FFFrameSync *fs)
 
     plane = plane_of(s, sub);
     off   = offset_of(s, main, plane);
-    sd    = av_frame_get_side_data(sub, AV_FRAME_DATA_MVC_SUB_PLANE);
-    raw_centre_x = ff_mvc_sub_center_x(sd ? sd->data : NULL, sd ? sd->size : 0);
-    has_centre = raw_centre_x != INT_MIN;
-    centre_x   = has_centre ? ff_mvc_sub_scale_x(raw_centre_x, sub->width, eye_w)
-                            : 0;
 
     layer = scale_to_eye(ctx, sub, eye_w, eye_h);
     if (!layer) {
         return ff_filter_frame(ctx->outputs[0], main);
     }
 
-    /* ff_mvc_sub_center_x() answers INT_MIN when there is no caption centre to
-     * work from; the scaling maps every unusable coordinate to 0, so the
-     * flag is carried separately.  The centre is measured on the canvas as the
-     * eye sees it; the window starts count the padded canvas, so move the
-     * scaled centre into that coordinate system before centring a window on it. */
-    if (has_centre)
-        centre_x += SUB_MARGIN;
-    base = ff_mvc_sub_base_start(has_centre, centre_x, eye_w, SUB_MARGIN);
-    start_l = ff_mvc_sub_window_start(base, off, FF_MVC_SUB_EYE_LEFT,  SUB_MARGIN);
-    start_r = ff_mvc_sub_window_start(base, off, FF_MVC_SUB_EYE_RIGHT, SUB_MARGIN);
+    /* The filter's only geometry change is the depth displacement.  The window
+     * starts at the canvas' own margin unless depth moves it, so the caption
+     * keeps the horizontal position painted by sub2video and is not re-centred
+     * into the eye. */
+    start_l = ff_mvc_sub_window_start(off, FF_MVC_SUB_EYE_LEFT,  SUB_MARGIN);
+    start_r = ff_mvc_sub_window_start(off, FF_MVC_SUB_EYE_RIGHT, SUB_MARGIN);
 
-    if (off && (start_l != base + ff_mvc_sub_eye_shift(off, FF_MVC_SUB_EYE_LEFT) ||
-                start_r != base + ff_mvc_sub_eye_shift(off, FF_MVC_SUB_EYE_RIGHT))) {
+    if (off && (start_l != SUB_MARGIN + ff_mvc_sub_eye_shift(off, FF_MVC_SUB_EYE_LEFT) ||
+                start_r != SUB_MARGIN + ff_mvc_sub_eye_shift(off, FF_MVC_SUB_EYE_RIGHT))) {
         if (!s->clamp_logged) {
             av_log(ctx, AV_LOG_WARNING, "depth %+d px exceeds the %d px of "
                    "canvas slack; the further eye is clamped, which places "
@@ -353,8 +342,8 @@ static int place_frame(FFFrameSync *fs)
         }
     }
 
-    av_log(ctx, AV_LOG_DEBUG, "plane %d depth %+d px base %d window %d/%d\n",
-           plane, off, base, start_l, start_r);
+    av_log(ctx, AV_LOG_DEBUG, "plane %d depth %+d px window %d/%d\n",
+           plane, off, start_l, start_r);
 
     blend_window(main, 0,       layer, start_l, eye_w, eye_h);
     blend_window(main, eye_w,   layer, start_r, eye_w, eye_h);

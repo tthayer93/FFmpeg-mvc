@@ -18968,19 +18968,19 @@ The signed per-frame depth is read from the first input's
 A positive offset means toward the viewer.  If that marker is absent, malformed,
 does not cover the frame, or names a zero offset, the caption is flat.
 
-The caption's horizontal centre is read from the subtitle input's
-@code{AV_FRAME_DATA_MVC_SUB_PLANE} marker.  If no caption centre is known, the
-caption keeps the position already painted into its canvas and is only displaced
-for depth or shift.
-
-For an eye width @code{W}, a subtitle canvas whose scaled caption centre is
-@code{C}, and a displacement @code{D}, the subtitle canvas is composited into a
-full side-by-side frame with its left edge at:
+The subtitle image keeps the horizontal position that the subtitle-to-video path
+painted into its canvas.  This filter does not re-centre the caption; it only
+displaces that painted position by the per-eye depth.  For an eye width
+@code{W}, an unclipped displacement @code{D} places the subtitle canvas' nominal
+left edge at:
 
 @example
-left eye:  W/2 + D - C
-right eye: 3W/2 - D - C
+left eye:  D
+right eye: W - D
 @end example
+
+A positive @code{D} moves the caption inward in the left eye and inward in the
+right eye, so the pair converges.
 
 The filter reserves 64 columns of transparent slack conceptually on each side of
 the subtitle canvas.  A requested displacement larger than that slack is
