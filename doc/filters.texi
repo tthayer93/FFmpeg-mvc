@@ -18984,7 +18984,7 @@ right eye, so the pair converges.
 
 The filter reserves 64 columns of transparent slack conceptually on each side of
 the subtitle canvas.  A requested displacement larger than that slack is
-clamped; the further eye stops before the canvas runs out, and the pair is then
+clamped; both eye windows stop symmetrically at that slack, and the pair is then
 nearer to the screen plane than requested rather than losing the caption.
 
 The filter emits a warning when the first input has no composed side-by-side

@@ -335,9 +335,9 @@ static int place_frame(FFFrameSync *fs)
                 start_r != SUB_MARGIN + ff_mvc_sub_eye_shift(off, FF_MVC_SUB_EYE_RIGHT))) {
         if (!s->clamp_logged) {
             av_log(ctx, AV_LOG_WARNING, "depth %+d px exceeds the %d px of "
-                   "canvas slack; the further eye is clamped, which places "
-                   "that caption nearer the screen than authored\n", off,
-                   SUB_MARGIN);
+                   "canvas slack; both eye windows clamp symmetrically at that "
+                   "slack, which places that caption nearer the screen than "
+                   "authored\n", off, SUB_MARGIN);
             s->clamp_logged = 1;
         }
     }
