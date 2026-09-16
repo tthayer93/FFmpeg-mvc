@@ -280,7 +280,10 @@ FATE_H264_MVC_OFMD-$(call PARSERDEMDEC, H264, H264, H264) +=              \
               fate-h264-mvc-ofmd-allviews                                 \
               fate-h264-mvc-ofmd-seq32                                    \
               fate-h264-mvc-ofmd-base                                     \
-              fate-h264-mvc-ofmd-shift48
+              fate-h264-mvc-ofmd-shift48                                  \
+              fate-h264-mvc-ofmd-lagmix-view1                             \
+              fate-h264-mvc-ofmd-lagmix-ontime-view1                      \
+              fate-h264-mvc-ofmd-lagflat-view1
 
 # The end-to-end rows above go through a hand-written schedule.  These need the
 # whole media stack (the fixture's video and subtitle tracks, the sub2video
@@ -637,23 +640,24 @@ fate-h264-mvc-uneven-dep-left:                    CMD = framecrc -view_ids -1 -i
 # refreshing the .rejected reference through the usual FATE flow.  The generator
 # copies every non-picture NAL verbatim from its DNA (2view-p128.h264, beside it)
 # and authors only the slice payloads and the OFMD SEI, so the two commands
-# below fully determine the two streams - run them from the tests/fate/h264-mvc
-# directory:
+# below fully determine the two streams - the generator self-checks its
+# codewords against libavcodec/h264_cavlc.c by that relative path, so run it
+# from the repository root:
 #
 #   # 2view-ofmd.h264: two views of 4 pictures each, DC +100 base / -100
 #   # dependent (the FATE pair convention), and an OFMD block of 4 offset
 #   # sequences describing the first 3 dependent pictures.
-#   perl mvc-mkfix.pl --ofmd --ofmd-seq=4  --ofmd-frames=3 \
+#   perl tests/fate/h264-mvc/mvc-mkfix.pl --ofmd --ofmd-seq=4  --ofmd-frames=3 \
 #                     --base-frames=4 --dep-frames=4 --base=100 --dep=-100 \
-#                     --out=2view-ofmd.h264
+#                     --out=tests/fate/h264-mvc/2view-ofmd.h264
 #
 #   # 2view-ofmd-32seq.h264: identical, but the block fills the widest offset
 #   # sequence count the format carries (32, the 6-bit field's authored maximum)
 #   # rather than 4 - it exercises the same three covered pictures across the
 #   # full sequence width, and sequences 4..31 repeat sequence 3 (a flat ramp).
-#   perl mvc-mkfix.pl --ofmd --ofmd-seq=32 --ofmd-frames=3 \
+#   perl tests/fate/h264-mvc/mvc-mkfix.pl --ofmd --ofmd-seq=32 --ofmd-frames=3 \
 #                     --base-frames=4 --dep-frames=4 --base=100 --dep=-100 \
-#                     --out=2view-ofmd-32seq.h264
+#                     --out=tests/fate/h264-mvc/2view-ofmd-32seq.h264
 #
 # Neither stream is on the FATE sample server yet; the gate stages both into
 # $(TARGET_SAMPLES)/h264-mvc/ from this directory (see .ci/gate.sh step 4b).
@@ -714,6 +718,79 @@ fate-h264-mvc-ofmd-sei:                             CMD = count_match "unknown S
                                                         count_match "Subtitle depth metadata: 4 sequences" \
                                                             ffprobe$(PROGSSUF)$(EXESUF) -loglevel debug \
                                                             $(TARGET_SAMPLES)/h264-mvc/2view-ofmd.h264
+
+# The lag-pattern tests carry the calibration proof one step further.  -shift48
+# shows that a message riding its own group's start is measured right; these
+# ask what happens when the message rides into the MIDDLE of the group it
+# describes, which authored discs do: a census over four shipped titles
+# measured messages one and two pictures late as a common shape, one of them
+# mixing on-time and late blocks inside one run.  A late message measures one
+# picture duration short per picture of that lag, and a decoder measuring each
+# block from its own access unit then places that block's group late by the
+# same amount - answering other pictures than the ones the block describes.
+#
+# The answer is one phase per run of blocks: the largest raw measurement of a
+# run of agreeing blocks is the base offset, since a message can ride into its
+# group but never ahead of its start, so a measurement can only be short,
+# never long (see H264OFMD.base_run90k).  The generator's --ofmd-lag-pattern
+# authors the two shapes that test it, one block per pattern entry, tiling the
+# dependent pictures in order, each block stamped one block duration after the
+# last with the table ramp running across the blocks so one picture's row says
+# which block answered it, and the SEI of block g riding ahead of dependent
+# picture g*F + pattern[g].  Run from the repository root, like every
+# mvc-mkfix.pl invocation:
+#
+#   # the mixed pair: four one-picture blocks, blocks 1 and 3 riding two
+#   # pictures into their groups, calibrated against a disc 48 pictures into
+#   # its timeline; the twin with --ofmd-lag-pattern=0,0,0,0 is the same
+#   # geometry with every message on its group's start
+#   perl tests/fate/h264-mvc/mvc-mkfix.pl --ofmd-lag-pattern=0,2,0,2 \
+#        --ofmd-frames=1 --ofmd-seq=4 --ofmd-base=48 \
+#        --base-frames=6 --dep-frames=6 --base=100 --dep=-100 \
+#        --out=tests/fate/h264-mvc/2view-ofmd-lagmix.h264
+#
+#   # every message two pictures late: three blocks, five pictures
+#   perl tests/fate/h264-mvc/mvc-mkfix.pl --ofmd-lag-pattern=2,2,2 \
+#        --ofmd-frames=1 --ofmd-seq=4 --ofmd-base=48 \
+#        --base-frames=5 --dep-frames=5 --base=100 --dep=-100 \
+#        --out=tests/fate/h264-mvc/2view-ofmd-lagflat.h264
+#
+# The two lagmix refs are one stream's two shapes, and their difference is the
+# test.  The on-time twin answers all four described pictures, the ramp reading
+# 5, 6, 7, 8 in order.  In lagmix the rows that ARE delivered are the twin's
+# rows - same pts, same values: pictures 0 and 2, whose own messages rode
+# their starts.  What is ABSENT is the answer for pictures 1 and 3, the groups
+# whose messages arrived two pictures after those pictures had been decoded: a
+# depth row cannot be attached retroactively to a frame that left the decoder
+# before the row's block existed, and the brief's demand that no coverage be
+# invented past what a block describes is exactly what keeps those rows away.
+# What the per-block measurement would have done instead follows from its own
+# arithmetic: those two blocks read two pictures short, so their groups - one
+# picture each, descriptions of pictures 1 and 3 - would have been placed at
+# pictures 3 and 5, and picture 3, decoding right behind its late message,
+# would have carried the row authored for picture 1 while its own stayed
+# unknown.  Silence at picture 3 is the honest half of the fix; a run-wide
+# phase is the half that makes the silent pictures and the answered ones agree
+# on where the pictures are.
+fate-h264-mvc-ofmd-lagmix-view1:                    libavcodec/tests/h264_ofmd$(EXESUF)
+fate-h264-mvc-ofmd-lagmix-view1:                    CMD = run libavcodec/tests/h264_ofmd$(EXESUF) \
+                                                            $(TARGET_SAMPLES)/h264-mvc/2view-ofmd-lagmix.h264 1
+fate-h264-mvc-ofmd-lagmix-ontime-view1:             libavcodec/tests/h264_ofmd$(EXESUF)
+fate-h264-mvc-ofmd-lagmix-ontime-view1:             CMD = run libavcodec/tests/h264_ofmd$(EXESUF) \
+                                                            $(TARGET_SAMPLES)/h264-mvc/2view-ofmd-lagmix-ontime.h264 1
+# lagflat is the locked-but-provisional shape: every message of the run is two
+# pictures late, so the run's phase - the largest of its readings, all equal -
+# never improves past the provisional one.  Pictures 0 and 1 answer flat (no
+# message existed yet); pictures 2, 3 and 4 carry the ramp's first three
+# values, a constant two pictures ahead of where the truth places them, and the
+# tiling holds: three one-picture groups answering three consecutive pictures,
+# no gap, no overlap, no per-block jitter.  A constant small distance from the
+# truth for every group is the most any decoder can do when no on-time block
+# ever shows up, and it is coherent in a way that per-block short readings -
+# each group placed by its own message's arrival, wobble included - are not.
+fate-h264-mvc-ofmd-lagflat-view1:                   libavcodec/tests/h264_ofmd$(EXESUF)
+fate-h264-mvc-ofmd-lagflat-view1:                   CMD = run libavcodec/tests/h264_ofmd$(EXESUF) \
+                                                            $(TARGET_SAMPLES)/h264-mvc/2view-ofmd-lagflat.h264 1
 
 # The same fixture again, this time through the filter that burns a subtitle
 # into the two halves of a composed frame.  The inputs are kept in separate

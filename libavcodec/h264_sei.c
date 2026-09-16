@@ -291,7 +291,12 @@ static const AVRational ofmd_frame_rates[16] = {
  * picture is looked up by the time its container gave it, and the two differ by
  * whatever the demuxer re-based to - which for a title made of several clips is
  * a different amount per clip, so the calibration is measured per block from the
- * instant its own message arrived rather than derived once per stream. */
+ * instant its own message arrived rather than derived once per stream.  One
+ * correction is made to that per-block measurement: an access unit can carry the
+ * message some pictures into the group the message describes, and the reading
+ * is then short by that lag, so within a run of agreeing blocks the largest
+ * reading is taken to be the base offset and every block of the run is placed
+ * by it (see H264OFMD.base_run90k). */
 static int ofmd_read_message(H264OFMD *dst, const uint8_t *msg, size_t avail,
                              int64_t anchor90k, void *logctx)
 {
@@ -300,6 +305,7 @@ static int ofmd_read_message(H264OFMD *dst, const uint8_t *msg, size_t avail,
     GetBitContext gb;
     unsigned sequence_count, frame_count;
     int64_t shift = 0;
+    int measured  = 0;   /* shift holds a calibration measured against an anchor */
     uint64_t pts;
     int hi, marker1, marker2, mid, lo, ret;
 
@@ -345,18 +351,23 @@ static int ofmd_read_message(H264OFMD *dst, const uint8_t *msg, size_t avail,
         return AVERROR_INVALIDDATA;
     }
 
-    /* Calibrate. The group starts where the access unit carrying this message
-     * starts, as far as this stream's pictures are concerned, so the distance
-     * between the block's own stamp and that access unit's is the whole
-     * correction - see H264OFMD.base_shift90k.
+    /* Calibrate (raw).  Where the access unit carrying this message rides the
+     * start of the group the message describes, the distance between the
+     * block's own stamp and that access unit's is the whole correction - see
+     * H264OFMD.base_shift90k.  An access unit riding into the middle of its own
+     * group reads that correction short by the lag, and the run estimate below
+     * replaces it with the reading of a block that was not short whenever the
+     * run holds one.
      *
      * Measuring it per block also absorbs the difference of timescales (a
      * container counts milliseconds, a disc 90 kHz ticks, and a picture rate
      * such as 24000/1001 is neither) at the start of every group instead of
      * letting it accumulate across a film. */
     if (anchor90k != AV_NOPTS_VALUE && anchor90k != INT64_MIN &&
-        anchor90k != INT64_MAX)
+        anchor90k != INT64_MAX) {
         shift = (int64_t)pts - anchor90k;
+        measured = 1;
+    }
     else if (anchor90k != AV_NOPTS_VALUE) {
         /* A saturated anchor is as unusable as a missing one: refuse the
          * calibration rather than measure the block against a fake instant. */
@@ -378,7 +389,8 @@ static int ofmd_read_message(H264OFMD *dst, const uint8_t *msg, size_t avail,
                    "time of its own access unit; reading it uncalibrated\n",
                    (double)shift / 90000);
         }
-        shift = 0;
+        shift    = 0;
+        measured = 0;
     }
 
     parsed = (H264OFMD) {
@@ -401,12 +413,50 @@ static int ofmd_read_message(H264OFMD *dst, const uint8_t *msg, size_t avail,
     if (!parsed.fps.num)
         return AVERROR_INVALIDDATA;
 
+    /* Max-run phase estimate (see H264OFMD.base_run90k).  A measured block
+     * joins the run of blocks whose raw calibrations agree within twice one
+     * block duration of each other; the run's base is the largest raw reading
+     * in it, because an access unit can carry its message into the group the
+     * message describes but never ahead of that group's start, so a raw
+     * calibration can only be short of the true base offset, never long, and
+     * the block of the run that arrived earliest reads closest to the truth.
+     * A block whose raw reading lies outside that window reopens the run at
+     * its own value: the base of the title moved (a clip restart), and the
+     * on-time behavior of measuring each block from its own access unit takes
+     * over again until the new run locks.  While no block of the run has been
+     * seen to arrive on time the estimate is provisional - the first block's
+     * raw reading stands for the whole run, which places every group of the
+     * run by the same amount: tiling without per-block jitter, a constant
+     * small distance from the truth if every message of the run rides late by
+     * that much, and nothing to correct once an on-time block shows up. */
+    if (measured) {
+        int64_t block_dur = av_rescale_rnd((int64_t)90000 * frame_count,
+                                           parsed.fps.den, parsed.fps.num,
+                                           AV_ROUND_NEAR_INF);
+
+        if (!dst->base_run_valid ||
+            FFABS(shift - dst->base_run90k) > 2 * block_dur)
+            dst->base_run90k = shift;                    /* provisional/reinit */
+        else if (shift > dst->base_run90k)
+            dst->base_run90k = shift;                    /* the run locks here */
+        parsed.base_shift90k  = dst->base_run90k;
+        parsed.base_run90k    = dst->base_run90k;
+        parsed.base_run_valid = 1;
+    } else {
+        /* Uncalibrated blocks are published as before (read unshifted) and say
+         * nothing about the run: the state travels through them untouched. */
+        parsed.base_run90k    = dst->base_run90k;
+        parsed.base_run_valid = dst->base_run_valid;
+    }
+
     *dst = parsed;
 
     av_log(logctx, AV_LOG_DEBUG,
            "Subtitle depth metadata: %u sequences x %u frames at pts %lld "
-           "(stream pts %lld)\n", sequence_count, frame_count, (long long)pts,
-           (long long)(pts - shift));
+           "(stream pts %lld, measured %lld, run %lld)\n", sequence_count,
+           frame_count, (long long)pts, (long long)(pts - shift),
+           (long long)(measured ? shift : 0),
+           (long long)dst->base_run90k);
 
     return 0;
 }
@@ -440,11 +490,10 @@ int ff_h264_ofmd_lookup(const H264OFMD *ofmd, int64_t pts90k, int8_t *offsets)
 
     /* The block describes the group [start, start + duration) on the timeline of
      * the stream being decoded: its own timestamp is the disc's, so move the
-     * group over by the offset measured from the access unit that carried the
-     * message (0 whenever the two timelines are the same, which is what a block
-     * that could not be anchored also gets). A picture outside the group is not
-     * covered, and the caller then reports no depth at all rather than an
-     * invented one. */
+     * group over by the offset the run estimate settled on for this block (0
+     * whenever the two timelines are the same, which is what a block that could
+     * not be anchored also gets). A picture outside the group is not covered,
+     * and the caller then reports no depth at all rather than an invented one. */
     start     = ofmd->pts90k - ofmd->base_shift90k;
     gop_units = av_rescale_rnd((int64_t)90000 * ofmd->frame_count,
                                ofmd->fps.den, ofmd->fps.num, AV_ROUND_NEAR_INF);

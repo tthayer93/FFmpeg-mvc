@@ -147,7 +147,9 @@ typedef struct H264SEIContext {
  * addressed by (a Matroska or MPEG-TS re-stamps from its own base, and a title
  * authored as several clips restarts that base per clip).  One number carries
  * the difference, base_shift90k, measured from the access unit the message
- * travelled in - see below.
+ * travelled in - corrected to the best measurement of the run it belongs to
+ * when messages travel into the middle of the group they describe, see
+ * base_run90k below.
  */
 #define H264_OFMD_MAX_SEQUENCES 32   ///< sequence_count is a 6-bit field, <= 32 in practice
 #define H264_OFMD_MAX_FRAMES    64   ///< GOP size guard; the authored GOPs seen so far are <= 40
@@ -176,12 +178,14 @@ typedef struct H264OFMD {
      * What to subtract from pts90k to get the start of the described group on
      * the timeline the pictures are addressed by: the block's disc timestamp
      * minus the container timestamp of the access unit in which the message was
-     * parsed.  The SEI rides the start of the group it describes, so that access
-     * unit's display time IS the group's start as the container sees it, and the
-     * difference is constant across the group (reordering moves a picture's
-     * output time, not its place in the group).  Zero when the block could not
-     * be anchored: no container timestamp was known, or the measured offset was
-     * absurd (see H264_OFMD_MAX_BASE_SHIFT90K).
+     * parsed, replaced by the run's phase estimate whenever the two disagree
+     * (see base_run90k - with a message that rides the group's own start the
+     * two are equal, and the estimate is the raw measurement itself).  The
+     * difference is constant across a run of a title authored as one clip, so
+     * one number per block keeps the group tiling aligned however the messages
+     * are spread over the run.  Zero when the block could not be anchored: no
+     * container timestamp was known, or the measured offset was absurd (see
+     * H264_OFMD_MAX_BASE_SHIFT90K).
      */
     int64_t    base_shift90k;
     /**
@@ -191,6 +195,37 @@ typedef struct H264OFMD {
      * rest of the state on a flush.
      */
     int        base_warned;
+    /**
+     * Largest raw calibration (block stamp minus the anchor of the access unit
+     * that carried it) seen in the current CONTINUOUS RUN of blocks, where two
+     * blocks are in one run while their raw calibrations agree within twice
+     * one block duration.  Session state like base_warned, carried from block
+     * to block, cleared on a flush.
+     *
+     * A message's access unit may carry it some pictures into the group it
+     * describes - authored discs do this (some titles put the message two
+     * pictures after the start of the group) - and then the raw calibration
+     * reads one picture duration short per picture of that lag.  The shortfall
+     * only ever goes one way: a message cannot arrive before the group it
+     * describes starts, so an on-time block reads the run's true base offset
+     * and every late block reads less than it.  The largest raw calibration of
+     * a run is therefore its best reading of the base offset, and it is what
+     * base_shift90k carries: a run that contains any on-time block locks onto
+     * the true base offset at its first on-time block (one block late enough
+     * to be measured is never earlier than the first), a run that does not
+     * keeps the largest of its short readings, which places every group of
+     * the run at a constant small distance from where it truly starts rather
+     * than letting each block's own arrival jitter the tiling from group to
+     * group.  A raw calibration that jumps past twice a block duration starts
+     * a new run: that is a clip whose base moved (a title authored as several
+     * clips restarts the stamps), not a late-riding message.
+     */
+    int64_t    base_run90k;
+    /** Whether base_run90k holds a measurement of this run (one calibrated
+     *  block has been published since decoder open or the last flush).  A
+     *  first block is provisional: its own raw calibration IS the run base
+     *  until a later block of the run measures greater. */
+    int        base_run_valid;
     AVRational fps;             ///< picture rate the block was authored at
     unsigned   sequence_count;  ///< 1 .. H264_OFMD_MAX_SEQUENCES
     unsigned   frame_count;     ///< entries per sequence (the GOP size)
