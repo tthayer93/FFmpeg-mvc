@@ -25,6 +25,7 @@
 
 #include "config.h"
 #include "libavutil/ffversion.h"
+#include "sub2video_plane.h"
 
 #include <string.h>
 #include <math.h>
@@ -1341,6 +1342,21 @@ static void show_subtitle(AVTextFormatContext *tfc, AVSubtitle *sub, AVStream *s
     fflush(stdout);
 }
 
+static void print_mvc_sub_plane(AVTextFormatContext *tfc, const uint8_t *p)
+{
+    int flags = p[1];
+
+    /* a subtitle-as-video marker: which depth sequence the track maps to and,
+     * while a caption is painted, where its bounding box sits (canvas pixels) */
+    print_int("plane_valid", !!(flags & FF_SUB_PLANE_FLAG_PLANE));
+    print_int("plane_id",    (flags & FF_SUB_PLANE_FLAG_PLANE) ? p[0] : -1);
+    print_int("bbox_valid",  !!(flags & FF_SUB_PLANE_FLAG_BBOX));
+    if (flags & FF_SUB_PLANE_FLAG_BBOX) {
+        print_int("origin_x", (int16_t)AV_RL16(p + 2));
+        print_int("extent_w", (int16_t)AV_RL16(p + 4));
+    }
+}
+
 static void print_frame_side_data(AVTextFormatContext *tfc,
                                   const AVFrame *frame,
                                   const AVStream *stream)
@@ -1398,6 +1414,25 @@ static void print_frame_side_data(AVTextFormatContext *tfc,
             print_film_grain_params(tfc, fgp);
         } else if (sd->type == AV_FRAME_DATA_VIEW_ID) {
             print_int("view_id", *(int*)sd->data);
+        } else if (sd->type == AV_FRAME_DATA_MVC_SS_OFFSETS && sd->size >= 2) {
+            /* the per-frame subtitle-depth row: one signed offset per offset
+             * sequence, positive toward the viewer (see the h264 decoder) */
+            const uint8_t *p = sd->data;
+            unsigned n = p[0];
+            AVBPrint sbuf;
+
+            av_bprint_init(&sbuf, 0, AV_BPRINT_SIZE_AUTOMATIC);
+            for (unsigned j = 0; j < n && (size_t)(2 + j) < sd->size; j++)
+                av_bprintf(&sbuf, "%s%d", j ? " " : "", (int)(int8_t)p[2 + j]);
+            print_int("ss_sequence_count", n);
+            print_int("ss_covered", p[1] & 1);
+            print_str("ss_offsets", sbuf.str);
+            av_bprint_finalize(&sbuf, NULL);
+        } else if (sd->type == AV_FRAME_DATA_MVC_SUB_PLANE &&
+                   sd->size >= FF_SUB_PLANE_DATA_SIZE) {
+            /* the subtitle-plane marker the transcoder stamps on a
+             * subtitle-as-video frame (see fftools/ffmpeg_filter.c) */
+            print_mvc_sub_plane(tfc, sd->data);
         } else if (sd->type == AV_FRAME_DATA_EXIF) {
             print_int("size", sd->size);
         }
