@@ -133,6 +133,16 @@ cropping from the @emph{dependent} half of the access unit; in particular
 reference, which DR1 (@code{AV_CODEC_CAP_RECEIVE_FRAME} frame-threaded)
 decoders require every delivered frame to carry.
 
+Subtitle depth: a multiview stream carrying BD3D offset-metadata (the @code{OFMD}
+user-data SEI of the dependent view) is surfaced as
+@code{AV_FRAME_DATA_MVC_SS_OFFSETS} frame side data - one entry per output frame
+of a dependent view whose display time falls inside an authored block, holding
+one signed offset per offset sequence for that frame (positive = toward the
+viewer, negative = behind the screen, in native picture pixels). The entry is
+attached to dependent-view frames as they leave the decoder and is copied onto
+the assembled side-by-side frame alongside its stereo tag. A frame carrying no
+such entry has no authored depth and is to be shown flat.
+
 When a two-view SBS decode cannot pair both views for an access unit - because
 one view is still delayed, one view ends before the other, or a partner is
 otherwise unavailable - the half that must be delivered is still emitted as a
