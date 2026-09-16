@@ -27,9 +27,8 @@ release rather than `master` if you need reproducibility.
   delivers it as one native side-by-side frame per access unit with a single
   `AV_FRAME_DATA_STEREO3D` side data entry; select any single eye with a view
   specifier on `-map` (e.g. `-map 0:v:view:1`).
-- Subtitle depth: where a release authors per-plane depth into its
-  subtitle stream, decoded subtitle frames carry that metadata and the
-  mvcsubdepth filter renders subtitles at the authored depth (see Usage).
+- Subtitle depth: when a release carries authored per-plane depth for its
+  subtitles, the mvcsubdepth filter renders them at that depth (see Usage).
 - Hardware acceleration is not supported for MVC streams: requests for
   hardware acceleration fall back to software decoding with a warning.
 
@@ -125,7 +124,7 @@ carry it into your own filter graph; nothing is displayed by itself.
 
     # burn one track into both eyes at its authored depth
     ffmpeg -view_ids -1 -i in.mkv \
-        -filter_complex "[0:v]format=rgba[vc];[0:s:0]format=rgba[sub];[vc][sub]mvcsubdepth[out]" \
+        -filter_complex "[0:v]format=rgba[vc];[0:s:0]format=rgba[sub];[vc][sub]mvcsubdepth=eof_action=pass[out]" \
         -map "[out]" -c:v ffv1 subs.mkv
 
 `mvcsubdepth` accepts:
