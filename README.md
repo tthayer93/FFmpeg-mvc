@@ -27,6 +27,9 @@ release rather than `master` if you need reproducibility.
   delivers it as one native side-by-side frame per access unit with a single
   `AV_FRAME_DATA_STEREO3D` side data entry; select any single eye with a view
   specifier on `-map` (e.g. `-map 0:v:view:1`).
+- Subtitle depth: where a release authors per-plane depth into its
+  subtitle stream, decoded subtitle frames carry that metadata and the
+  mvcsubdepth filter renders subtitles at the authored depth (see Usage).
 - Hardware acceleration is not supported for MVC streams: requests for
   hardware acceleration fall back to software decoding with a warning.
 
@@ -114,6 +117,31 @@ pipeline to keep them paired, so it is slower than single-view
 decoding. A damaged dependent view is completed against the base
 view with a console warning; when the halves cannot be paired,
 standalone half frames are delivered rather than dropped.
+
+### Subtitles with depth
+
+Enable subtitles exactly as with plain FFmpeg: select the stream and
+carry it into your own filter graph; nothing is displayed by itself.
+
+    # burn one track into both eyes at its authored depth
+    ffmpeg -view_ids -1 -i in.mkv \
+        -filter_complex "[0:v]format=rgba[vc];[0:s:0]format=rgba[sub];[vc][sub]mvcsubdepth[out]" \
+        -map "[out]" -c:v ffv1 subs.mkv
+
+`mvcsubdepth` accepts:
+
+- `depth=0|1`: 1 (the default) renders at the authored depth, 0 puts
+  both copies flat at the screen plane.
+- `shift=<pixels>`: a constant shift instead of the authored depth,
+  positive toward the viewer; it overrides everything else.
+- `plane=<0..31>`: name the depth sequence for this track; by default
+  it comes from its metadata tag, `3d-plane-<lang>` or bare `3d-plane`.
+
+The tag names a sequence in `0..31`; a track with no usable tag, or a
+video with no authored depth, renders flat.
+
+Keep `mvcsubdepth` right after the composed video source: stack
+filters drop the video's markers and `overlay` drops the subtitle's.
 
 For media servers (Jellyfin, Emby), build the `jellyfin-8.1`
 branch: transcodes without view options behave exactly like plain
