@@ -18,6 +18,25 @@ by the libavutil library.
 
 @c man end DESCRIPTION
 
+@anchor{Stream metadata}
+@chapter Stream metadata
+@c man begin STREAM METADATA
+
+Some stream metadata tags are understood by the transcoder when a subtitle
+stream is rendered onto a video canvas.  The @code{3d-plane} tag, and the
+language-specific form @code{3d-plane-@var{lang}} where @var{lang} is the
+language tag of the stream, name the index of an OFMD subtitle-depth sequence
+for multiview video.  The value must be an integer in the range @code{0..31},
+with only blanks or horizontal tabs permitted before or after it.
+
+A language-specific tag takes precedence over the bare tag.  If both forms
+are present, the language-specific value is used; if that value is malformed,
+it shadows the bare tag and no plane is advertised.  If neither tag is
+present, or the effective value is malformed, no plane is advertised and the
+subtitle is rendered flat.
+
+@c man end STREAM METADATA
+
 @include utils.texi
 
 @chapter See Also

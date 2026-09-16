@@ -383,6 +383,7 @@ extern const FFFilter ff_vf_monochrome;
 extern const FFFilter ff_vf_morpho;
 extern const FFFilter ff_vf_mpdecimate;
 extern const FFFilter ff_vf_msad;
+extern const FFFilter ff_vf_mvcsubdepth;
 extern const FFFilter ff_vf_multiply;
 extern const FFFilter ff_vf_negate;
 extern const FFFilter ff_vf_nlmeans;

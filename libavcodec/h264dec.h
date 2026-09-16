@@ -517,6 +517,22 @@ typedef struct H264Context {
     int64_t au_base_pkt_dts;
     int au_base_valid;
 
+    /** Subtitle-depth calibration anchor: the display time of the last packet
+     *  this context decoded, in 90 kHz units on its container's timeline
+     *  (AV_NOPTS_VALUE until a packet with a usable pts and time base arrives).
+     *  Latched per packet in h264_decode_frame() and consumed by the SEI parse of
+     *  the same packet, which stamps it into the block it reads as that block's
+     *  base offset (see H264OFMD.base_shift90k); it is not the block's own
+     *  timestamp and it is not derived once per stream, because a title authored
+     *  as several clips restarts its container timeline per clip and every clip's
+     *  blocks must be measured against its own times. Not cleared per packet: the
+     *  fragment carrying a dependent view's metadata may carry no timestamp at
+     *  all, exactly as for the au_base_* latches above. Multiview only: a
+     *  single-view context never collects a block and never reads this. Cleared by
+     *  ff_h264_flush_change() along with the block it anchors, and copied to the
+     *  next frame-thread worker with it */
+    int64_t ofmd_anchor_pts90k;
+
     /**
      * Display-ordinal pairing FIFO for the allviews-composed (native SBS)
      * output: the k-th output picture of the base view pairs with
@@ -540,6 +556,20 @@ typedef struct H264Context {
     H264Picture *sbs_pair_q[2][H264_SBS_PAIR_Q_SIZE];
     int sbs_pair_head[2];         ///< ring read position per role
     int sbs_pair_count[2];        ///< queued halves per role
+
+    /**
+     * Inter-view anchor hold-queue for the allviews composed output. A base
+     * half consumed by the SBS pairing has already left the delayed list when
+     * the dependent picture of its own access unit may still be decoding, and
+     * the standalone single-view path keeps the same anchor alive by parking
+     * the unselected view in that list. Retain the composed base picture here,
+     * pinned with DELAYED_PIC_REF, so the shared DPB can still hand it to
+     * h264_find_inter_view_ref() after the composed frame has shipped.
+     */
+#define H264_MVC_ANCHOR_Q_DEPTH 4
+    H264Picture *iv_anchor_q[H264_MVC_ANCHOR_Q_DEPTH];
+    int iv_anchor_head;
+    int iv_anchor_count;
 
     /** One-shot warning flag for unpaired composed deliveries (the pairing
      *  queue overflow and the end-of-stream leftover shipment). */
@@ -835,6 +865,15 @@ typedef struct H264Context {
 
     H264SEIContext sei;
 
+    /* BD3D subtitle-depth block of the group last announced in this context's
+     * stream, with its display-time range calibrated onto this stream's timeline
+     * by ofmd_anchor_pts90k (see H264OFMD and the ofmd field documentation in
+     * h264_sei.h). Decode-session state of the context that parsed it:
+     * ff_h264_update_thread_context() hands it to the next worker the same way it
+     * hands the access-unit latches over, and ff_h264_flush_change() drops it on a
+     * seek. Never shared mutable state. */
+    H264OFMD ofmd;
+
     struct AVRefStructPool *qscale_table_pool;
     struct AVRefStructPool *mb_type_pool;
     struct AVRefStructPool *motion_val_pool;
@@ -1010,6 +1049,16 @@ void ff_h264_flush_change(H264Context *h);
  */
 int ff_h264_pic_held_for_compose(const H264Context *h,
                                  const H264Picture *pic);
+
+/**
+ * True when the picture is retained as a recently composed base-view
+ * inter-view anchor (see iv_anchor_q in H264Context). The picture has already
+ * left the delayed and compose-pairing queues, so reference maintenance must
+ * be told to keep its hold pin until the anchor queue retires it. Implemented
+ * in h264dec.c.
+ */
+int ff_h264_pic_held_for_iv_anchor(const H264Context *h,
+                                   const H264Picture *pic);
 
 /**
  * True while the allviews composed output is the one being produced: exactly

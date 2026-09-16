@@ -49,16 +49,87 @@
 #
 # usage: mvc-mkfix.pl [--dna=FILE] [--out=FILE] [--base=N] [--dep=N]
 #                     [--base-frames=N] [--dep-frames=N] [--copy] [--zero]
+#                     [--ofmd] [--ofmd-frames=N] [--ofmd-seq=N] [--ofmd-pts=N] [--ofmd-rate=N]
+#                     [--ofmd-base=N] [--ofmd-lag-pattern=a,b,...]
 #   --base/--dep     signed Intra16x16 DC coefficient of view 0 / view 1
 #   --base-frames    pictures carried by the base view (default 2)
 #   --dep-frames     pictures carried by the dependent view (default 2)
 #   --copy           re-emit the sibling stream verbatim (escaping self-check)
 #   --zero           author zero-residual payloads at the sibling's picture
 #                    counts and require the result to be the sibling exactly
+#   --ofmd           write the dependent view's subtitle-depth (offset
+#                    metadata) SEI of the first access unit, ahead of the
+#                    dependent picture it describes (see below)
+#   --ofmd-frames    pictures the block describes (default: the dependent
+#                    picture count, i.e. the whole fixture)
+#   --ofmd-pts       90 kHz timestamp of the described group (default 0)
+#   --ofmd-rate      picture-rate code of the block (default 3 = 25 fps, the
+#                    rate the elementary-stream demuxer timestamps this stream
+#                    at, so every picture is covered)
+#   --ofmd-base      stamp the block this many picture durations of its own
+#                    declared rate later than --ofmd-pts says, without touching
+#                    anything else in the stream: same pictures, same order,
+#                    same access units. That is what a demuxer does to a disc:
+#                    it copies the pictures and their metadata verbatim while
+#                    re-stamping the pictures from its own base, so the block's
+#                    timestamp is left on the disc's timeline and the pictures
+#                    are not. A decoder that reads depth by the pictures' time
+#                    therefore has to move the block over by that base offset,
+#                    and a fixture that differs from another one only in this
+#                    number is the test that it does.
+#   --ofmd-lag-pattern
+#                    author MULTIPLE blocks - one per pattern entry, at least
+#                    three - tiling the dependent pictures in order: block g
+#                    describes pictures [g*F .. (g+1)*F) of the dependent view
+#                    (F = --ofmd-frames), stamped like the single block is
+#                    (--ofmd-pts plus --ofmd-base picture durations of the
+#                    declared rate) further shifted by g*F of the block's own
+#                    pictures, with the table ramp continuing across blocks so
+#                    one picture's row says which block answered it.  Each
+#                    block's SEI is injected a entries pictures into its own
+#                    group (ahead of dependent picture g*F + a_g) rather than
+#                    on the group's start: that is how authored discs split the
+#                    two shapes - some titles ride the message two pictures
+#                    after the start of the group it describes.  A pattern of
+#                    all zeros keeps every SEI on its group's start, which is
+#                    the same stream's on-time shape; the two fixtures' depth
+#                    rows differing only where a late message's first pictures
+#                    have already been decoded is the max-run phase test.
+#                    Implies --ofmd.
 #
 # The --zero check is the reason this script is kept next to the fixtures it
 # writes: authored payloads that reproduce a shipped sample byte for byte are
 # payloads the shipped decoder agrees with.
+#
+# The subtitle-depth block (--ofmd) is the BD3D offset-metadata message, per
+# the public implementations of it (LAVFilters msdk_mvc, MPC-BE MSDKDecoder
+# ParseOffsetMetadata, Kodi BlurayOffsetMetadata). It travels as a
+# user_data_unregistered message with a fixed UUID and the tag 'OFMD', wrapped
+# in a scalable-nesting message, in the dependent view only, once per group of
+# pictures:
+#
+#   0x25 <size> 0x40   nesting: all views of the access unit, one-byte header
+#   0x05 <size>        user_data_unregistered
+#   UUID(16) 'OFMD'
+#   10-byte header: picture-rate code, the 36 bit 90 kHz timestamp of the group
+#                   with its marker bits, the sequence count, the picture count
+#                   of the group, and two bytes that are opaque to every
+#                   implementation reading the message
+#   then sequence-count * picture-count bytes, sequence-major and in display
+#   order, one per picture: bit 7 the direction flag (set = behind the screen)
+#   and bits 0..6 the magnitude in pixels. A flat entry therefore goes over as
+#   0x80, the form a mastering tool authors, or as 0x00, the form a zero
+#   magnitude toward the viewer writes; both mean no displacement.
+#
+# The four sequences written here say four different things about the same
+# pictures, and their first entries are the four forms the wire format has:
+#   0  +5, +6, +7, ...    a ramp toward the viewer          (wire 05 06 07 ..)
+#   1  -1,  0, +1, ...    behind, then flat, then toward    (wire 81 00 01 ..)
+#   2   0,  0,  0, ...    authored flat                     (wire 80 80 80 ..)
+#   3   0,  1,  2, ...    a ramp from flat                  (wire 00 01 02 ..)
+# Sequences 4 and above repeat sequence 3. A group shorter than the fixture
+# leaves the trailing pictures of the fixture uncovered, which is a state the
+# decoder has to get right too.
 # ---------------------------------------------------------------------------
 use strict;
 use warnings;
@@ -71,6 +142,9 @@ my ($base_lvl, $dep_lvl) = (0, 0);
 my ($base_frames, $dep_frames) = (2, 2);
 my $copy_only  = 0;
 my $zero_check = 0;
+my ($ofmd, $ofmd_frames, $ofmd_seq, $ofmd_pts, $ofmd_rate, $ofmd_base) =
+    (0, -1, 4, 0, 3, 0);
+my @ofmd_lags;
 
 for my $a (@ARGV) {
     $dnafile     = $1 if $a =~ /^--dna=(.+)$/;
@@ -79,6 +153,14 @@ for my $a (@ARGV) {
     $dep_lvl     = $1 if $a =~ /^--dep=(-?\d+)$/;
     $base_frames = $1 if $a =~ /^--base-frames=(\d+)$/;
     $dep_frames  = $1 if $a =~ /^--dep-frames=(\d+)$/;
+    $ofmd_frames = $1 if $a =~ /^--ofmd-frames=(\d+)$/;
+    $ofmd_seq    = $1 if $a =~ /^--ofmd-seq=(\d+)$/;
+    $ofmd_pts    = $1 if $a =~ /^--ofmd-pts=(\d+)$/;
+    $ofmd_rate   = $1 if $a =~ /^--ofmd-rate=(\d+)$/;
+    $ofmd_base   = $1 if $a =~ /^--ofmd-base=(\d+)$/;
+    @ofmd_lags   = split /,/, $1 if $a =~ /^--ofmd-lag-pattern=([0-9]+(?:,[0-9]+)*)$/;
+    $ofmd        = 1  if $a eq '--ofmd';
+    $ofmd        = 1  if @ofmd_lags;
     $copy_only   = 1  if $a eq '--copy';
     $zero_check  = 1  if $a eq '--zero';
 }
@@ -86,6 +168,74 @@ for my $a (@ARGV) {
 die "a view list of $base_frames/$dep_frames pictures does not fit the 4-bit
      pic_order_cnt_lsb of the reused headers (7 pictures maximum)\n"
     if $base_frames > 7 || $dep_frames > 7;
+
+die "--ofmd-lag-pattern needs an explicit --ofmd-frames (the block size it tiles)\n"
+    if $ofmd && @ofmd_lags && $ofmd_frames < 0;
+$ofmd_frames = $dep_frames if $ofmd_frames < 0;
+die "--ofmd-frames must describe at most the $dep_frames dependent pictures\n"
+    if $ofmd && $ofmd_frames > $dep_frames;
+die "the sequence count is a 6-bit field with 32 the largest one authored\n"
+    if $ofmd && ($ofmd_seq < 1 || $ofmd_seq > 32);
+die "--ofmd has nothing to do with --copy/--zero\n" if $ofmd && ($copy_only || $zero_check);
+die "--ofmd-base has nothing to shift without --ofmd\n" if !$ofmd && $ofmd_base;
+die "--ofmd-lag-pattern wants a comma-separated list of non-negative integers\n"
+    if grep(/^--ofmd-lag-pattern=/, @ARGV) && !@ofmd_lags;
+
+# frame_rate_code to {numerator, denominator} of the picture rate, the same
+# table the decoder reads the field with (libavcodec/h264_sei.c
+# ofmd_frame_rates).  --ofmd-base states its shift in pictures of this rate, so
+# the two have to agree about what one picture is worth.
+my %ofmd_rates = (
+     1 => [24000, 1001],   2 => [24, 1],   3 => [25, 1],   4 => [30000, 1001],
+     5 => [30, 1],         6 => [50, 1],   7 => [60000, 1001],
+     8 => [60, 1],         9 => [100, 1], 10 => [120, 1], 11 => [200, 1],
+    12 => [240, 1],       13 => [300, 1],
+);
+
+# one picture of the declared rate, in 90 kHz units, rounded the way the
+# decoder rounds a group length (av_rescale_rnd to nearest)
+my $ofmd_step = 0;
+if ($ofmd) {
+    my $r = $ofmd_rates{$ofmd_rate}
+        or die "--ofmd-rate=$ofmd_rate declares no picture rate\n";
+    $ofmd_step = int(90000 * $r->[1] / $r->[0] + 0.5);
+}
+
+# The timestamp of the described group as it goes on the wire: --ofmd-pts with
+# --ofmd-base added to it.  The field is 3 + 15 + 15 bits, so refuse to write a
+# timestamp that would not survive the packing.
+my $ofmd_wire_pts = $ofmd_pts + $ofmd_base * $ofmd_step;
+die sprintf("--ofmd-base=%d --ofmd-pts=%d is %d, past the 33 bits of the field\n",
+            $ofmd_base, $ofmd_pts, $ofmd_wire_pts)
+    if $ofmd && $ofmd_wire_pts > 2**33 - 1;
+
+# Multi-block mode (--ofmd-lag-pattern): block g describes dependent pictures
+# [g*F .. (g+1)*F), is stamped one block-duration after the block before it,
+# and its SEI rides ahead of dependent picture g*F + pattern[g].  Everything
+# the mode needs to exist by the time it is written is checked here; the SEI
+# bytes themselves are rendered in the assembly section (they need the message
+# writer defined below).
+my @ofmd_group_pts;             # block index -> wire pts of that block
+if ($ofmd && @ofmd_lags) {
+    my $groups = 0 + @ofmd_lags;
+    die "--ofmd-lag-pattern describes $groups blocks; the mode exists to make that count MULTIPLE (3 or more)\n"
+        if $groups < 3;
+    die sprintf("--ofmd-lag-pattern=%d blocks x --ofmd-frames=%d does not fit --dep-frames=%d\n",
+                $groups, $ofmd_frames, $dep_frames)
+        if $groups * $ofmd_frames > $dep_frames;
+    for my $g (0 .. $groups - 1) {
+        my $slot = $g * $ofmd_frames + $ofmd_lags[$g];
+        die sprintf("block %d of --ofmd-lag-pattern rides ahead of dependent picture %d, past the %d the stream carries\n",
+                    $g, $slot, $dep_frames)
+            if $slot >= $dep_frames;
+        my $gpts = $ofmd_wire_pts + $g * $ofmd_frames * $ofmd_step;
+        die sprintf("block %d of --ofmd-lag-pattern stamps %d, past the 33 bits of the field\n",
+                    $g, $gpts)
+            if $gpts > 2**33 - 1;
+        $ofmd_group_pts[$g] = $gpts;
+    }
+}
+
 
 open(my $fh, '<:raw', $dnafile) or die "open $dnafile: $!";
 local $/ = undef;
@@ -252,7 +402,79 @@ sub dep_picture {
                                         level => $dep_lvl));
 }
 
+# ---- subtitle-depth (offset metadata) SEI ----------------------------------
+# The BD3D offset-metadata message of the dependent view (see the header
+# comment for the layout and where the format comes from).
+my $ofmd_uuid = "\x17\xee\x8c\x60\xf8\x4d\x11\xd9" .
+                "\x8c\xd6\x08\x00\x20\x0c\x9a\x66";
+
+# signed pixels to wire byte: bit 7 is the direction flag (set = behind the
+# screen) and bits 0..6 the magnitude, so 0x80 is the authored flat entry.
+sub ofmd_entry {
+    my ($v) = @_;
+    return $v < 0 ? 0x80 | -$v : $v;
+}
+
+# what one entry of the block is on the wire, by offset sequence and by picture
+# of the described group (see the four forms documented in the header comment).
+# Both encodings of a flat entry are written: sequences 1 and 3 give the plain
+# zero byte that a zero magnitude toward the viewer produces, sequence 2 the
+# 0x80 a mastering tool authors, and a reader takes either as no displacement.
+sub ofmd_wire {
+    my ($seq, $frame) = @_;
+    return $frame + 5             if $seq == 0;     #  05 06 07 ..
+    return ofmd_entry($frame - 1) if $seq == 1;     #  81 00 01 ..
+    return 0x80                   if $seq == 2;     #  80 80 80 ..
+    return ofmd_entry($frame);                      #  00 01 02 ..
+}
+
+# a SEI payload size field: as many 0xFF bytes as the size holds 255s in it,
+# then the remainder - the form both this project's streams and the readers of
+# this message use
+sub sei_size {
+    my ($n) = @_;
+    return "\xff" x int($n / 255) . chr($n % 255);
+}
+
+sub ofmd_sei_nal {
+    my ($seq, $frames, $pts, $code, $pos0) = @_;
+    my ($header, $table, $user_data, $nested, $payload) = ('', '', '', '', '');
+    $pos0 = 0 unless $pos0;
+
+    wbits('1000');                      # marker_bit + three reserved bits
+    wu(4, $code);                       # frame_rate_code
+    wbits('00000');                     # reserved
+    wu(3, ($pts >> 30) & 0x7);          # pts[32:30]
+    wbits('1');                         # marker_bit
+    wu(15, ($pts >> 15) & 0x7fff);      # pts[29:15]
+    wbits('1');                         # marker_bit
+    wu(15,  $pts        & 0x7fff);      # pts[14:0]
+    wbits('10');                        # the two marker bits
+    wu(6, $seq);                        # sequence_count
+    wu(8, $frames);                     # frame_count
+    wu(8, 0x80);                        # the two opaque bytes, as authored
+    wu(8, 0x80);
+    die "subtitle depth header is not byte aligned\n" if @bits % 8;
+    $header = take();
+
+    for my $s (0 .. $seq - 1) {
+        # in multi-block mode the ramp runs across the blocks: entry values say
+        # which picture of the tiled run this block answers, not where inside
+        # the block it sits
+        $table .= chr(ofmd_wire($s, $pos0 + $_)) for 0 .. $frames - 1;
+    }
+
+    $user_data = $ofmd_uuid . 'OFMD' . $header . $table;
+    $nested    = chr(5) . sei_size(length $user_data) . $user_data;
+    # one-byte scalable-nesting header: no operation point, all views of the
+    # access unit; the message it wraps is the user data above
+    $payload   = "\x40" . $nested;
+
+    return "\x06" . chr(37) . sei_size(length $payload) . $payload . "\x80";
+}
+
 # ---- assembly --------------------------------------------------------------
+
 # The stream is: the parameter sets and the first access unit's delimiter and
 # IDR picture, the subset SPS with the multiview extension, the dependent view's
 # picture parameter set, the dependent picture of access unit 0, and then one
@@ -261,25 +483,51 @@ sub dep_picture {
 my $sc   = "\x00\x00\x01";
 my $body = '';
 
+# Multi-block mode: render each block's SEI once and place it at the delimiter
+# of the dependent picture its pattern entry names (the bytes ride ahead of
+# that picture, inside its access unit and after the base view's slice).
+my @ofmd_sei_at;                # dependent picture index -> NAL bytes with delimiters
+if ($ofmd && @ofmd_lags) {
+    for my $g (0 .. $#ofmd_lags) {
+        $ofmd_sei_at[$g * $ofmd_frames + $ofmd_lags[$g]] .=
+            $sc . ofmd_sei_nal($ofmd_seq, $ofmd_frames, $ofmd_group_pts[$g],
+                               $ofmd_rate, $g * $ofmd_frames);
+    }
+}
+
 # prologue: everything up to the first dependent picture
 for my $k (0 .. 5) {
     my $r = $role[$k];
     $body .= $sc . ($r eq 'idr0' ? base_picture(0, 1) : $nal[$k]{raw});
 }
+# the subtitle-depth SEI of the group, ahead of the first picture it describes
+$body .= $sc . ofmd_sei_nal($ofmd_seq, $ofmd_frames, $ofmd_wire_pts, $ofmd_rate)
+    if $ofmd && $dep_frames >= 1 && !@ofmd_lags;
+# in multi-block mode only a block of lag 0 stands ahead of picture 0; the
+# later-laid blocks were placed at their own slots above
+$body .= $ofmd_sei_at[0] if $ofmd && @ofmd_lags && defined $ofmd_sei_at[0];
 $body .= $sc . dep_picture(0) if $dep_frames >= 1;
 
 # the remaining access units, up to the longer of the two view lists
 for my $au (1 .. ($base_frames >= $dep_frames ? $base_frames - 1 : $dep_frames - 1)) {
     $body .= $sc . $aud->{raw};
     $body .= $sc . base_picture($au, 0) if $au < $base_frames;
+    $body .= $ofmd_sei_at[$au] if $ofmd && @ofmd_lags && defined $ofmd_sei_at[$au];
     $body .= $sc . dep_picture($au)     if $au < $dep_frames;
 }
 
 open(my $of, '>:raw', $out) or die "open $out: $!";
 print $of $body;
 close $of;
-printf "wrote %s: %d bytes (%d base + %d dependent pictures, view0 DC %d, view1 DC %d)\n",
-       $out, length($body), $base_frames, $dep_frames, $base_lvl, $dep_lvl;
+printf "wrote %s: %d bytes (%d base + %d dependent pictures, view0 DC %d, view1 DC %d%s)\n",
+       $out, length($body), $base_frames, $dep_frames, $base_lvl, $dep_lvl,
+       $ofmd ? (@ofmd_lags
+                ? sprintf(', subtitle depth: %d blocks x %d sequences x %d pictures from pts %d, rate code %d, SEI lags %s',
+                          scalar(@ofmd_lags), $ofmd_seq, $ofmd_frames,
+                          $ofmd_wire_pts, $ofmd_rate, join(',', @ofmd_lags))
+                : sprintf(', subtitle depth: %d sequences x %d pictures at pts %d, rate code %d',
+                          $ofmd_seq, $ofmd_frames, $ofmd_pts, $ofmd_rate))
+             : '';
 
 if ($copy_only || $zero_check) {
     my $what = $copy_only ? 'COPY' : 'ZERO';

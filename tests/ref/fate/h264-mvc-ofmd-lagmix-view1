@@ -1,0 +1,9 @@
+h264-ofmd: threads=1 units=6 step=3600
+h264-ofmd: pts=0 16x16 view=none arrangement=none depth=none
+h264-ofmd: pts=0 16x16 view=yes arrangement=none depth=4 covered=1 offsets=5 -1 0 0
+h264-ofmd: pts=3600 16x16 view=yes arrangement=none depth=none
+h264-ofmd: pts=7200 16x16 view=yes arrangement=none depth=4 covered=1 offsets=7 1 0 2
+h264-ofmd: pts=10800 16x16 view=yes arrangement=none depth=none
+h264-ofmd: pts=14400 16x16 view=yes arrangement=none depth=none
+h264-ofmd: pts=18000 16x16 view=yes arrangement=none depth=none
+h264-ofmd: delivered 7 frames
