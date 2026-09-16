@@ -18942,9 +18942,10 @@ The filter accepts the following options:
 @item plane
 Select the depth sequence used for the subtitle track.  The default is @code{-1},
 which asks the subtitle input's @code{AV_FRAME_DATA_MVC_SUB_PLANE} frame marker
-which sequence it belongs to.  A value from 0 to 31 selects that sequence
-directly and overrides the marker.  If no sequence can be found, the caption is
-placed flat.
+which sequence the track belongs to; that marker is described with the stream tag
+in @xref{Stream metadata,,the Stream metadata section in the ffmpeg-utils
+manual,ffmpeg-utils}.  A value from 0 to 31 selects that sequence directly and
+overrides the marker.  If no sequence can be found, the caption is placed flat.
 
 @item depth
 Place the caption at the authored depth.  The default is @code{1}.  Setting it
@@ -19002,8 +19003,9 @@ ffmpeg -i input.mkv -filter_complex \
 @end example
 
 In this example the subtitle track selected as @code{0:s:0} is placed in the
-depth sequence named @code{2}.  If that marker is absent, @code{plane=-1} uses
-the depth sequence stamped by the transcoder for the subtitle track.
+depth sequence named @code{2}.  Omitting @code{plane} leaves it at the default
+@code{-1}, which asks the subtitle track's marker which sequence belongs to that
+track.
 
 @section multiply
 Multiply first video stream pixels values with second video stream pixels values.
