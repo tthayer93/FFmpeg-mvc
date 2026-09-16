@@ -22,6 +22,7 @@
 #include "ffmpeg.h"
 #include "ffmpeg_sched.h"
 #include "ffmpeg_utils.h"
+#include "sub2video_plane.h"
 
 #include "libavutil/avassert.h"
 #include "libavutil/avstring.h"
@@ -1062,6 +1063,9 @@ int ist_filter_add(InputStream *ist, InputFilter *ifilter, int is_simple,
 
     ist->filters[ist->nb_filters - 1] = ifilter;
 
+    /* no plane unless a subtitle stream's metadata names one */
+    opts->sub_plane_id = -1;
+
     if (ist->par->codec_type == AVMEDIA_TYPE_VIDEO) {
         const AVPacketSideData *sd = av_packet_side_data_get(ist->par->coded_side_data,
                                                              ist->par->nb_coded_side_data,
@@ -1106,6 +1110,42 @@ int ist_filter_add(InputStream *ist, InputFilter *ifilter, int is_simple,
             if (!d->pkt_heartbeat)
                 return AVERROR(ENOMEM);
         }
+
+        /* Which depth sequence (plane) this subtitle track floats in, read from
+         * stream metadata.  A language-specific key wins over a bare one, so a
+         * file can assign a different plane to each subtitle track; a value
+         * that is not exactly a plane number is treated as absent. */
+        {
+            const AVDictionaryEntry *lang = av_dict_get(ist->st->metadata,
+                                                        "language", NULL, 0);
+            const AVDictionaryEntry *tag  = NULL;
+
+            const char plane_prefix[] = "3d-plane-";
+            char key[64];
+
+            /* A language tag too long to fit the whole key cannot match the
+             * language-specific tag exactly; use the bare tag rather than
+             * silently truncating the key. */
+            if (lang && lang->value[0] &&
+                strlen(lang->value) < sizeof(key) - strlen(plane_prefix)) {
+                av_strlcpy(key, plane_prefix, sizeof(key));
+                av_strlcat(key, lang->value, sizeof(key));
+                tag = av_dict_get(ist->st->metadata, key, NULL, 0);
+            }
+            if (!tag)
+                tag = av_dict_get(ist->st->metadata, "3d-plane", NULL, 0);
+            if (tag) {
+                int plane = ff_sub_plane_parse(tag->value);
+                if (plane >= 0) {
+                    opts->sub_plane_id = plane;
+                } else {
+                    av_log(ist, AV_LOG_WARNING, "Ignoring a subtitle plane tag "
+                           "that is not a plane number in 0..%d: '%s'\n",
+                           FF_SUB_PLANE_MAX, tag->value);
+                }
+            }
+        }
+
         ds->have_sub2video = 1;
     }
 

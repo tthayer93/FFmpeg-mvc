@@ -839,6 +839,13 @@ static inline int unreference_pic(H264Context *h, H264Picture *pic, int refmask)
             pic->reference = DELAYED_PIC_REF;
             return 1;
         }
+        /* Likewise a composed base half retained after pairing as an
+         * inter-view anchor: it is named by no output list, but its hold pin
+         * must survive until that anchor queue drops it. */
+        if (ff_h264_pic_held_for_iv_anchor(h, pic)) {
+            pic->reference = DELAYED_PIC_REF;
+            return 1;
+        }
         return 1;
     }
 }
@@ -950,6 +957,11 @@ static inline int h264_view_unref(H264Context *h, H264ViewState *v,
          * list this function can see: the half reached it by being popped out
          * of its own view's delayed queue */
         if (ff_h264_pic_held_for_compose(h, pic)) {
+            pic->reference = DELAYED_PIC_REF;
+            return 1;
+        }
+        /* or retained after pairing as an inter-view anchor */
+        if (ff_h264_pic_held_for_iv_anchor(h, pic)) {
             pic->reference = DELAYED_PIC_REF;
             return 1;
         }

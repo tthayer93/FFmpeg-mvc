@@ -3272,6 +3272,11 @@ stream per access unit; the decoder adds no stereo side data in single-eye
 mode (container- or frame-packing-SEI-derived stereo side data passes through
 unchanged).
 
+A stream whose dependent view carries BD3D subtitle-depth (OFMD) offset
+metadata delivers it as @code{AV_FRAME_DATA_MVC_SS_OFFSETS} frame side data, on
+dependent-view frames and on the composed side-by-side frames alike; frames
+without the entry carry no authored depth (see the h264 decoder documentation).
+
 @example
 # base view (default): plain 2D output
 ffmpeg -i stereo.h264 -an base.mkv
