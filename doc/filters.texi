@@ -18973,8 +18973,9 @@ The caption's horizontal centre is read from the subtitle input's
 caption keeps the position already painted into its canvas and is only displaced
 for depth or shift.
 
-For an eye width @code{W}, an eye-centred caption with scaled centre @code{C},
-and an offset @code{D}, the caption centre is placed at:
+For an eye width @code{W}, a subtitle canvas whose scaled caption centre is
+@code{C}, and a displacement @code{D}, the subtitle canvas is composited into a
+full side-by-side frame with its left edge at:
 
 @example
 left eye:  W/2 + D - C

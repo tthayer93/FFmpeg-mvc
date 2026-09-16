@@ -155,22 +155,25 @@ static inline int ff_mvc_sub_clamp(int v, int lo, int hi)
 /**
  * Horizontal offset of an authored depth for one eye.
  *
- * The signed depth is authored once per frame and applies to the pair: the
- * left eye reads the canvas as if the caption had moved by +offset to the
- * right, the right eye as if it had moved by the same amount to the left.
- * That is what makes the two views converge for a positive offset, and a
- * positive offset is defined to be toward the viewer, so a caption authored
- * in front of the screen ends up in front of the screen - and one authored
- * behind it behind.  Reading the sign the other way round would put every
- * caption at the mirrored depth, which is the single most dangerous mistake
- * this filter can make: it is therefore pinned by a test, not by a comment.
+ * The signed depth is authored once per frame and applies to the pair: a
+ * positive offset moves the caption toward the viewer.  In the padded canvas,
+ * the eye's window therefore moves the opposite way from the caption: the left
+ * eye's window moves left by @p offset, which makes the caption move right by
+ * @p offset inside that eye, and the right eye's window moves right, moving
+ * its caption left by the same amount.  That is what makes the two views
+ * converge for a positive offset; a positive offset is defined to be toward
+ * the viewer, so a caption authored in front of the screen ends up in front of
+ * the screen - and one authored behind it behind.  Reading the sign the other
+ * way round would put every caption at the mirrored depth, which is the single
+ * most dangerous mistake this filter can make: it is therefore pinned by a
+ * test, not by a comment.
  *
  * @param offset  signed authored (or requested) displacement, in video pixels
  * @param eye     FF_MVC_SUB_EYE_LEFT or FF_MVC_SUB_EYE_RIGHT
  */
 static inline int ff_mvc_sub_eye_shift(int offset, int eye)
 {
-    return eye == FF_MVC_SUB_EYE_LEFT ? offset : -offset;
+    return eye == FF_MVC_SUB_EYE_LEFT ? -offset : offset;
 }
 
 /**

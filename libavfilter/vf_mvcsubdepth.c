@@ -314,7 +314,6 @@ static int place_frame(FFFrameSync *fs)
     eye_w = s->eye_w;
     eye_h = main->height;
     if (eye_w <= 0 || main->height <= 0 || eye_w > main->width / 2) {
-        av_frame_free(&sub);
         return ff_filter_frame(ctx->outputs[0], main);
     }
     check_marker(s, ctx, main);
@@ -329,18 +328,22 @@ static int place_frame(FFFrameSync *fs)
 
     layer = scale_to_eye(ctx, sub, eye_w, eye_h);
     if (!layer) {
-        av_frame_free(&sub);
         return ff_filter_frame(ctx->outputs[0], main);
     }
 
     /* ff_mvc_sub_center_x() answers INT_MIN when there is no caption centre to
      * work from; the scaling maps every unusable coordinate to 0, so the
-     * flag is carried separately. */
+     * flag is carried separately.  The centre is measured on the canvas as the
+     * eye sees it; the window starts count the padded canvas, so move the
+     * scaled centre into that coordinate system before centring a window on it. */
+    if (has_centre)
+        centre_x += SUB_MARGIN;
     base = ff_mvc_sub_base_start(has_centre, centre_x, eye_w, SUB_MARGIN);
     start_l = ff_mvc_sub_window_start(base, off, FF_MVC_SUB_EYE_LEFT,  SUB_MARGIN);
     start_r = ff_mvc_sub_window_start(base, off, FF_MVC_SUB_EYE_RIGHT, SUB_MARGIN);
 
-    if (off && (start_l != base + off || start_r != base - off)) {
+    if (off && (start_l != base + ff_mvc_sub_eye_shift(off, FF_MVC_SUB_EYE_LEFT) ||
+                start_r != base + ff_mvc_sub_eye_shift(off, FF_MVC_SUB_EYE_RIGHT))) {
         if (!s->clamp_logged) {
             av_log(ctx, AV_LOG_WARNING, "depth %+d px exceeds the %d px of "
                    "canvas slack; the further eye is clamped, which places "
@@ -359,7 +362,6 @@ static int place_frame(FFFrameSync *fs)
     s->nb_placed++;
     s->nb_shifted += off != 0;
 
-    av_frame_free(&sub);
     return ff_filter_frame(ctx->outputs[0], main);
 }
 
