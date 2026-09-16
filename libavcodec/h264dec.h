@@ -566,6 +566,20 @@ typedef struct H264Context {
     int sbs_pair_head[2];         ///< ring read position per role
     int sbs_pair_count[2];        ///< queued halves per role
 
+    /**
+     * Inter-view anchor hold-queue for the allviews composed output. A base
+     * half consumed by the SBS pairing has already left the delayed list when
+     * the dependent picture of its own access unit may still be decoding, and
+     * the standalone single-view path keeps the same anchor alive by parking
+     * the unselected view in that list. Retain the composed base picture here,
+     * pinned with DELAYED_PIC_REF, so the shared DPB can still hand it to
+     * h264_find_inter_view_ref() after the composed frame has shipped.
+     */
+#define H264_MVC_ANCHOR_Q_DEPTH 4
+    H264Picture *iv_anchor_q[H264_MVC_ANCHOR_Q_DEPTH];
+    int iv_anchor_head;
+    int iv_anchor_count;
+
     /** One-shot warning flag for unpaired composed deliveries (the pairing
      *  queue overflow and the end-of-stream leftover shipment). */
     int sbs_pair_unpaired_warned;
@@ -1065,6 +1079,16 @@ void ff_h264_flush_change(H264Context *h);
  */
 int ff_h264_pic_held_for_compose(const H264Context *h,
                                  const H264Picture *pic);
+
+/**
+ * True when the picture is retained as a recently composed base-view
+ * inter-view anchor (see iv_anchor_q in H264Context). The picture has already
+ * left the delayed and compose-pairing queues, so reference maintenance must
+ * be told to keep its hold pin until the anchor queue retires it. Implemented
+ * in h264dec.c.
+ */
+int ff_h264_pic_held_for_iv_anchor(const H264Context *h,
+                                   const H264Picture *pic);
 
 /**
  * True while the allviews composed output is the one being produced: exactly

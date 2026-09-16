@@ -131,7 +131,11 @@ static int h264_pic_held_for_output(const H264Context *h, const H264Picture *pic
     }
     /* a half waiting to be paired into a composed side-by-side frame is
      * held for output as well, and is in none of the lists above */
-    return ff_h264_pic_held_for_compose(h, pic);
+    if (ff_h264_pic_held_for_compose(h, pic))
+        return 1;
+    /* A composed base half already delivered into an SBS frame remains held as
+     * an inter-view anchor until its small hold-queue retires it. */
+    return ff_h264_pic_held_for_iv_anchor(h, pic);
 }
 
 /**

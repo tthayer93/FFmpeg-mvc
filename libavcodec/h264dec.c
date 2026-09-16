@@ -413,6 +413,80 @@ static void h264_sbs_q_clear(H264Context *h)
     }
 }
 
+/* --------------------------------------------------------------------
+ * Composed inter-view anchor queue.
+ *
+ * The SBS pairing consumes a base half as soon as it has copied its pixels
+ * into the composed frame. The dependent picture of that same access unit,
+ * however, may not have reached its Annex E inter-view reference lookup yet:
+ * display-ordinal pairing can deliver base N before dependent N has decoded.
+ * The single-eye path survives that because the base view is unselected and
+ * its pictures are parked in views[0].delayed_pic (h264_select_output_frame()).
+ * The composed path needs the same anchor lifetime without changing its
+ * pairing: keep the consumed base picture in a small FIFO and leave its
+ * DELAYED_PIC_REF pin set. The DPB slot then still names the same pixels while
+ * h264_find_inter_view_ref() resolves the dependent picture.
+ * ------------------------------------------------------------------ */
+int ff_h264_pic_held_for_iv_anchor(const H264Context *h,
+                                   const H264Picture *pic)
+{
+    for (int i = 0; i < H264_MVC_ANCHOR_Q_DEPTH; i++)
+        if ((const H264Picture *)h->iv_anchor_q[i] == pic)
+            return 1;
+    return 0;
+}
+
+/* Forget the composed inter-view anchor queue and retire its hold pins. This
+ * runs before any reference reset, exactly as the compose pairing clear does,
+ * so an IDR or seek cannot strand pins on anchors no list owns any more. */
+static void h264_iv_anchor_clear(H264Context *h)
+{
+    for (int i = 0; i < H264_MVC_ANCHOR_Q_DEPTH; i++) {
+        H264Picture *p = h->iv_anchor_q[i];
+
+        if (p)
+            p->reference &= ~DELAYED_PIC_REF;
+        h->iv_anchor_q[i] = NULL;
+    }
+    h->iv_anchor_head  = 0;
+    h->iv_anchor_count = 0;
+}
+
+/* Take over a base half from the compose stage (or an otherwise delivered
+ * base standalone) as an inter-view anchor. The queue is fixed-size and
+ * context-local, like the SBS pairing FIFO itself; overflow retires the oldest
+ * pin instead of growing the DPB occupancy. */
+static void h264_iv_anchor_retain(H264Context *h, H264Picture *p)
+{
+    int tail;
+
+    if (!h264_compose_active(h) || !p)
+        return;
+
+    for (int i = 0; i < H264_MVC_ANCHOR_Q_DEPTH; i++) {
+        if (h->iv_anchor_q[i] == p) {
+            p->reference |= DELAYED_PIC_REF;
+            return;
+        }
+    }
+
+    while (h->iv_anchor_count >= H264_MVC_ANCHOR_Q_DEPTH) {
+        H264Picture *old = h->iv_anchor_q[h->iv_anchor_head];
+
+        if (old)
+            old->reference &= ~DELAYED_PIC_REF;
+        h->iv_anchor_q[h->iv_anchor_head] = NULL;
+        h->iv_anchor_head = (h->iv_anchor_head + 1) %
+                            H264_MVC_ANCHOR_Q_DEPTH;
+        h->iv_anchor_count--;
+    }
+
+    p->reference |= DELAYED_PIC_REF;
+    tail = (h->iv_anchor_head + h->iv_anchor_count) % H264_MVC_ANCHOR_Q_DEPTH;
+    h->iv_anchor_q[tail] = p;
+    h->iv_anchor_count++;
+}
+
 /**
  * Export the available multiview view IDs, notice the caller if it requested
  * no specific views (the base view is then decoded - by h264_view_selected(),
@@ -574,6 +648,7 @@ static av_cold int h264_decode_end(AVCodecContext *avctx)
      * slots are context memory and still live here, which is what the clear
      * has to touch to retire the hold pins of the halves left pending. */
     h264_sbs_q_clear(h);
+    h264_iv_anchor_clear(h);
 
     h->cur_pic_ptr = NULL;
 
@@ -669,6 +744,12 @@ static av_cold int h264_decode_init(AVCodecContext *avctx)
  */
 static void idr(H264Context *h)
 {
+    /* Anchors held by the composed path are decode-order state from the
+     * group being refreshed; retire their pins before the reference reset so
+     * the IDR is not blocked by stale base halves no dependent picture of the
+     * new group can name. */
+    h264_iv_anchor_clear(h);
+
     ff_h264_remove_all_refs(h);
     for (int i = 0; i < h->view_count; i++) {
         H264ViewState *w = &h->views[i];
@@ -690,8 +771,12 @@ void ff_h264_flush_change(H264Context *h)
      * state: a seek drops the halves that were waiting for each other. Retire
      * their pins first and forget the queues before the reference reset below
      * can re-pin them, so that the flush finds nothing held for the compose
-     * stage and no pin is stranded on a picture no list names any more. */
+     * stage and no pin is stranded on a picture no list names any more. The
+     * same applies to the recently composed inter-view anchors: they are the
+     * continuation of that composed lifecycle, not references allowed to
+     * outlive a seek. */
     h264_sbs_q_clear(h);
+    h264_iv_anchor_clear(h);
 
     h->prev_interlaced_frame = 1;
     idr(h);
@@ -2050,10 +2135,14 @@ static int h264_sbs_assemble(H264Context *h, AVFrame *pict,
         }
     }
 
-    /* the base half's pixels are now fully copied into the combined
-     * frame: clear the assembly pin so a droppable (non-reference) base
-     * can be reclaimed; a base still referenced keeps its normal bits */
-    base->reference &= ~DELAYED_PIC_REF;
+    /* The base half's pixels are now fully copied into the combined frame.
+     * Its compose-pairing pin cannot simply be dropped: the dependent picture
+     * of the same access unit may still need this base picture as its Annex E
+     * inter-view anchor, and the SBS queue has already removed it from every
+     * output list the normal anchor scan reads. Transfer the hold to the small
+     * inter-view anchor queue (bounded, like the standalone unselected-view
+     * parking) instead of changing the composed frame pairing. */
+    h264_iv_anchor_retain(h, base);
     /* The base half is consumed by the combined frame: mark it delivered
      * so the committed-picture machinery retires it. Without this it is
      * parked, re-emitted and re-held at every subsequent access unit, and
@@ -2464,7 +2553,14 @@ hold:
             return ret;
         if (got_old) {
             h264_sbs_q_pop(h, role);
-            old->reference &= ~DELAYED_PIC_REF;
+            if (role == 0) {
+                /* A base half shipped without its partner has still left the
+                 * normal delayed list; retain it briefly as an inter-view
+                 * anchor just as a paired base half is. */
+                h264_iv_anchor_retain(h, old);
+            } else {
+                old->reference &= ~DELAYED_PIC_REF;
+            }
             /* geometry-stable degradation: the half goes out composed into a
              * double-width frame with its partner's side black */
             composed = h264_sbs_compose_half_black(h, pict, role);
@@ -2542,7 +2638,14 @@ static int h264_sbs_drain_eof(H264Context *h, AVFrame *pict, int *got_frame)
         if (!got)
             return 0;
         h264_sbs_q_pop(h, role);
-        base->reference &= ~DELAYED_PIC_REF;
+        if (role == 0) {
+            /* Leftover base halves can still be inter-view anchors while the
+             * end-of-stream dependent pictures flush; pair lifetime is done,
+             * anchor lifetime is not. */
+            h264_iv_anchor_retain(h, base);
+        } else {
+            base->reference &= ~DELAYED_PIC_REF;
+        }
         /* geometry-stable degradation: the leftover half goes out composed
          * into a double-width frame with its partner's side black */
         composed = h264_sbs_compose_half_black(h, pict, role);
