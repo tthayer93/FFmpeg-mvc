@@ -2,6 +2,10 @@ The last version increases of all libraries were on 2026-06-23.
 
 API changes, most recent first:
 
+2026-09-xx - xxxxxxxxxx - lavu 61.2.100 - frame.h
+  Add AV_FRAME_DATA_MVC_SS_OFFSETS.
+  Add AV_FRAME_DATA_MVC_SUB_PLANE.
+
 2026-06-23 - 61693f6c35f - lavu 60.34.100 - hwcontext_vulkan.h
   Switch AVVkFrame.access to VkAccessFlagBits2.
 

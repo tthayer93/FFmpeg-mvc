@@ -175,6 +175,25 @@ probe(){
     run ffprobe${PROGSUF}${EXECSUF} -bitexact -threads $threads "$@"
 }
 
+# Counts the lines of a run's combined output and error that contain $1, and
+# prints that count; the command in "$@" is an ordinary CMD body, usually
+# ffprobe.... What a decoder makes of a message it has come to understand can
+# be all log and no output to compare - a warning it no longer has reason to
+# write, and one line saying it read what it read - so the counts of those two
+# lines, not the logs around them, are what the reference pins. The exit status
+# of the run is preserved, so a run that dies still fails the test.
+count_match(){
+    pattern=$1
+    shift
+    logfile="${outdir}/${test}.log"
+    cleanfiles="$cleanfiles $logfile"
+    run "$@" >"$logfile" 2>&1
+    ret=$?
+    awk -v pat="$pattern" 'index($0, pat) { n++ } END { printf "%d\n", n + 0 }' \
+        "$logfile"
+    return $ret
+}
+
 probegaplessinfo(){
     filename="$1"
     shift

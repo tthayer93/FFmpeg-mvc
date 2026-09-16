@@ -299,6 +299,52 @@ enum AVFrameSideDataType {
      * libavutil/raw_color_params.h.
      */
     AV_FRAME_DATA_RAW_COLOR_PARAMS,
+
+    /**
+     * Per-frame subtitle depth offsets for multiview (stereoscopic) video, as
+     * carried by the BD3D offset-metadata (OFMD) SEI of the dependent view.
+     *
+     * The payload is a byte array:
+     *   [0]              sequence_count, 1..32
+     *   [1]              flags; bit0 set when the frame is covered by an
+     *                    authored block, the remaining bits are 0
+     *   [2..2+n-1]       sequence_count signed 8-bit offsets for THIS frame,
+     *                    positive = toward the viewer, negative = behind the
+     *                    screen, 0 = flat
+     *
+     * Each entry addresses one offset sequence; a consumer that knows which
+     * sequence a subtitle plane belongs to uses that entry as the horizontal
+     * per-eye displacement for the frame, in video-native pixels. Absent side
+     * data means no authored depth is known for the frame, which is to be
+     * rendered flat; a zero entry is authored flat.
+     */
+    AV_FRAME_DATA_MVC_SS_OFFSETS,
+
+    /**
+     * Which multiview subtitle-depth sequence (plane) a subtitle-as-video frame
+     * belongs to, and where its caption sits horizontally, so a consumer can
+     * re-place it per eye.  The data is a fixed 8-byte array:
+     *   [0]              plane_id: the depth sequence this subtitle track maps
+     *                    to, 0..31 meaningful; 0xFF when none
+     *   [1]              flags; bit0 set when plane_id is meaningful, bit1 set
+     *                    when the bounding box below is valid, the remaining
+     *                    bits are 0
+     *   [2..3]           origin_x, a signed 16-bit little-endian value: the
+     *                    centre-x of the union bounding box of the caption
+     *                    rectangles for this display epoch, in subtitle-canvas
+     *                    pixel units (the subtitle canvas is sized to the
+     *                    subtitle's declared canvas, falling back to the video
+     *                    dimensions)
+     *   [4..5]           extent_w, a signed 16-bit little-endian value: the
+     *                    width of that union bounding box
+     *   [6..7]           reserved, zero
+     *
+     * This is stamped by the transcoder onto frames produced from a subtitle
+     * stream, never by a decoder.  Absent side data means the track carries no
+     * recognised plane tag and no caption is currently painted, in which case a
+     * stream is left untouched.
+     */
+    AV_FRAME_DATA_MVC_SUB_PLANE,
 };
 
 enum AVActiveFormatDescription {

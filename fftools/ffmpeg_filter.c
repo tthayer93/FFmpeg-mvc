@@ -22,6 +22,7 @@
 
 #include "ffmpeg.h"
 #include "graph/graphprint.h"
+#include "sub2video_plane.h"
 
 #include "libavfilter/avfilter.h"
 #include "libavfilter/buffersink.h"
@@ -33,6 +34,7 @@
 #include "libavutil/bprint.h"
 #include "libavutil/channel_layout.h"
 #include "libavutil/downmix_info.h"
+#include "libavutil/intreadwrite.h"
 #include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/pixdesc.h"
@@ -162,6 +164,15 @@ typedef struct InputFilterPriv {
 
         /// marks if sub2video_update should force an initialization
         unsigned int initialize;
+
+        /// union bounding box of the caption painted for the epoch in progress,
+        /// in canvas pixel units; cached so a heartbeat duplicate, which has no
+        /// subtitle in hand, can re-stamp the same extent
+        int             bbox_valid;
+        int             origin_x;   /* centre-x of the union box */
+        int             extent_w;   /* width of the union box     */
+        /// one-shot guard for the side-data allocation failure warning
+        int             plane_warned;
     } sub2video;
 } InputFilterPriv;
 
@@ -333,6 +344,55 @@ static void sub2video_copy_rect(uint8_t *dst, int dst_linesize, int w, int h,
     }
 }
 
+/* Stamp (or clear) the subtitle-plane marker on the canvas about to be pushed.
+ * The canvas is reused and re-pushed (a heartbeat duplicate pushes it again
+ * without an update), so any previous marker is dropped before a fresh one is
+ * written - a caption frame and its duplicates then always carry exactly one.
+ * A stream that names no plane and paints no caption carries no marker at all,
+ * leaving such inputs byte-identical to a build without this feature. */
+static void sub2video_stamp_plane(InputFilterPriv *ifp, AVFrame *frame)
+{
+    int plane     = ifp->opts.sub_plane_id;
+    int has_plane = plane >= 0;
+    int has_bbox  = ifp->sub2video.bbox_valid;
+    uint8_t buf[FF_SUB_PLANE_DATA_SIZE] = { 0 };
+
+    av_frame_remove_side_data(frame, AV_FRAME_DATA_MVC_SUB_PLANE);
+    /* The geometry is int16 in the payload.  Never advertise a wrong bbox:
+     * an out-of-range caption box simply drops bit1 while the plane byte
+     * remains valid. */
+    if (ifp->sub2video.bbox_valid &&
+        (ifp->sub2video.origin_x > 32767 || ifp->sub2video.extent_w > 32767))
+        has_bbox = 0;
+    if (!has_plane && !has_bbox)
+        return;
+
+    buf[0] = has_plane ? (uint8_t)plane : FF_SUB_PLANE_ID_NONE;
+    buf[1] = (has_plane ? FF_SUB_PLANE_FLAG_PLANE : 0) |
+             (has_bbox  ? FF_SUB_PLANE_FLAG_BBOX  : 0);
+    if (has_bbox) {
+        AV_WL16(buf + 2, (uint16_t)(int16_t)ifp->sub2video.origin_x);
+        AV_WL16(buf + 4, (uint16_t)(int16_t)ifp->sub2video.extent_w);
+    }
+    /* bytes 6..7 stay reserved-zero */
+
+    {
+        AVFrameSideData *sd = av_frame_new_side_data(frame,
+                                       AV_FRAME_DATA_MVC_SUB_PLANE,
+                                       FF_SUB_PLANE_DATA_SIZE);
+        if (!sd) {
+            if (!ifp->sub2video.plane_warned) {
+                av_log(ifp->ifilter.graph, AV_LOG_WARNING, "Could not attach a "
+                       "subtitle plane marker; it will not reach the "
+                       "filtergraph\n");
+                ifp->sub2video.plane_warned = 1;
+            }
+            return;
+        }
+        memcpy(sd->data, buf, sizeof(buf));
+    }
+}
+
 static void sub2video_push_ref(InputFilterPriv *ifp, int64_t pts)
 {
     AVFrame *frame = ifp->sub2video.frame;
@@ -340,6 +400,7 @@ static void sub2video_push_ref(InputFilterPriv *ifp, int64_t pts)
 
     av_assert1(frame->data[0]);
     ifp->sub2video.last_pts = frame->pts = pts;
+    sub2video_stamp_plane(ifp, frame);
     ret = av_buffersrc_add_frame_flags(ifp->ifilter.filter, frame,
                                        AV_BUFFERSRC_FLAG_KEEP_REF |
                                        AV_BUFFERSRC_FLAG_PUSH);
@@ -357,6 +418,9 @@ static void sub2video_update(InputFilterPriv *ifp, int64_t heartbeat_pts,
     int     dst_linesize;
     int num_rects;
     int64_t pts, end_pts;
+    FFSubBBox bbox;
+
+    ff_sub_bbox_reset(&bbox);
 
     if (sub) {
         pts       = av_rescale_q(sub->pts + sub->start_display_time * 1000LL,
@@ -381,8 +445,22 @@ static void sub2video_update(InputFilterPriv *ifp, int64_t heartbeat_pts,
     }
     dst          = frame->data    [0];
     dst_linesize = frame->linesize[0];
-    for (int i = 0; i < num_rects; i++)
-        sub2video_copy_rect(dst, dst_linesize, frame->width, frame->height, sub->rects[i]);
+    for (int i = 0; i < num_rects; i++) {
+        AVSubtitleRect *r = sub->rects[i];
+        sub2video_copy_rect(dst, dst_linesize, frame->width, frame->height, r);
+        /* fold the rectangles that were actually painted (a bitmap inside the
+         * canvas, the same test sub2video_copy_rect applies) into one union */
+        if (r->type == SUBTITLE_BITMAP &&
+            r->x >= 0 && r->x + r->w <= frame->width &&
+            r->y >= 0 && r->y + r->h <= frame->height)
+            ff_sub_bbox_add(&bbox, r->x, r->w);
+    }
+    /* cache the epoch's caption extent so a heartbeat duplicate re-pushes the
+     * same marker; a blank epoch (no rectangle painted) clears it */
+    ifp->sub2video.bbox_valid = ff_sub_bbox_valid(&bbox);
+    ifp->sub2video.origin_x   = ifp->sub2video.bbox_valid ?
+                                ff_sub_bbox_center_x(&bbox) : 0;
+    ifp->sub2video.extent_w   = ff_sub_bbox_width(&bbox);
     sub2video_push_ref(ifp, pts);
     ifp->sub2video.end_pts = end_pts;
     ifp->sub2video.initialize = 0;
@@ -1848,6 +1926,12 @@ static void sub2video_prepare(InputFilterPriv *ifp)
 {
     ifp->sub2video.last_pts = INT64_MIN;
     ifp->sub2video.end_pts  = INT64_MIN;
+
+    /* no caption extent is known until one is painted */
+    ifp->sub2video.bbox_valid = 0;
+    ifp->sub2video.origin_x   = 0;
+    ifp->sub2video.extent_w   = 0;
+    ifp->sub2video.plane_warned = 0;
 
     /* sub2video structure has been (re-)initialized.
        Mark it as such so that the system will be

@@ -18640,6 +18640,95 @@ with the reference file @file{ref.mpg}.
 ffmpeg -i main.mpg -i ref.mpg -lavfi msad -f null -
 @end example
 
+@section mvcsubdepth
+
+Place a subtitle layer into both eyes of a composed side-by-side stereoscopic
+video frame, at the horizontal place required by the subtitle's authored depth.
+
+This filter has two video inputs.  The first input is the composed multiview
+video, normally twice as wide as one eye.  The second input is the subtitle
+rendered to a picture, usually produced from an explicitly enabled subtitle
+stream.  Both inputs are negotiated as RGBA, and the output is the first input
+with one copy of the subtitle burned into its left half and one copy burned
+into its right half.
+
+A subtitle stream is never shown by this filter unless the graph explicitly
+feeds it into the filter's second input.  When such a graph is used, both
+copies are always drawn; the options below only choose the depth of the pair.
+
+This filter also supports the @ref{framesync} options.
+
+The filter accepts the following options:
+
+@table @option
+@item plane
+Select the depth sequence used for the subtitle track.  The default is @code{-1},
+which asks the subtitle input's @code{AV_FRAME_DATA_MVC_SUB_PLANE} frame marker
+which sequence the track belongs to; that marker is described with the stream tag
+in @xref{Stream metadata,,the Stream metadata section in the ffmpeg-utils
+manual,ffmpeg-utils}.  A value from 0 to 31 selects that sequence directly and
+overrides the marker.  If no sequence can be found, the caption is placed flat.
+
+@item depth
+Place the caption at the authored depth.  The default is @code{1}.  Setting it
+to @code{0} ignores any authored depth and puts both eye copies of the caption
+at the same place, which is a flat double copy.
+
+@item shift
+Displace the caption by this many whole pixels in each eye, regardless of
+whether an authored depth is present.  A positive value puts the caption in
+front of the screen.  By default this option is unset, and the authored depth
+is used instead.
+
+@item eye_width
+Use this value as the width of one eye.  The default is @code{0}, meaning half
+of the first input's width.  A value larger than half of the first input's width
+is rejected.
+@end table
+
+The signed per-frame depth is read from the first input's
+@code{AV_FRAME_DATA_MVC_SS_OFFSETS} marker, using the selected depth sequence.
+A positive offset means toward the viewer.  If that marker is absent, malformed,
+does not cover the frame, or names a zero offset, the caption is flat.
+
+The subtitle image keeps the horizontal position that the subtitle-to-video path
+painted into its canvas.  This filter does not re-centre the caption; it only
+displaces that painted position by the per-eye depth.  For an eye width
+@code{W}, an unclipped displacement @code{D} places the subtitle canvas' nominal
+left edge at:
+
+@example
+left eye:  D
+right eye: W - D
+@end example
+
+A positive @code{D} moves the caption inward in the left eye and inward in the
+right eye, so the pair converges.
+
+The filter reserves 64 columns of transparent slack conceptually on each side of
+the subtitle canvas.  A requested displacement larger than that slack is
+clamped; both eye windows stop symmetrically at that slack, and the pair is then
+nearer to the screen plane than requested rather than losing the caption.
+
+The filter emits a warning when the first input has no composed side-by-side
+marker.  For a multiview file decoded directly, the first input is delivered
+with both eyes in one frame and with the marker that this filter uses to tell
+the two halves apart.  A graph should place this filter directly after the
+source that composes those two eyes.  Stack filters drop the composed marker
+along with the authored depth marker, so placing this filter after one of them
+loses the authored depth information.
+
+@example
+ffmpeg -i input.mkv -filter_complex \
+  "[0:v]format=rgba[vc];[0:s:0]format=rgba[sub];[vc][sub]mvcsubdepth=plane=2[out]" \
+  -map "[out]" -map 0:a:0? -c:a copy out.mkv
+@end example
+
+In this example the subtitle track selected as @code{0:s:0} is placed in the
+depth sequence named @code{2}.  Omitting @code{plane} leaves it at the default
+@code{-1}, which asks the subtitle track's marker which sequence belongs to that
+track.
+
 @section multiply
 Multiply first video stream pixels values with second video stream pixels values.
 

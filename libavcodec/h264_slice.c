@@ -131,7 +131,11 @@ static int h264_pic_held_for_output(const H264Context *h, const H264Picture *pic
     }
     /* a half waiting to be paired into a composed side-by-side frame is
      * held for output as well, and is in none of the lists above */
-    return ff_h264_pic_held_for_compose(h, pic);
+    if (ff_h264_pic_held_for_compose(h, pic))
+        return 1;
+    /* A composed base half already delivered into an SBS frame remains held as
+     * an inter-view anchor until its small hold-queue retires it. */
+    return ff_h264_pic_held_for_iv_anchor(h, pic);
 }
 
 /**
@@ -578,6 +582,20 @@ int ff_h264_update_thread_context(AVCodecContext *dst,
     h->au_base_pts       = h1->au_base_pts;
     h->au_base_pkt_dts   = h1->au_base_pkt_dts;
     h->au_base_valid     = h1->au_base_valid;
+    /* Same argument for the depth anchor: it is latched by whichever context
+     * decoded the packet and consumed by whichever context parses the SEI, and
+     * under frame threading those are not the same context. */
+    h->ofmd_anchor_pts90k = h1->ofmd_anchor_pts90k;
+
+    /* Subtitle-depth block: announced once per group of pictures by an SEI of
+     * the access unit that starts it, and read back when a picture of that
+     * group leaves the decoder - which under frame threading is a different
+     * worker. It is decode-session state of the same kind as the latches
+     * above, so it is handed over here rather than shared: no two contexts
+     * ever hold it at the same time, since the destination worker is parked
+     * while it is copied. A worker therefore only ever reads a block it or
+     * one of its predecessors already parsed, in access-unit order. */
+    h->ofmd = h1->ofmd;
 
     memcpy(h->mmco, h1->mmco, sizeof(h->mmco));
     h->nb_mmco         = h1->nb_mmco;
@@ -2226,6 +2244,49 @@ static int h264_field_start(H264Context *h, const H264SliceContext *sl,
     if (h->cur_pic_ptr && h->cur_view > 0 &&
         h->view_count > 1 && h->ps.sps->mvc.present)
         h264_adopt_base_view_poc(h, sl);
+
+    /* Subtitle depth: the dependent view's picture takes its row of the
+     * offset metadata here, at the one point in a picture's decode where both
+     * the describing block and the picture's settled display time are in hand
+     * - the display time is adopted just above, and the block this context
+     * holds is the one this access unit delivered. A picture the block does
+     * not describe gets no row at all: an unknown depth is rendered flat, and
+     * inventing one is not this decoder's business.
+     *
+     * The row rides with the picture rather than being looked up when the
+     * picture is handed out, because by then the decoder has moved on to a
+     * later group and the block it holds describes that one - which is also
+     * why the film grain metadata travels with the picture. A paired field
+     * reaches this point twice for one picture, and the row the first pass
+     * wrote is that picture's row. */
+    if (h->view_count > 1 && h->cur_pic_ptr &&
+        h->cur_pic_ptr->view_idx > 0 && h->ofmd.present &&
+        h->cur_pic_ptr->f->pts != AV_NOPTS_VALUE &&
+        h->avctx->pkt_timebase.num &&
+        !av_frame_get_side_data(h->cur_pic_ptr->f,
+                                AV_FRAME_DATA_MVC_SS_OFFSETS)) {
+        H264Picture *pic = h->cur_pic_ptr;
+        int8_t offsets[H264_OFMD_MAX_SEQUENCES];
+        int n = ff_h264_ofmd_lookup(
+                    &h->ofmd,
+                    av_rescale_q(pic->f->pts, h->avctx->pkt_timebase,
+                                 (AVRational){ 1, 90000 }),
+                    offsets);
+
+        if (n > 0) {
+            AVFrameSideData *sd = av_frame_side_data_new(
+                                        &pic->f->side_data,
+                                        &pic->f->nb_side_data,
+                                        AV_FRAME_DATA_MVC_SS_OFFSETS,
+                                        2 + n, 0);
+
+            if (!sd)
+                return AVERROR(ENOMEM);
+            sd->data[0] = n;              /* offset sequences described */
+            sd->data[1] = 1;              /* this picture is inside them */
+            memcpy(sd->data + 2, offsets, n);
+        }
+    }
 
     memcpy(h->mmco, sl->mmco, sl->nb_mmco * sizeof(*h->mmco));
     h->nb_mmco = sl->nb_mmco;
