@@ -148,8 +148,15 @@ branch at commit `7c463f5`, 2026-09-05; line numbers re-checked 2026-09-07):
   @ master (verified 2026-09-05/07)
 - Feature detection is done by capability list-probes of the binary
   (`-decoders` / `-encoders` at :580-584, `-filters` at :614, `-hwaccels` at
-  :471), not by version checks; this branch adds no CLI surface and removes
-  no capabilities, so probe results are unchanged. —
+  :471), not by version checks; this branch adds no CLI surface and removes no
+  capabilities, so probe results are unchanged - with exactly one exception
+  since `n8.1.2-mvc5-jf4`: that build registers one filter, `mvcsubdepth`, so
+  `-filters` answers with exactly one entry more than plain FFmpeg 8.1.2 does
+  and no other option name, decoder, encoder, filter or hwaccel appears or
+  disappears. The extra entry is inert to a list-probe consumer: a filter has
+  no effect until a filter graph names it, so no capability the server probes
+  for changes state because of it (see the subtitle-depth ship in the ship
+  ledger below). —
   jellyfin/jellyfin MediaBrowser.MediaEncoding/Encoder/EncoderValidator.cs:471,580-614
   @ master (verified 2026-09-07)
 - MVC is flagged from the `mvc` filename 3D tag / NFO `<format3d>` value
@@ -190,9 +197,15 @@ branch at commit `7c463f5`, 2026-09-05; line numbers re-checked 2026-09-07):
   file and the banner are one string (e.g. `n8.1.2-mvc1-jf4`, see "Build
   identity" above), the banner satisfies the server's version regex while
   keeping the fork's identity visible in every log.
-- **Capabilities.** No option names, decoders, encoders, filters, hwaccels
-  or CLI flags are added or removed relative to FFmpeg 8.1.2, so capability
-  probes behave identically.
+- **Capabilities.** Relative to FFmpeg 8.1.2 exactly one thing is added from
+  `n8.1.2-mvc5-jf4` on: the `mvcsubdepth` filter, an opt-in element of a filter
+  graph. It is therefore the one new line `-filters` prints, and the rest of
+  the capability lists are byte-identical - no option names, decoders,
+  encoders, hwaccels or CLI flags are added or removed, and no other filter
+  is. Nothing a server does can trip over the extra line: the filter acts only
+  inside a graph that names it, so a probe that does not ask for it sees a
+  binary that behaves as it always did (see the subtitle-depth ship in the
+  ship ledger below).
 - **Artifact naming.** Ship the result under this project's own identity
   (e.g. `ffmpeg-mvc-n8.1.2-mvc1-jf4-linux64.tar.xz`). Never reuse the
   `jellyfin-ffmpeg*` binary or package names: those identify a different
@@ -427,5 +440,82 @@ verbatim - one attribution and one test inconsistency - on the record.
   new number - 94 queue entries landed as individual commits, 3 already
   carried by earlier ports, 1 refused on licence with its finding and its
   route back (`0054`: AC-4 is not provided) - and this ship neither
+  restates nor relaxes any of it.
+- **Subtitle-depth ship (2026-09-16).** This tree builds and ships as
+  **`n8.1.2-mvc5-jf4`**, superseding `n8.1.2-mvc4-jf4`. On top of the tree
+  recorded above, the delta is four commits: the port commit that carries the
+  feature (`e2932bf84c`), the merge that lands it on this branch
+  (`eba4adec65`), the version commit that names this build (`cf0d569920`), and
+  this entry. The release tag for this state is that same string, so tag,
+  `VERSION` file and banner state one identity over one tree.
+- **Subtitle depth for authored multiview subtitle streams (2026-09-16).**
+  Where a release authors depth for its subtitles, this build can put them at
+  that depth instead of flat on the screen plane. The decoder reads the
+  offset-metadata (OFMD) user-data SEI of the dependent view and hands the
+  per-frame answer out as frame side data: one signed offset per depth
+  sequence, positive toward the viewer, in native picture pixels, attached to
+  a dependent-view frame as it leaves the decoder and copied onto the
+  assembled side-by-side frame beside its stereo tag. The transcoder reads a
+  subtitle track's `3d-plane` / `3d-plane-<lang>` stream metadata tag as the
+  sequence that track floats in and stamps the track's rendered frames with
+  it; a value that is not a sequence number is treated as absent, not guessed.
+  The `mvcsubdepth` filter does the placing: given a composed frame and a
+  subtitle rendered to a picture, it burns one copy into each eye at the
+  horizontal place that sequence's offset asks for, taking the sequence from
+  the track's stamp unless the graph names one, and falling back to a flat
+  pair when there is no stamp, no offset or no authored depth at all. All of
+  it is opt-in: nothing here displays a subtitle that the caller's own graph
+  does not feed to that filter, the depth travels as two additive frame
+  side-data types (`libavutil` `60.27.100`) that no caller sees unless it asks
+  for them, and a run that names no such graph decodes and transcodes exactly
+  as the build this ship supersedes.
+- **Composed-view anchor hold (2026-09-16).** The composed route hands a base
+  half over to the assembled frame, and until this ship that was the last time
+  anything pinned it: the pairing queue had already taken the picture out of
+  every output list reference maintenance reads, so it could be released and
+  its slot recycled while the dependent picture of the same access unit was
+  still predicting against it as its inter-view anchor. Pairing lifetime and
+  anchor lifetime are not one lifetime, and the fix says so - the hold now
+  transfers to a small bounded, context-local anchor queue when the compose
+  stage takes a half over, and both release paths keep that pin alive until
+  the anchor queue retires the picture. Only the composed route enters this
+  code: the base-view default and every single-view selection are untouched by
+  it, and the composed golden below shows what the route delivers under the
+  new pin.
+- **The one surface this ship adds (2026-09-16).** `mvcsubdepth` registers, so
+  `-filters` answers with exactly one entry more than plain FFmpeg 8.1.2 does
+  and every other capability list is byte-for-byte what it always was. That is
+  why the two capability claims in this document - the list-probe fact in the
+  consumer-contract ledger and the "Capabilities" note under Deployment notes -
+  name this exception as of this ship: the entry is inert to a consumer that
+  only lists capabilities, since a filter acts only inside a graph that names
+  it, and the acceptance below is what the unchanged behavior looks like on a
+  live run.
+- **The documentation that ships with it (2026-09-16).** The README gains the
+  usage shape for a subtitle at its authored depth - the graph that renders it,
+  the filter's options, and the placement rule that keeps both markers alive as
+  far as the filter - and the manuals carry the matching references: the filter
+  itself, the decoder's depth side data, the stream tag the transcoder reads,
+  and the API note for the two new side-data types.
+- **What this ship was measured on (2026-09-16).** Product gate on this exact
+  tree: `checkasm` 14903 checks, FATE 357 tests with 0 failures - the 343 this
+  branch already gated on plus the 14 new subtitle-depth targets, ten on the
+  decoder side of that metadata and four rendering through the filter - and the
+  provenance self-test harness at 191 passed, 0 failed. The ship oracle's
+  composed golden replays byte-identical on this build: the composed 30 s
+  contract row-set, 720 rows, sha256
+  `de08be58becc22788ee4ea462dc57caa9292a7aabc713d80903280ac20ba537a`. Live
+  acceptance over the three routes an operator actually drives: the default
+  transcode route is unchanged, plain 2D with zero MVC warnings in the log; the
+  composed route delivers its side-by-side-tagged frames with no drops; and a
+  burn-in through the new filter runs the reference title's 720 frames.
+- **Compatibility, unchanged (2026-09-16).** The `-jf4` part of the new name
+  points where it has always pointed: **`jellyfin-ffmpeg v8.1.2-4`**, unmoved,
+  because no update from that build line landed on this ship - which is why
+  that digit stands still while the `mvc` counter, which counts this fork's own
+  code delta, moves to 5. The containment recorded above therefore stands
+  whole under the new number - 94 queue entries landed as individual commits, 3
+  already carried by earlier ports, 1 refused on licence with its finding and
+  its route back (`0054`: AC-4 is not provided) - and this ship neither
   restates nor relaxes any of it.
 
