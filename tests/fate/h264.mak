@@ -728,10 +728,15 @@ fate-h264-mvc-ofmd-sei:                             CMD = count_match "unknown S
 #
 # Each row below asks the filter one of the four questions the contract has:
 #   -auto     the subtitle's own plane marker selects sequence 0, and the
-#             authored offsets (+5, +6, +7) place the caption in front of the
-#             screen
+#             authored +offset table (+5, +6, +7) places the caption in front
+#             of the screen.  The first frame's caption is absent in this
+#             fixture, so its +5 row is pinned as blank; the +6/+7 rows give
+#             the visible front-pair pinning.
 #   -plane1   the explicit plane option overrides the marker and reads the
-#             sequence that goes behind, flat, then front (-1, 0, +1)
+#             sequence that goes behind, flat, then front (-1, 0, +1).  Here
+#             the negative row lands on that same caption-less first frame, so
+#             it is pinned only as a blank heartbeat while +1 is the visible
+#             front-pair pin.
 #   -depth0   depth=1's default is replaced by flat (depth=0), so both eyes see
 #             the same double copy regardless of the authored sequence
 #   -shift8   shift=8 px ignores the authored sequence entirely, and 8 is
