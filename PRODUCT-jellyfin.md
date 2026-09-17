@@ -579,4 +579,62 @@ verbatim - one attribution and one test inconsistency - on the record.
   digit stands still while the `mvc` counter, which counts this fork's own code
   delta, moves to 6. The containment recorded above therefore stands whole under
   the new number, and this ship neither restates nor relaxes any of it.
+- **Pairing-alignment ship (2026-09-17).** This tree builds and ships
+  as **`n8.1.2-mvc7-jf4`**, superseding `n8.1.2-mvc6-jf4`. On top of
+  the tree recorded above, the delta is ten commits: the seven
+  commits of the port (`1c55db4aae` .. `92061a825e`) and the merge
+  that carries them, the version commit that names this build
+  (`595e7f9c82`), and this entry. The release tag for this state is
+  that same string, so tag, `VERSION` file and banner state one
+  identity over one tree.
+- **Composed pairing by access-unit identity (2026-09-17).** The
+  composed route now pairs a base half with a dependent half only
+  when the two carry the same delivery timestamp - the shared stamp
+  the two pictures of one access unit always arrive with - and an
+  untimed stream keeps the old queue-order rule as its fallback.
+  Queue order alone used to be the key, so a start perturbation of
+  one view's output sequence, and the traces show one within the
+  first pairs of every seek-started session, became a permanent
+  one-frame lead of one half that no shipped measurement could see.
+  A queued half whose partner is gone is now delivered standalone,
+  in its own black-half frame, so a loss stays visible at its own
+  frames instead of sliding every later frame of the run. What an
+  operator sees: a composed run started from a seek - the shape of
+  every real playback start - delivers its window frame-aligned in
+  both halves, while a composed cold start delivers exactly what
+  the build this ship supersedes delivered, byte for byte. The
+  default decode and every single-view selection are outside this
+  code.
+- **The fixtures that make a shift visible (2026-09-17).** A new
+  two-view fixture whose view lists end one access unit apart, cut
+  on a timed grid, and five FATE entries driven from it
+  (`h264-mvc-baselead-*`: the composed answer, each half beside the
+  matching single-view selection, and the default decode). Every
+  composed half is now compared against the decode of that view
+  alone, so a one-frame shift of either half is byte-visible to the
+  product gate; the older composed fixtures are flat-colour per
+  frame, where any shift read identical.
+- **What this ship was measured on (2026-09-17).** Product gate on
+  this exact tree: `checkasm` 14903 checks, FATE 362 tests with 0
+  failures - the 357 this branch already gated on plus the 5 new
+  `h264-mvc-baselead-*` entries - and the provenance self-test
+  harness at 191 passed, 0 failed. The ship validation's composed
+  row-sets replay byte-identical on this build, regenerated from
+  its own binary: the composed 30 s contract row-set the ship
+  above names (720 rows, its sha256 beginning `de08be58`),
+  byte-compared with the stored authority, and the composed 60 s
+  grid (1439 rows, its sha256 beginning `2675c6da`); the composed
+  contract row-sets of this fix replayed byte-identical on its
+  four builds - the master line, the two release-line ports and
+  this ship build. The owner demo of the fix - composed
+  cold-start and seek-start windows of the reference titles - was
+  accepted.
+- **Compatibility, unchanged (2026-09-17).** The `-jf4` part of the
+  new name points where it has always pointed: **`jellyfin-ffmpeg
+  v8.1.2-4`**, unmoved, because no update from that build line
+  landed on this ship - which is why that digit stands still while
+  the `mvc` counter, which counts this fork's own code delta,
+  moves to 7. The containment recorded above stands whole under
+  the new number, and this ship neither restates nor relaxes any
+  of it.
 
