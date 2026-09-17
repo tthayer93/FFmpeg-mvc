@@ -2173,8 +2173,8 @@ fail:
 
 /* Permanent composed-pair health audit: a gross-fault detector for the
  * composed pairing, deliberately not a content-skew probe. The halves of one
- * composed frame are matched by display ordinal, so how far apart their pts
- * values sit says nothing by itself about whether the pairing is right. The
+ * composed frame are matched by their shared access-unit delivery pts
+ * (h264_sbs_pair_key()); untimed streams fall back to queue order. The
  * two views of a stream routinely carry a per-view container offset, and on
  * streams that timestamp their views independently that offset is not even
  * steady: measured across a whole feature it runs from zero to four frame
