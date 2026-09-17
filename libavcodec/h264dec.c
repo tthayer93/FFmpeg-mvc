@@ -1821,18 +1821,27 @@ static int send_next_delayed_frame(H264Context *h, AVFrame *dst_frame,
  * (AV_STEREO3D_SIDEBYSIDE) entry, instead of two interleaved full-size
  * frames.
  *
- * Pairing rule: the k-th output picture of the base view pairs
- * with the k-th output picture of the dependent view - display-ordinal,
- * FIFO structure, no counters, no POC/pts keys, no DPB slot indices. The
- * halves finalize in emission order (global lowest-POC first), so the
- * first half to arrive is held in the context-local queues in
- * H264Context (h->sbs_pair_q, pinned with DELAYED_PIC_REF while held) and
- * the next half of the other role pops the head of both (either role may
- * be the one waiting). A half whose partner never caught up ships
- * STANDALONE: the oldest pending half goes out unpaired when its role's
- * queue overflows, and the end-of-stream drain pairs what pairs and ships
- * the leftovers - fail-visible, never silently mis-paired, never silently
- * dropped. Such a half leaves composed into a full double-width frame with a
+ * Pairing rule: halves weld by access-unit identity - the two views of one
+ * access unit share its delivery pts (h264_sbs_pair_key()) and only halves
+ * carrying the same key assemble. Keys, not display ordinals; no counters,
+ * no POC keys, no DPB slot indices. Halves finalize in emission order
+ * (global lowest-POC first), so the first half to arrive is held in the
+ * context-local queues in H264Context (h->sbs_pair_q, pinned with
+ * DELAYED_PIC_REF while held) and the next half of the other role that
+ * carries the same key pops the head of both (either role may be the one
+ * waiting). A meeting of two different keys is a locally degraded row, not
+ * a weld to keep: the older half ships STANDALONE and the newer one stays
+ * queued for a partner of its own. A half whose partner never caught up
+ * ships the same way: the oldest pending half goes out unpaired when its
+ * role's queue overflows, and the end-of-stream drain pairs what pairs and
+ * ships the leftovers - fail-visible, never silently mis-paired, never
+ * silently dropped. On an UNTIMED stream - fragments carrying no pts -
+ * there is no key to pair by and queue order stands there as the legacy
+ * pairing (correct pairing is inexpressible without a clock; the
+ * fixture-only shape that reaches it is a known review decision), while
+ * pairs of timed streams stay under the display-time audit warn of
+ * h264_sbs_pair_audit(). Such a half leaves composed into a full
+ * double-width frame with a
  * black opposite half (see h264_sbs_compose_half_black()), so that a degraded
  * composed stream keeps one output geometry from its first frame to its last
  * rather than changing width at every unpaired frame; the missing eye is what
@@ -1923,7 +1932,9 @@ static int h264_sbs_should_assemble(H264Context *h, const AVFrame *frame)
  * above). A held half is pinned with DELAYED_PIC_REF (added at hold, see
  * h264_sbs_process()) so the DPB cannot recycle its slot, and the pin is
  * retired when the half leaves the queue - into an assembled frame, a
- * standalone shipment, or a flush. Identity is queue order only. */
+ * standalone shipment, or a flush. Identity is the access-unit delivery pts
+ * (h264_sbs_pair_key()); queue order stands only where no clock exists to
+ * key by. */
 static void h264_sbs_q_push(H264Context *h, H264Picture *p, int role)
 {
     h->sbs_pair_q[role][(h->sbs_pair_head[role] + h->sbs_pair_count[role]) %
@@ -2243,9 +2254,9 @@ static void h264_note_standalone_delivery(H264Context *h, int composed)
                "multiview: delivered a standalone composed half (%d delivered "
                "so far); the pairing did not assemble it with a partner of "
                "the other view%s\n", h->sbs_standalone_emitted,
-                composed ? "; it ships composed into a full-width frame with a "
-                         "black opposite half, so the output geometry stays put"
-                         : "");
+               composed ? "; it ships composed into a full-width frame with a "
+                        "black opposite half, so the output geometry stays put"
+                        : "");
 }
 
 /* Witness an access-unit identity mismatch at the composed assembly (see
@@ -2268,7 +2279,6 @@ static void h264_note_pair_key_mismatch(H264Context *h,
            waiting->view_id, (long long) h264_sbs_pair_key(waiting),
            h->sbs_pair_key_mismatch);
 }
-
 
 /* Paint a rectangle of one plane at a constant sample value. Sample sizes of
  * one byte are memset; the two-byte formats (the deep 4:2:0/4:2:2/4:4:4
@@ -2689,7 +2699,6 @@ static int h264_sbs_process(H264Context *h, AVFrame *pict,
          * construction, so the explicit heads are base/dependent. */
         H264Picture *base = (role == 0) ? out : h264_sbs_q_head(h, 0);
         H264Picture *dep  = (role == 1) ? out : h264_sbs_q_head(h, 1);
-
 
         if (role == 0) {
             /* `pict` still shows the arriving base half, which the caller has
