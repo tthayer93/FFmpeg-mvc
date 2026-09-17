@@ -518,4 +518,65 @@ verbatim - one attribution and one test inconsistency - on the record.
   already carried by earlier ports, 1 refused on licence with its finding and
   its route back (`0054`: AC-4 is not provided) - and this ship neither
   restates nor relaxes any of it.
+- **Subtitle-depth option consolidation ship (2026-09-17).** This tree builds
+  and ships as **`n8.1.2-mvc6-jf4`**, superseding `n8.1.2-mvc5-jf4`. On top of
+  the tree recorded above, the delta is three commits: the port commit that
+  carries the consolidation (`ccd9a9a350`, taken from the master line as one
+  commit), the version commit that names this build (`c1c9f07271`), and this
+  entry. The release tag for this state is that same string, so tag, `VERSION`
+  file and banner state one identity over one tree.
+- **The one surface this ship moves (2026-09-17).** The `mvcsubdepth` filter
+  now takes one option where it took three. `depth=` is a mode and answers one
+  of four spellings: `auto`, the default, places the caption at the authored
+  depth of the depth sequence the subtitle track's marker names; `flat` puts
+  both eye copies on the screen plane and ignores any authored depth;
+  `shift=<pixels>` displaces the caption by that signed constant in each eye;
+  `plane=<n>` reads the authored depth of sequence `n` (`0` to `31`) instead of
+  asking the track's marker which sequence belongs to it. `0` and `1` are
+  accepted as synonyms of `flat` and `auto`, so a graph already written against
+  the boolean keeps its meaning. `eye_width` and the framesync options are as
+  they were. A value that is none of these - an unknown word, an empty value,
+  an incomplete `shift=` or `plane=`, a value with stray text past the number,
+  or a mode word given an argument of its own - is refused when the filter is
+  initialised, with a notice naming the accepted forms, and is never quietly
+  reinterpreted.
+- **What that removes, said plainly (2026-09-17).** The separate `plane`,
+  `shift` and boolean `depth` spellings are removed and not deprecated, by
+  owner ruling: they were live for a single issued build, and keeping both
+  surfaces would leave two ways to ask for one placement. A graph naming one of
+  the removed spellings therefore fails at filter initialisation on this build
+  where it rendered on the one it supersedes. That is the whole breaking change
+  and it is the only interface delta of this ship. Nothing else moves: the
+  decoder's reading of the authored depth, the transcoder's reading of the
+  stream tag, the two side-data types, the composed route and the base-view
+  default are untouched by the port, and a request that means the same thing
+  renders byte-identical.
+- **The claims that therefore need no edit (2026-09-17).** The two capability
+  claims made at `n8.1.2-mvc5-jf4` - the list-probe fact in the
+  consumer-contract ledger and the "Capabilities" note under Deployment notes -
+  stand as written, because this ship adds no capability and removes none:
+  `mvcsubdepth` is still exactly the one line `-filters` answers with more than
+  plain FFmpeg 8.1.2 does, and every other capability list is byte-for-byte what
+  it always was. What moved is the private option spelling of that one filter,
+  which no list-probe reads and which acts only inside a graph that names it.
+- **What this ship was measured on (2026-09-17).** Product gate on this exact
+  tree: `checkasm` 14903 checks, FATE 357 tests with 0 failures - the same set
+  this branch gated on at the ship above, three of those targets renamed to the
+  modes they now drive and none added or dropped - and the provenance self-test
+  harness at 191 passed, 0 failed. The ship validation's composed golden
+  replays byte-identical on this build: the composed 30 s contract row-set the
+  ship above names in full - 720 rows, its sha256 beginning `de08be58` -
+  regenerated from this build's own binary and byte-compared row for row against
+  it. Live
+  acceptance on the caption window the depth feature was accepted on: a 30 s
+  burn-in driven through the bare default spelling `mvcsubdepth=eof_action=pass`
+  runs the reference title's 720 frames with 718 of them placed at a nonzero
+  depth and the sequence taken from the track's own marker, and the same window
+  through `depth=flat` runs the same 720 frames with none displaced.
+- **Compatibility, unchanged (2026-09-17).** The `-jf4` part of the new name
+  points where it has always pointed: **`jellyfin-ffmpeg v8.1.2-4`**, unmoved,
+  because no update from that build line landed on this ship - which is why that
+  digit stands still while the `mvc` counter, which counts this fork's own code
+  delta, moves to 6. The containment recorded above therefore stands whole under
+  the new number, and this ship neither restates nor relaxes any of it.
 
