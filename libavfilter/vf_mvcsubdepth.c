@@ -73,18 +73,15 @@
  * its alpha in. */
 #define PIX_STEP 4
 
-/* The value of the shift option that means "the user asked for nothing"; a
- * real shift of INT_MIN pixels is not a thing anyone can ask for. */
-#define SHIFT_UNSET INT_MIN
-
 typedef struct MVCSubDepthContext {
     const AVClass *class;
     FFFrameSync fs;
 
-    int plane;      /* depth sequence to read, -1 = ask the subtitle frame */
-    int depth;      /* 0 = ignore what was authored, place flat */
-    int shift;      /* requested displacement, SHIFT_UNSET when not asked for */
-    int eye_width;  /* 0 = take half of the video input's width */
+    const char *depth;    /* the option's spelling of the mode, parsed at init */
+    int eye_width;        /* 0 = take half of the video input's width */
+
+    int depth_mode;   /* FF_MVC_SUB_DEPTH_*, resolved from depth in init */
+    int depth_param;  /* the pixels for SHIFT, the sequence for PLANE, else 0 */
 
     int eye_w;      /* the eye width in use, resolved at configuration */
 
@@ -106,14 +103,11 @@ typedef struct MVCSubDepthContext {
 #define FLAGS AV_OPT_FLAG_VIDEO_PARAM|AV_OPT_FLAG_FILTERING_PARAM
 
 static const AVOption mvcsubdepth_options[] = {
-    { "plane",  "depth sequence of the subtitle track, -1 for the one it is "
-                "marked with", OFFSET(plane),  AV_OPT_TYPE_INT,    { .i64 = -1 },
-      -1, 31,        FLAGS },
-    { "depth",  "place the caption at the authored depth",          OFFSET(depth),  AV_OPT_TYPE_BOOL, { .i64 = 1 },
-      0, 1,          FLAGS },
-    { "shift",  "displace the caption by this many pixels per eye, "
-                "whatever was authored", OFFSET(shift), AV_OPT_TYPE_INT, { .i64 = SHIFT_UNSET },
-      INT_MIN, INT_MAX, FLAGS },
+    { "depth",  "how the caption's depth is chosen: auto (the sequence the "
+                "track is marked with), flat (the screen plane), "
+                "shift=<pixels> (a constant displacement) or plane=<0..31> "
+                "(a named sequence); 0 and 1 are flat and auto",
+      OFFSET(depth), AV_OPT_TYPE_STRING, { .str = "auto" }, 0, 0, FLAGS },
     { "eye_width", "width of one eye; 0 uses half of the video input's width",
       OFFSET(eye_width), AV_OPT_TYPE_INT, { .i64 = 0 },
       0, INT_MAX, FLAGS },
@@ -150,29 +144,32 @@ static int check_marker(MVCSubDepthContext *s, AVFilterContext *ctx,
     return 0;
 }
 
-/* The depth sequence this frame's caption belongs to: what the user named, or
- * what the subtitle frame is marked with. */
+/* The depth sequence this frame's caption belongs to: the one the user named
+ * in plane= mode, or what the subtitle frame is marked with. The other modes
+ * ignore the answer - it is still read so that the debug line in the frame
+ * path can report a plane in every mode. */
 static int plane_of(const MVCSubDepthContext *s, const AVFrame *sub)
 {
     const AVFrameSideData *sd;
 
-    if (s->plane >= 0)
-        return s->plane;
+    if (s->depth_mode == FF_MVC_SUB_DEPTH_PLANE)
+        return s->depth_param;
     sd = av_frame_get_side_data(sub, AV_FRAME_DATA_MVC_SUB_PLANE);
     return ff_mvc_sub_plane(sd ? sd->data : NULL, sd ? sd->size : 0);
 }
 
 /* The displacement for one frame, in video pixels and in the authored sign:
- * positive toward the viewer. The user's shift wins over everything; the
- * authored depth wins over flat; nothing at all is flat. */
+ * positive toward the viewer. The mode says which of the four answers this
+ * filter ever gives: shift= answers its own number, flat= answers zero, and
+ * auto= and plane= read the authored table for the sequence plane_of named. */
 static int offset_of(const MVCSubDepthContext *s, const AVFrame *main,
                      int plane)
 {
     const AVFrameSideData *sd;
 
-    if (s->shift != SHIFT_UNSET)
-        return s->shift;
-    if (!s->depth)
+    if (s->depth_mode == FF_MVC_SUB_DEPTH_SHIFT)
+        return s->depth_param;
+    if (s->depth_mode == FF_MVC_SUB_DEPTH_FLAT)
         return 0;
     sd = av_frame_get_side_data(main, AV_FRAME_DATA_MVC_SS_OFFSETS);
     return ff_mvc_sub_offset(sd ? sd->data : NULL, sd ? sd->size : 0, plane);
@@ -357,6 +354,16 @@ static int place_frame(FFFrameSync *fs)
 static av_cold int init(AVFilterContext *ctx)
 {
     MVCSubDepthContext *s = ctx->priv;
+    int mode, param;
+
+    if (ff_mvc_sub_depth_parse(s->depth, &mode, &param) < 0) {
+        av_log(ctx, AV_LOG_ERROR, "Invalid depth '%s': the accepted values "
+               "are auto, flat, 0, 1, shift=<signed pixels> and "
+               "plane=<0..31>\n", s->depth ? s->depth : "");
+        return AVERROR(EINVAL);
+    }
+    s->depth_mode  = mode;
+    s->depth_param = param;
 
     s->fs.on_event = place_frame;
     return 0;

@@ -18661,24 +18661,40 @@ This filter also supports the @ref{framesync} options.
 The filter accepts the following options:
 
 @table @option
-@item plane
-Select the depth sequence used for the subtitle track.  The default is @code{-1},
-which asks the subtitle input's @code{AV_FRAME_DATA_MVC_SUB_PLANE} frame marker
-which sequence the track belongs to; that marker is described with the stream tag
-in @xref{Stream metadata,,the Stream metadata section in the ffmpeg-utils
-manual,ffmpeg-utils}.  A value from 0 to 31 selects that sequence directly and
-overrides the marker.  If no sequence can be found, the caption is placed flat.
-
 @item depth
-Place the caption at the authored depth.  The default is @code{1}.  Setting it
-to @code{0} ignores any authored depth and puts both eye copies of the caption
-at the same place, which is a flat double copy.
+Choose how the caption's depth is placed.  The value is one of these spellings;
+the default is @code{auto}.
 
-@item shift
+@table @code
+@item auto
+Place the caption at the authored depth of the depth sequence that the subtitle
+input's @code{AV_FRAME_DATA_MVC_SUB_PLANE} frame marker names for the track.
+That marker is described with the stream tag in @xref{Stream metadata,,the
+Stream metadata section in the ffmpeg-utils manual,ffmpeg-utils}.  This is the
+default.
+@item flat
+Ignore any authored depth and put both eye copies of the caption at the same
+place, on the screen plane.
+@item shift=@var{pixels}
 Displace the caption by this many whole pixels in each eye, regardless of
-whether an authored depth is present.  A positive value puts the caption in
-front of the screen.  By default this option is unset, and the authored depth
-is used instead.
+whether an authored depth is present.  @var{pixels} is a signed number; a
+positive value puts the caption in front of the screen.
+@item plane=@var{n}
+Read the authored depth of depth sequence @var{n} instead of asking the
+subtitle track's marker which sequence belongs to it.  @var{n} ranges from 0
+to 31.
+@item 0
+@item 1
+Numeric synonyms of @code{flat} and @code{auto}.
+@end table
+
+Nothing else is accepted: an unknown word, an empty value, a @code{shift=} or
+@code{plane=} without a complete value in range, a value with stray whitespace
+inside it or anything else past the number, and the bare words used as
+something else (such as @code{auto=1}) are all refused when the filter is
+initialised, with a notice naming the accepted forms.  Note that an option's
+value is taken up to the next @code{:}, so the plain form @code{depth=shift=-8}
+needs no quoting of its own.
 
 @item eye_width
 Use this value as the width of one eye.  The default is @code{0}, meaning half
@@ -18686,10 +18702,12 @@ of the first input's width.  A value larger than half of the first input's width
 is rejected.
 @end table
 
-The signed per-frame depth is read from the first input's
-@code{AV_FRAME_DATA_MVC_SS_OFFSETS} marker, using the selected depth sequence.
-A positive offset means toward the viewer.  If that marker is absent, malformed,
-does not cover the frame, or names a zero offset, the caption is flat.
+In the @code{auto} and @code{plane} modes the signed per-frame depth is read
+from the first input's @code{AV_FRAME_DATA_MVC_SS_OFFSETS} marker, using the
+selected depth sequence.  A positive offset means toward the viewer.  If that
+marker is absent, malformed, does not cover the frame, names a zero offset, or
+names no sequence at all (which is also what a missing or unusable track
+marker answers in @code{auto} mode), the caption is flat.
 
 The subtitle image keeps the horizontal position that the subtitle-to-video path
 painted into its canvas.  This filter does not re-centre the caption; it only
@@ -18720,14 +18738,14 @@ loses the authored depth information.
 
 @example
 ffmpeg -i input.mkv -filter_complex \
-  "[0:v]format=rgba[vc];[0:s:0]format=rgba[sub];[vc][sub]mvcsubdepth=plane=2[out]" \
+  "[0:v]format=rgba[vc];[0:s:0]format=rgba[sub];[vc][sub]mvcsubdepth=depth=plane=2[out]" \
   -map "[out]" -map 0:a:0? -c:a copy out.mkv
 @end example
 
-In this example the subtitle track selected as @code{0:s:0} is placed in the
-depth sequence named @code{2}.  Omitting @code{plane} leaves it at the default
-@code{-1}, which asks the subtitle track's marker which sequence belongs to that
-track.
+In this example the subtitle track selected as @code{0:s:0} is placed at the
+authored depth of the depth sequence named @code{2}.  Omitting @code{depth}
+leaves it at the default @code{auto}, which asks the subtitle track's marker
+which sequence belongs to that track.
 
 @section multiply
 Multiply first video stream pixels values with second video stream pixels values.

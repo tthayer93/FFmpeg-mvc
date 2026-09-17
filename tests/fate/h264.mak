@@ -284,9 +284,9 @@ FATE_H264_MVC_OFMD-$(call PARSERDEMDEC, H264, H264, H264) +=              \
 FATE_H264_MVC_OFMD-$(call FRAMECRC, NUT MATROSKA, H264 PGSSUB,             \
                                 MVCSUBDEPTH_FILTER FORMAT_FILTER SCALE_FILTER) += \
               fate-h264-mvc-subdepth-auto                                 \
-              fate-h264-mvc-subdepth-plane1                               \
-              fate-h264-mvc-subdepth-depth0                               \
-              fate-h264-mvc-subdepth-shift8
+              fate-h264-mvc-subdepth-plane                                \
+              fate-h264-mvc-subdepth-flat                                 \
+              fate-h264-mvc-subdepth-shift
 
 FATE_SAMPLES_AVCONV += $(FATE_H264-yes)
 FATE_SAMPLES_FFPROBE += $(FATE_H264_FFPROBE-yes)
@@ -788,20 +788,23 @@ fate-h264-mvc-ofmd-lagflat-view1:                   CMD = run libavcodec/tests/h
 # in-tree next to their generators for the same reason the MVC samples above are:
 # they are not on the sample server.
 #
-# Each row below asks the filter one of the four questions the contract has:
-#   -auto     the subtitle's own plane marker selects sequence 0, and the
-#             authored +offset table (+5, +6, +7) places the caption in front
-#             of the screen.  The first frame's caption is absent in this
-#             fixture, so its +5 row is pinned as blank; the +6/+7 rows give
-#             the visible front-pair pinning.
-#   -plane1   the explicit plane option overrides the marker and reads the
-#             sequence that goes behind, flat, then front (-1, 0, +1).  Here
-#             the negative row lands on that same caption-less first frame, so
-#             it is pinned only as a blank heartbeat while +1 is the visible
-#             front-pair pin.
-#   -depth0   depth=1's default is replaced by flat (depth=0), so both eyes see
+# Each row below asks the filter one of the four questions the contract has -
+# the four spellings of the one depth option are the four questions:
+#   -auto     the default mode: the subtitle's own plane marker selects
+#             sequence 0, and the authored +offset table (+5, +6, +7) places the
+#             caption in front of the screen.  The first frame's caption is
+#             absent in this fixture, so its +5 row is pinned as blank; the
+#             +6/+7 rows give the visible front-pair pinning.  This row also
+#             carries the expected-failure leg: the same inputs with a depth
+#             spelling the option does not accept must be refused at init, and
+#             a run that accepted one fails the row.
+#   -plane    depth=plane=1 overrides the marker and reads the sequence that
+#             goes behind, flat, then front (-1, 0, +1).  Here the negative row
+#             lands on that same caption-less first frame, so it is pinned only
+#             as a blank heartbeat while +1 is the visible front-pair pin.
+#   -flat     the authored default is replaced by depth=flat, so both eyes see
 #             the same double copy regardless of the authored sequence
-#   -shift8   shift=8 px ignores the authored sequence entirely, and 8 is
+#   -shift    depth=shift=8 px ignores the authored sequence entirely, and 8 is
 #             large enough to be plainly visible on a 16-column eye without
 #             reaching the filter's clamp
 fate-h264-mvc-subdepth-auto:                        CMD = framecrc -threads 1 \
@@ -809,24 +812,29 @@ fate-h264-mvc-subdepth-auto:                        CMD = framecrc -threads 1 \
                                                            -i $(SRC_PATH)/tests/fate/h264-mvc/subdepth-plane0-s.mkv \
                                                            -fps_mode passthrough -sws_flags +accurate_rnd+bitexact \
                                                            -filter_complex "[0:v]scale,format=rgba[vc];[1:s:0]scale,format=rgba[sub];[vc][sub]mvcsubdepth=eof_action=pass[out]" \
-                                                           -map "[out]"
-fate-h264-mvc-subdepth-plane1:                      CMD = framecrc -threads 1 \
+                                                           -map "[out]" && \
+                                                           if ffmpeg -hide_banner -loglevel error -threads 1 \
+                                                               -view_ids -1 -i $(SRC_PATH)/tests/fate/h264-mvc/subdepth-plane0-v.nut \
+                                                               -i $(SRC_PATH)/tests/fate/h264-mvc/subdepth-plane0-s.mkv \
+                                                               -filter_complex "[0:v]scale,format=rgba[vc];[1:s:0]scale,format=rgba[sub];[vc][sub]mvcsubdepth=depth=bogus:eof_action=pass[out]" \
+                                                               -map "[out]" -f null -; then echo "depth=bogus was accepted"; false; fi
+fate-h264-mvc-subdepth-plane:                       CMD = framecrc -threads 1 \
                                                            -view_ids -1 -i $(SRC_PATH)/tests/fate/h264-mvc/subdepth-plane0-v.nut \
                                                            -i $(SRC_PATH)/tests/fate/h264-mvc/subdepth-plane0-s.mkv \
                                                            -fps_mode passthrough -sws_flags +accurate_rnd+bitexact \
-                                                           -filter_complex "[0:v]scale,format=rgba[vc];[1:s:0]scale,format=rgba[sub];[vc][sub]mvcsubdepth=plane=1:eof_action=pass[out]" \
+                                                           -filter_complex "[0:v]scale,format=rgba[vc];[1:s:0]scale,format=rgba[sub];[vc][sub]mvcsubdepth=depth=plane=1:eof_action=pass[out]" \
                                                            -map "[out]"
-fate-h264-mvc-subdepth-depth0:                      CMD = framecrc -threads 1 \
+fate-h264-mvc-subdepth-flat:                        CMD = framecrc -threads 1 \
                                                            -view_ids -1 -i $(SRC_PATH)/tests/fate/h264-mvc/subdepth-plane0-v.nut \
                                                            -i $(SRC_PATH)/tests/fate/h264-mvc/subdepth-plane0-s.mkv \
                                                            -fps_mode passthrough -sws_flags +accurate_rnd+bitexact \
-                                                           -filter_complex "[0:v]scale,format=rgba[vc];[1:s:0]scale,format=rgba[sub];[vc][sub]mvcsubdepth=depth=0:eof_action=pass[out]" \
+                                                           -filter_complex "[0:v]scale,format=rgba[vc];[1:s:0]scale,format=rgba[sub];[vc][sub]mvcsubdepth=depth=flat:eof_action=pass[out]" \
                                                            -map "[out]"
-fate-h264-mvc-subdepth-shift8:                      CMD = framecrc -threads 1 \
+fate-h264-mvc-subdepth-shift:                       CMD = framecrc -threads 1 \
                                                            -view_ids -1 -i $(SRC_PATH)/tests/fate/h264-mvc/subdepth-plane0-v.nut \
                                                            -i $(SRC_PATH)/tests/fate/h264-mvc/subdepth-plane0-s.mkv \
                                                            -fps_mode passthrough -sws_flags +accurate_rnd+bitexact \
-                                                           -filter_complex "[0:v]scale,format=rgba[vc];[1:s:0]scale,format=rgba[sub];[vc][sub]mvcsubdepth=shift=8:eof_action=pass[out]" \
+                                                           -filter_complex "[0:v]scale,format=rgba[vc];[1:s:0]scale,format=rgba[sub];[vc][sub]mvcsubdepth=depth=shift=8:eof_action=pass[out]" \
                                                            -map "[out]"
 
 fate-h264-reinit-%:                               CMD = framecrc -i $(TARGET_SAMPLES)/h264/$(@:fate-h264-%=%).h264 -vf scale,format=yuv444p10le,scale=w=352:h=288
