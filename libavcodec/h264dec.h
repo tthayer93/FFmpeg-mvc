@@ -543,19 +543,28 @@ typedef struct H264Context {
     int64_t ofmd_anchor_pts90k;
 
     /**
-     * Display-ordinal pairing FIFO for the allviews-composed (native SBS)
-     * output: the k-th output picture of the base view pairs with
-     * the k-th output picture of the dependent view. One pending queue per
-     * compose role ([0] = base view half, [1] = dependent view half) of
-     * committed pictures pinned with DELAYED_PIC_REF while held; heads pop
-     * together as soon as both queues hold a picture (see
+     * Composed-pair holding queues for the allviews-composed (native SBS)
+     * output: halves weld by access-unit identity - the two views of one
+     * access unit share its delivery pts (h264_sbs_pair_key()) and only
+     * halves carrying the same key pair, so one output lost or gained at a
+     * session start costs that access unit alone (its orphan ships
+     * standalone) instead of sliding every later half of the other view by
+     * one. Where there is no clock to key by - UNTIMED streams, whose
+     * fragments carry no pts at all - queue order stands as the legacy
+     * pairing (a correct pairing is inexpressible without a key there),
+      * while pairs of timed streams stay under the display-time audit warn
+      * of h264_sbs_pair_audit(). One pending queue per compose role
+      * ([0] = base view half, [1] = dependent view half) of
+      * committed pictures pinned with DELAYED_PIC_REF while held; a matched
+     * head pair pops together as soon as both queues hold a picture (see
      * h264_sbs_process()). Plain context-local fields: composing runs with
      * frame threading turned off (ff_h264_allviews_composition()), so
      * a single context ever touches them; they are NOT shared and NOT
      * synced by ff_h264_update_thread_context() (which copies field by
-     * field, so they never travel), and they key on nothing but queue order
-     * (never a DPB slot index or a POC). A queued half has already left its
-     * view's delayed output queue, so the queues are held state in their own
+      * field, so they never travel), and their key is the access-unit
+      * delivery time (never a DPB slot index or a POC). A queued half has
+      * already left its
+      * view's delayed output queue, so the queues are held state in their own
      * right: ff_h264_pic_held_for_compose() reports them to the reference
      * maintenance that keeps a pending picture's pin alive. Cleared - pins
      * retired first - by ff_h264_flush_change(): a seek drops the pending
