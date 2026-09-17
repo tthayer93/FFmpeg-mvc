@@ -43,17 +43,27 @@
 # producing a fixture that decodes as something else.
 #
 # Both views address their picture with the same 4-bit frame_num and the same
-# pic_order_cnt_lsb (2 * the access unit index), which caps a view list at 7
-# pictures: the generator refuses to write more than the headers it reuses can
-# express.
+# pic_order_cnt_lsb. Without a refresh period that is 2 * the access unit index,
+# which caps a view list at 8 pictures; with --idr-every the same fields restart
+# at each IDR, so the period itself has to fit the reused headers.
 #
 # usage: mvc-mkfix.pl [--dna=FILE] [--out=FILE] [--base=N] [--dep=N]
-#                     [--base-frames=N] [--dep-frames=N] [--copy] [--zero]
+#                     [--base2=N] [--dep2=N] [--base-frames=N] [--dep-frames=N]
+#                     [--view1-start=N] [--idr-every=N] [--copy] [--zero]
 #                     [--ofmd] [--ofmd-frames=N] [--ofmd-seq=N] [--ofmd-pts=N] [--ofmd-rate=N]
 #                     [--ofmd-base=N] [--ofmd-lag-pattern=a,b,...]
 #   --base/--dep     signed Intra16x16 DC coefficient of view 0 / view 1
+#   --base2/--dep2   alternate DC coefficient for the odd pictures of the same
+#                    view; without it every picture of that view is flat, and
+#                    with it a pairing shift is visible inside a single eye
 #   --base-frames    pictures carried by the base view (default 2)
 #   --dep-frames     pictures carried by the dependent view (default 2)
+#   --view1-start    access-unit offset at which the dependent view's FIRST
+#                    picture is carried, leaving the base view one (or more)
+#                    access units ahead in its output sequence
+#   --idr-every      mark the base view's first picture of every Nth access unit
+#                    as an IDR and restart frame_num/pic_order_cnt_lsb there;
+#                    0 keeps the single IDR at the stream front
 #   --copy           re-emit the sibling stream verbatim (escaping self-check)
 #   --zero           author zero-residual payloads at the sibling's picture
 #                    counts and require the result to be the sibling exactly
@@ -145,14 +155,28 @@ my $zero_check = 0;
 my ($ofmd, $ofmd_frames, $ofmd_seq, $ofmd_pts, $ofmd_rate, $ofmd_base) =
     (0, -1, 4, 0, 3, 0);
 my @ofmd_lags;
+# Composed-pairing fixtures: an alternate luma level makes each view's picture
+# differ from its own neighbour frame-to-frame (so a pairing shift is visible in
+# the pixels, not just between the views), --view1-start starts the dependent
+# view some access units after the base view (the one-AU base-lead a session
+# start leaves behind, which the FIFO pairing propagated across the whole run),
+# and --idr-every refreshes the base view on a period so a container wrapper
+# from this stream has seekable keyframes rather than only one at the very front.
+my ($base2_lvl, $dep2_lvl) = (undef, undef);
+my $view1_start = 0;
+my $idr_every   = 0;
 
 for my $a (@ARGV) {
     $dnafile     = $1 if $a =~ /^--dna=(.+)$/;
     $out         = $1 if $a =~ /^--out=(.+)$/;
     $base_lvl    = $1 if $a =~ /^--base=(-?\d+)$/;
     $dep_lvl     = $1 if $a =~ /^--dep=(-?\d+)$/;
+    $base2_lvl   = $1 if $a =~ /^--base2=(-?\d+)$/;
+    $dep2_lvl    = $1 if $a =~ /^--dep2=(-?\d+)$/;
     $base_frames = $1 if $a =~ /^--base-frames=(\d+)$/;
     $dep_frames  = $1 if $a =~ /^--dep-frames=(\d+)$/;
+    $view1_start = $1 if $a =~ /^--view1-start=(\d+)$/;
+    $idr_every   = $1 if $a =~ /^--idr-every=(\d+)$/;
     $ofmd_frames = $1 if $a =~ /^--ofmd-frames=(\d+)$/;
     $ofmd_seq    = $1 if $a =~ /^--ofmd-seq=(\d+)$/;
     $ofmd_pts    = $1 if $a =~ /^--ofmd-pts=(\d+)$/;
@@ -165,9 +189,32 @@ for my $a (@ARGV) {
     $zero_check  = 1  if $a eq '--zero';
 }
 
-die "a view list of $base_frames/$dep_frames pictures does not fit the 4-bit
-     pic_order_cnt_lsb of the reused headers (7 pictures maximum)\n"
-    if $base_frames > 7 || $dep_frames > 7;
+die "the base view needs at least one picture\n" if $base_frames < 1;
+die "the dependent view needs at least one picture\n" if $dep_frames < 1;
+
+my $max_au = $base_frames - 1;
+$max_au = $view1_start + $dep_frames - 1 if $view1_start + $dep_frames - 1 > $max_au;
+
+if ($idr_every) {
+    die "--idr-every=0 already disables the period (no value needed)\n" if $idr_every < 1;
+    die "--idr-every=$idr_every needs a picture order count that fits the 4-bit
+         pic_order_cnt_lsb of the reused headers (at most 8 pictures per period)\n"
+        if $idr_every > 8;
+}
+else {
+    die "an access unit index $max_au does not fit the 4-bit pic_order_cnt_lsb
+         of the reused headers (at most 8 pictures per view)\n"
+        if $max_au > 7;
+}
+
+die "--view1-start needs an elementary stream with no subtitle-depth block\n"
+    if $view1_start && $ofmd;
+die "--idr-every has nothing to do with --copy/--zero\n"
+    if ($copy_only || $zero_check) && $idr_every;
+die "--view1-start has nothing to do with --copy/--zero\n"
+    if ($copy_only || $zero_check) && $view1_start;
+die "--base2/--dep2 have nothing to do with --copy/--zero\n"
+    if ($copy_only || $zero_check) && (defined($base2_lvl) || defined($dep2_lvl));
 
 die "--ofmd-lag-pattern needs an explicit --ofmd-frames (the block size it tiles)\n"
     if $ofmd && @ofmd_lags && $ofmd_frames < 0;
@@ -352,8 +399,25 @@ sub write_dc_block {
 }
 
 # ---- slice payload ---------------------------------------------------------
+sub pick_level {
+    my ($base, $alt, $idx) = @_;
+    return defined($alt) && ($idx % 2) ? $alt : $base;
+}
+
+# A periodic IDR restarts the same 4-bit header fields on every GOP boundary.
+# The base picture owns the IDR flag; the dependent picture of that access unit
+# rides the same frame_num/pic_order_cnt_lsb and adopts the base view's refresh
+# through the multiview POC latch.
+sub au_frame_num { my ($au) = @_; return $idr_every ? $au % $idr_every : $au }
+sub au_poc       { my ($au) = @_; return 2 * au_frame_num($au) }
+sub au_is_idr    { my ($au) = @_; return $au == 0 || ($idr_every && ($au % $idr_every) == 0) }
+sub au_idr_pic_id {
+    my ($au) = @_;
+    return $idr_every ? int($au / $idr_every) % 65536 : 0;
+}
+
 sub slice_payload {
-    my (%o) = @_;                     # pps, frame_num, poc, idr, level
+    my (%o) = @_;                     # pps, frame_num, poc, idr, level, idr_pic_id
     wue(0);                           # first_mb_in_slice
     wue(2);                           # slice_type = I  (2, 7 or 12; the
                                       # golomb_to_pict_type table indexes by
@@ -361,7 +425,7 @@ sub slice_payload {
     wue($o{pps});                     # pic_parameter_set_id
     wu(4, $o{frame_num});             # frame_num (log2_max_frame_num_minus4 = 0)
     if ($o{idr}) {
-        wue(0);                       # idr_pic_id
+        wue(defined($o{idr_pic_id}) ? $o{idr_pic_id} : 0); # idr_pic_id
         wu(4, $o{poc});               # pic_order_cnt_lsb
         push @bits, 0, 0;             # no_output_of_prior_pics_flag,
                                       # long_term_reference_flag
@@ -389,17 +453,19 @@ sub base_picture {
     return $copy_only
         ? ($idr ? $idr0->{raw} : $intra0->{raw})
         : escape(($idr ? "\x65" : "\x41")
-                 . slice_payload(pps => 0, frame_num => $au, poc => 2 * $au,
-                                 idr => $idr, level => $base_lvl));
+                 . slice_payload(pps => 0, frame_num => au_frame_num($au),
+                                 poc => au_poc($au), idr => $idr,
+                                 idr_pic_id => au_idr_pic_id($au),
+                                 level => pick_level($base_lvl, $base2_lvl, $au)));
 }
 
 sub dep_picture {
-    my ($au) = @_;
+    my ($idx, $au) = @_;
     return $copy_only
-        ? $mvcslice[$au]{raw}
-        : escape($mvhdr . slice_payload(pps => 1, frame_num => $au,
-                                        poc => 2 * $au, idr => 0,
-                                        level => $dep_lvl));
+        ? $mvcslice[$idx]{raw}
+        : escape($mvhdr . slice_payload(pps => 1, frame_num => au_frame_num($au),
+                                        poc => au_poc($au), idr => 0,
+                                        level => pick_level($dep_lvl, $dep2_lvl, $idx)));
 }
 
 # ---- subtitle-depth (offset metadata) SEI ----------------------------------
@@ -506,21 +572,29 @@ $body .= $sc . ofmd_sei_nal($ofmd_seq, $ofmd_frames, $ofmd_wire_pts, $ofmd_rate)
 # in multi-block mode only a block of lag 0 stands ahead of picture 0; the
 # later-laid blocks were placed at their own slots above
 $body .= $ofmd_sei_at[0] if $ofmd && @ofmd_lags && defined $ofmd_sei_at[0];
-$body .= $sc . dep_picture(0) if $dep_frames >= 1;
+$body .= $sc . dep_picture(0, 0) if $dep_frames >= 1 && $view1_start == 0;
 
-# the remaining access units, up to the longer of the two view lists
-for my $au (1 .. ($base_frames >= $dep_frames ? $base_frames - 1 : $dep_frames - 1)) {
+# the remaining access units, up to the later of the two view lists
+for my $au (1 .. $max_au) {
+    my $dep_idx = $au - $view1_start;
+
     $body .= $sc . $aud->{raw};
-    $body .= $sc . base_picture($au, 0) if $au < $base_frames;
+    $body .= $sc . base_picture($au, au_is_idr($au)) if $au < $base_frames;
     $body .= $ofmd_sei_at[$au] if $ofmd && @ofmd_lags && defined $ofmd_sei_at[$au];
-    $body .= $sc . dep_picture($au)     if $au < $dep_frames;
+    $body .= $sc . dep_picture($dep_idx, $au)
+        if $dep_idx >= 0 && $dep_idx < $dep_frames;
 }
 
 open(my $of, '>:raw', $out) or die "open $out: $!";
 print $of $body;
 close $of;
-printf "wrote %s: %d bytes (%d base + %d dependent pictures, view0 DC %d, view1 DC %d%s)\n",
-       $out, length($body), $base_frames, $dep_frames, $base_lvl, $dep_lvl,
+printf "wrote %s: %d bytes (%d base + %d dependent pictures, view0 DC %d%s, view1 DC %d%s, view1 starts at AU %d%s%s)\n",
+       $out, length($body), $base_frames, $dep_frames, $base_lvl,
+       defined($base2_lvl) ? "/$base2_lvl" : "",
+       $dep_lvl,
+       defined($dep2_lvl) ? "/$dep2_lvl" : "",
+       $view1_start,
+       $idr_every ? ", base IDR every $idr_every" : "",
        $ofmd ? (@ofmd_lags
                 ? sprintf(', subtitle depth: %d blocks x %d sequences x %d pictures from pts %d, rate code %d, SEI lags %s',
                           scalar(@ofmd_lags), $ofmd_seq, $ofmd_frames,
