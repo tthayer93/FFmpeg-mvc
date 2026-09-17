@@ -32,6 +32,7 @@
 
 #include <limits.h>
 #include <stdint.h>
+#include <string.h>
 
 /* ---------------------------------------------------------------------------
  * Frame side data read here.  The layouts are documented with the enum values
@@ -218,6 +219,114 @@ static inline int ff_mvc_sub_scale_x(int x, int src_w, int dst_w)
     if (x >= src_w)
         return dst_w;
     return (int)(((int64_t)x * dst_w + src_w / 2) / src_w);
+}
+
+/* ---------------------------------------------------------------------------
+ * The filter's one option, parsed apart from the filter so that the grammar
+ * can be tested as a page of arithmetic too.  The option is a string with
+ * exactly these spellings, and the filter resolves the result once at init:
+ * the frame path never looks at the spelling again, only at the mode.
+ * ------------------------------------------------------------------------ */
+
+/* The depth placement modes.  AUTO reads the sequence stamped on the subtitle
+ * frame, FLAT ignores any authored depth, SHIFT replaces the authored depth
+ * with a fixed displacement, and PLANE names the sequence to read instead of
+ * trusting the stamp. */
+#define FF_MVC_SUB_DEPTH_AUTO       0
+#define FF_MVC_SUB_DEPTH_FLAT       1
+#define FF_MVC_SUB_DEPTH_SHIFT      2
+#define FF_MVC_SUB_DEPTH_PLANE      3
+
+/* One whole decimal integer filling lo..hi: an optional sign where allowed,
+ * at least one digit, and nothing else.  "7", "-7", "+7" are this shape;
+ * " 7", "7x", "0x7", "" and anything overflowing the range are not.  No
+ * partial consumption: the caller's whole remainder is this number or the
+ * answer is no. */
+static inline int ff_mvc_sub_parse_int(const char *s, int allow_sign,
+                                       int lo, int hi, int *out)
+{
+    long long v = 0;
+    int negative = 0;
+
+    if (!s || !*s)
+        return -1;
+    if (*s == '-' || *s == '+') {
+        if (!allow_sign)
+            return -1;
+        negative = (*s == '-');
+        s++;
+    }
+    if (!*s)
+        return -1;
+    for (; *s; s++) {
+        if (*s < '0' || *s > '9')
+            return -1;
+        v = v * 10 + (*s - '0');
+        if (v > 4294967295LL) /* past any magnitude a signed int could return */
+            return -1;
+    }
+    v = negative ? -v : v;
+    if (v < lo || v > hi)
+        return -1;
+    *out = (int)v;
+    return 0;
+}
+
+/**
+ * Read the whole value of the filter's depth option.
+ *
+ * The accepted spellings are "auto" and its synonym "1" (place at the depth
+ * authored for the sequence the subtitle track is marked with), "flat" and
+ * its synonym "0" (place on the screen plane), "shift=<pixels>" (a signed
+ * constant displacement in the authored sign convention, positive toward the
+ * viewer) and "plane=<0..31>" (read that sequence's authored depth instead of
+ * trusting the track's mark).  Matching is exact: no leading, trailing or
+ * inner whitespace, no partially matching spelling, no number outside its
+ * range.  Note that the option system splits an option from its value at the
+ * first '=' only, so the plain form of a shift - "depth=shift=-8" - needs no
+ * quoting of its own.
+ *
+ * @param value  the option's string, as stored by the option system
+ * @param mode   set to one of FF_MVC_SUB_DEPTH_* on success
+ * @param param  the pixels for SHIFT, the sequence for PLANE, 0 otherwise
+ * @return 0 when the value spells one of them, -1 when it spells none
+ */
+static inline int ff_mvc_sub_depth_parse(const char *value, int *mode,
+                                         int *param)
+{
+    static const char shift_kw[] = "shift=";
+    static const char plane_kw[] = "plane=";
+    int v;
+
+    if (!value)
+        return -1;
+    if (!strcmp(value, "auto") || !strcmp(value, "1")) {
+        *mode  = FF_MVC_SUB_DEPTH_AUTO;
+        *param = 0;
+        return 0;
+    }
+    if (!strcmp(value, "flat") || !strcmp(value, "0")) {
+        *mode  = FF_MVC_SUB_DEPTH_FLAT;
+        *param = 0;
+        return 0;
+    }
+    if (!strncmp(value, shift_kw, sizeof(shift_kw) - 1)) {
+        if (ff_mvc_sub_parse_int(value + sizeof(shift_kw) - 1, 1,
+                                 INT_MIN, INT_MAX, &v) < 0)
+            return -1;
+        *mode  = FF_MVC_SUB_DEPTH_SHIFT;
+        *param = v;
+        return 0;
+    }
+    if (!strncmp(value, plane_kw, sizeof(plane_kw) - 1)) {
+        if (ff_mvc_sub_parse_int(value + sizeof(plane_kw) - 1, 0,
+                                 0, FF_MVC_SS_SEQ_MAX - 1, &v) < 0)
+            return -1;
+        *mode  = FF_MVC_SUB_DEPTH_PLANE;
+        *param = v;
+        return 0;
+    }
+    return -1;
 }
 
 #endif /* AVFILTER_MVCSUBDEPTH_H */

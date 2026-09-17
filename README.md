@@ -121,23 +121,24 @@ standalone half frames are delivered rather than dropped.
 
 Enable subtitles exactly as with plain FFmpeg: select the stream and
 carry it into your own filter graph; nothing is displayed by itself.
+Authored depth is the default, so a bare filter is the whole command:
 
     # burn one track into both eyes at its authored depth
     ffmpeg -view_ids -1 -i in.mkv \
         -filter_complex "[0:v]format=rgba[vc];[0:s:0]format=rgba[sub];[vc][sub]mvcsubdepth=eof_action=pass[out]" \
         -map "[out]" -c:v ffv1 subs.mkv
 
-`mvcsubdepth` accepts:
+`mvcsubdepth` knobs, all under `depth=`:
 
-- `depth=0|1`: 1 (the default) renders at the authored depth, 0 puts
-  both copies flat at the screen plane.
-- `shift=<pixels>`: a constant shift instead of the authored depth,
-  positive toward the viewer; it overrides everything else.
-- `plane=<0..31>`: name the depth sequence for this track; by default
-  it comes from its metadata tag, `3d-plane-<lang>` or bare `3d-plane`.
-
-The tag names a sequence in `0..31`; a track with no usable tag, or a
-video with no authored depth, renders flat.
+- `depth=auto` (the default): the depth the disc authored for
+  this track, taken from its metadata tag, `3d-plane-<lang>` or
+  bare `3d-plane`; a track with no usable tag renders flat.
+- `depth=flat`: both copies on the screen plane, authored depth
+  ignored.
+- `depth=shift=<px>`: a constant shift instead of the authored
+  depth, positive toward the viewer.
+- `depth=plane=<n>`: reads depth sequence `n` (`0..31`) directly,
+  ignoring the track's tag.
 
 Keep `mvcsubdepth` right after the composed video source: stack
 filters drop the video's markers and `overlay` drops the subtitle's.
