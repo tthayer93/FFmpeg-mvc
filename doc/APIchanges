@@ -2,6 +2,14 @@ The last version increases of all libraries were on 2026-06-23.
 
 API changes, most recent first:
 
+2026-09-xx - xxxxxxxxxx - lavfi 12.4.100 - mvcsubdepth filter
+  mvcsubdepth: replaced the plane, depth and shift options by one depth
+  option with named modes: auto (authored depth of the stamped sequence,
+  was depth=1 with plane unset), flat (screen plane, was depth=0),
+  shift=<pixels> (was shift=<pixels>) and plane=<0..31> (was plane=<n>),
+  plus 0 and 1 as synonyms of flat and auto. The old option names no
+  longer exist and values outside that grammar are refused at init.
+
 2026-09-xx - xxxxxxxxxx - lavu 61.8.100 - frame.h
   Add AV_FRAME_DATA_MVC_SS_OFFSETS.
   Add AV_FRAME_DATA_MVC_SUB_PLANE.
