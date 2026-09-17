@@ -590,6 +590,15 @@ typedef struct H264Context {
      *  Rate-limited: first ten individually, then every hundredth. */
     int sbs_dup_stale;
 
+    /** Set while the compose queues hold halves that were left behind by a
+     *  key-mismatch shipment and may already be a complete pair. The normal
+     *  pairing runs on a new arrival, but an orphan shipped from the queue can
+     *  uncover a matching pair that needs a delivery turn of its own; the next
+     *  arrival therefore lets these queued halves go out before it joins the
+     *  queue (h264_sbs_service_queued()). Cleared when no such pending pair
+     *  remains, and by ff_h264_flush_change() with the queues. */
+    int sbs_pair_pending;
+
     /** Count of composed halves delivered standalone because they met a
      *  pending half of the opposite view carrying a DIFFERENT access-unit
      *  time than their own (h264_sbs_pair_key()): the pairing keys each half

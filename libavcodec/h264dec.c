@@ -411,6 +411,7 @@ static void h264_sbs_q_clear(H264Context *h)
         h->sbs_pair_head[r]  = 0;
         h->sbs_pair_count[r] = 0;
     }
+    h->sbs_pair_pending = 0;
 }
 
 /* --------------------------------------------------------------------
@@ -2455,6 +2456,117 @@ out:
     return ret;
 }
 
+/* A key-mismatch shipment can uncover a pair that is already sitting in the
+ * queues: when the older half of an orphaned meeting goes out on its own, the
+ * newer arrival joins the queue while a same-role half of the arrival's own
+ * access unit may still be queued behind the orphan. There is no new half to
+ * trigger that pair on the next turn, so the next arrival first lets the queued
+ * pair (or the next orphan, if several were left behind) leave the queue, then
+ * joins it itself. This keeps one frame per delivery turn and still never welds
+ * different access units. Returns a non-zero compose result when the queues
+ * have been given this turn's output, 0 when there is nothing to deliver and the
+ * arrival's normal path should run. */
+static int h264_sbs_service_queued(H264Context *h, AVFrame *pict,
+                                   H264Picture *out, int role, int *got_frame)
+{
+    H264Picture *base, *dep, *older, *waiting;
+    int64_t k_arrival, k_base, k_dep;
+    int svc_role, got = 0, composed, ret;
+
+    if (!h->sbs_pair_pending)
+        return 0;
+
+    if (!h->sbs_pair_count[0] || !h->sbs_pair_count[1]) {
+        h->sbs_pair_pending = 0;
+        return 0;
+    }
+
+    /* The queued pair must be taken from the heads BEFORE this arrival joins
+     * either queue; otherwise a queued half could be confused with the arrival
+     * or the queue could be asked to hold it past its bound. */
+    if (h->sbs_pair_count[role] >= H264_SBS_PAIR_Q_SIZE) {
+        h->sbs_pair_pending = 0;
+        return 0;
+    }
+
+    base = h264_sbs_q_head(h, 0);
+    dep  = h264_sbs_q_head(h, 1);
+    k_base = h264_sbs_pair_key(base);
+    k_dep  = h264_sbs_pair_key(dep);
+
+    /* If this arrival is older than BOTH queued heads, it is not the turn that
+     * the pending queue is waiting for: let the normal arrival path ship this
+     * older half (or hold it if it has a partner), and leave the queued pair
+     * pending for a newer turn. */
+    k_arrival = h264_sbs_pair_key(out);
+    if (k_arrival != AV_NOPTS_VALUE && k_base != AV_NOPTS_VALUE &&
+        k_dep  != AV_NOPTS_VALUE && k_arrival < k_base && k_arrival < k_dep) {
+        return 0;
+    }
+
+    out->reference |= DELAYED_PIC_REF;
+    h264_sbs_q_push(h, out, role);
+
+    if (k_base != AV_NOPTS_VALUE && k_dep != AV_NOPTS_VALUE &&
+        k_base != k_dep) {
+        svc_role = k_base < k_dep ? 0 : 1;
+        older    = h264_sbs_q_head(h, svc_role);
+        waiting  = h264_sbs_q_head(h, 1 - svc_role);
+
+        av_frame_unref(pict);
+        ret = finalize_frame(h, pict, older, &got);
+        if (ret < 0)
+            return ret;
+        if (!got) {
+            /* The older queued half still cannot be shown (gray gap / corrupt
+             * filtering). Leave the queued pair and the arrival held; the next
+             * delivery turn retries before processing a later arrival. */
+            h->sbs_pair_pending = 1;
+            *got_frame = 0;
+            return 0;
+        }
+
+        h264_sbs_q_pop(h, svc_role);
+        if (svc_role == 0)
+            h264_iv_anchor_retain(h, older);
+        else
+            older->reference &= ~DELAYED_PIC_REF;
+        composed = h264_sbs_compose_half_black(h, pict, svc_role);
+        h264_note_standalone_delivery(h, composed);
+        h264_note_pair_key_mismatch(h, older, waiting);
+        *got_frame = 1;
+        h->sbs_pair_pending = h->sbs_pair_count[0] && h->sbs_pair_count[1];
+        return 3;
+    }
+
+    /* Same access-unit time (or no clock to tell them apart): finish the queued
+     * dependent half first, because a composed frame inherits its properties. */
+    av_frame_unref(pict);
+    ret = finalize_frame(h, pict, dep, &got);
+    if (ret < 0)
+        return ret;
+    if (!got) {
+        h->sbs_pair_pending = 1;
+        *got_frame = 0;
+        return 0;
+    }
+
+    h264_sbs_q_pop(h, 0);
+    h264_sbs_q_pop(h, 1);
+    ret = h264_sbs_assemble(h, pict, base, dep);
+    if (ret < 0)
+        return ret;
+    if (ret > 0) {
+        h264_sbs_pair_audit(h, base, dep);
+    } else {
+        composed = h264_sbs_compose_half_black(h, pict, 1);
+        h264_note_standalone_delivery(h, composed);
+    }
+    *got_frame = 1;
+    h->sbs_pair_pending = h->sbs_pair_count[0] && h->sbs_pair_count[1];
+    return ret > 0 ? 2 : 0;
+}
+
 /* Post-process a just-finalized multiview frame for the native SBS composed
  * output. Halves are paired by access-unit identity (h264_sbs_pair_key()): a
  * pending half and an arrival weld only when they carry the same access-unit
@@ -2479,6 +2591,14 @@ static int h264_sbs_process(H264Context *h, AVFrame *pict,
      * selected, so the compose roles are the base half (view_idx 0) and
      * the dependent half (view_idx 1). */
     role = out->view_idx;
+
+    /* A previous key mismatch may have left a complete pair queued behind the
+     * half it just shipped. Give that queued half this turn before the arrival
+     * joins the queues; otherwise the arrival would be compared against the
+     * older orphan instead of its own partner. */
+    ret = h264_sbs_service_queued(h, pict, out, role, got_frame);
+    if (ret)
+        return ret;
 
     if (h264_sbs_q_head(h, 1 - role)) {
         /* The other role holds a pending half. Weld it to this arrival only
@@ -2522,6 +2642,8 @@ static int h264_sbs_process(H264Context *h, AVFrame *pict,
                 /* hold the arrival until its own partner arrives */
                 out->reference |= DELAYED_PIC_REF;
                 h264_sbs_q_push(h, out, role);
+                h->sbs_pair_pending = h->sbs_pair_count[0] &&
+                                      h->sbs_pair_count[1];
                 return 3;
             }
             /* This arrival is from an earlier access unit than anything the
@@ -2533,6 +2655,8 @@ static int h264_sbs_process(H264Context *h, AVFrame *pict,
             composed = h264_sbs_compose_half_black(h, pict, role);
             h264_note_standalone_delivery(h, composed);
             h264_note_pair_key_mismatch(h, out, other);
+            h->sbs_pair_pending = h->sbs_pair_count[0] &&
+                                  h->sbs_pair_count[1];
             *got_frame = 1;
             return 3;
         }
@@ -2630,6 +2754,8 @@ hold:
             h264_note_standalone_delivery(h, composed);
             out->reference |= DELAYED_PIC_REF;
             h264_sbs_q_push(h, out, role);
+            h->sbs_pair_pending = h->sbs_pair_count[0] &&
+                                  h->sbs_pair_count[1];
             return 3;
         }
         /* The oldest half cannot be shown right now (gray gap / corrupt
