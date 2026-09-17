@@ -203,11 +203,11 @@ FATE_H264  := $(FATE_H264:%=fate-h264-conformance-%)                    \
                fate-h264-mvc-diffcontent-allviews                        \
                fate-h264-mvc-diffcontent-default                         \
                fate-h264-mvc-diffcontent-view1                           \
-                fate-h264-mvc-uneven-base-allviews                        \
-                fate-h264-mvc-uneven-base-default                         \
-                fate-h264-mvc-uneven-base-view1                           \
-                fate-h264-mvc-uneven-dep-allviews                         \
-               fate-h264-ref-pic-mod-overflow                            \
+               fate-h264-mvc-uneven-base-allviews                        \
+               fate-h264-mvc-uneven-base-default                         \
+               fate-h264-mvc-uneven-base-view1                           \
+               fate-h264-mvc-uneven-dep-allviews                         \
+              fate-h264-ref-pic-mod-overflow                            \
               fate-h264-timecode                                        \
 
 FATE_H264-$(call FRAMECRC, H264, H264, H264_PARSER SCALE_FILTER) += $(FATE_H264_REINIT_TESTS:%=fate-h264-reinit-%)
