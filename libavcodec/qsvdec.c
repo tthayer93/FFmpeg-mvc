@@ -870,7 +870,8 @@ static int h264_parse_side_data(AVCodecContext *avctx, QSVContext *q, AVFrame *f
         return ret;
     }
 
-    ret = ff_h264_sei_decode(&q->sei, &gb_payload, &q->ps, avctx);
+    ret = ff_h264_sei_decode(&q->sei, &gb_payload, &q->ps, NULL,
+                             AV_NOPTS_VALUE, avctx);
     if (ret < 0) {
         av_freep(&sei_buffer);
         return ret;
