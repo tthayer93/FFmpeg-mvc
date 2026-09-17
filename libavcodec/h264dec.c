@@ -2516,9 +2516,19 @@ out:
  * trigger that pair on the next turn, so the next arrival first lets the queued
  * pair (or the next orphan, if several were left behind) leave the queue, then
  * joins it itself. This keeps one frame per delivery turn and still never welds
- * different access units. Returns a non-zero compose result when the queues
- * have been given this turn's output, 0 when there is nothing to deliver and the
- * arrival's normal path should run. */
+ * different access units. The return codes are those of h264_sbs_process():
+ * 0 = nothing was delivered and the arrival is NOT in either queue, so the
+ * arrival's normal path should run; 1 = this turn only held - the arrival is
+ * queued and the head it came to serve still cannot be shown, *got_frame
+ * cleared, the next delivery turn retries; 2 = the queued pair assembled into
+ * `pict`; 3 = a composed half shipped standalone with a black opposite half
+ * (*got_frame set); a negative error when a delivery this turn attempted
+ * failed. INVARIANT: 0 may be returned only if the arrival is in neither
+ * queue AND nothing was delivered - a path that pushed the arrival onto a
+ * queue or shipped a frame must report it (1 or 3), because the caller reads
+ * 0 as "nothing delivered, run the normal path", which would push the same
+ * picture into the ring a second time and reprocess a picture whose row was
+ * already on its way out. */
 static int h264_sbs_service_queued(H264Context *h, AVFrame *pict,
                                    H264Picture *out, int role, int *got_frame)
 {
@@ -2573,10 +2583,13 @@ static int h264_sbs_service_queued(H264Context *h, AVFrame *pict,
         if (!got) {
             /* The older queued half still cannot be shown (gray gap / corrupt
              * filtering). Leave the queued pair and the arrival held; the next
-             * delivery turn retries before processing a later arrival. */
+             * delivery turn retries before processing a later arrival. The
+             * arrival has joined its queue above, so this turn is spent:
+             * report the hold (1), never the 0 that would let the caller run
+             * the normal path over the queued picture. */
             h->sbs_pair_pending = 1;
             *got_frame = 0;
-            return 0;
+            return 1;
         }
 
         h264_sbs_q_pop(h, svc_role);
@@ -2599,9 +2612,13 @@ static int h264_sbs_service_queued(H264Context *h, AVFrame *pict,
     if (ret < 0)
         return ret;
     if (!got) {
+        /* The queued dependent head still cannot be shown (gray gap / corrupt
+         * filtering): the pair is not consumed and the arrival has joined its
+         * queue above - a spent turn, reported as the hold whose next-turn
+         * retry is the contract (see the older-head retry). */
         h->sbs_pair_pending = 1;
         *got_frame = 0;
-        return 0;
+        return 1;
     }
 
     h264_sbs_q_pop(h, 0);
@@ -2612,12 +2629,16 @@ static int h264_sbs_service_queued(H264Context *h, AVFrame *pict,
     if (ret > 0) {
         h264_sbs_pair_audit(h, base, dep);
     } else {
+        /* Not assemblable: the popped dependent half went out composed with a
+         * black base side (*got_frame set below), so this turn delivered as
+         * much as any other standalone shipment and must say so - returning 0
+         * here would have the caller rebuild the frame it just destroyed. */
         composed = h264_sbs_compose_half_black(h, pict, 1);
         h264_note_standalone_delivery(h, composed);
     }
     *got_frame = 1;
     h->sbs_pair_pending = h->sbs_pair_count[0] && h->sbs_pair_count[1];
-    return ret > 0 ? 2 : 0;
+    return ret > 0 ? 2 : 3;
 }
 
 /* Post-process a just-finalized multiview frame for the native SBS composed
