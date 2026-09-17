@@ -2005,6 +2005,25 @@ static H264Picture *h264_sbs_q_head(const H264Context *h, int role)
     return h->sbs_pair_q[role][h->sbs_pair_head[role]];
 }
 
+/* The access-unit identity of a composed half: the delivery pts of its pinned
+ * picture. Both views of one access unit carry that one time - the demuxer
+ * hands an access unit's pts to its first fragment and h264_adopt_base_view_poc()
+ * gives it to the dependent picture whose own fragment arrived without one, so
+ * on a timed stream the base half and the dependent half of an access unit
+ * share this key exactly, while consecutive access units differ by a frame
+ * duration (this is the same pts pair_audit() compares, read the same way). The
+ * composed pairing pairs halves by this key rather than by queue ordinal, so a
+ * session start that loses or gains one output of a single view degrades only
+ * that access unit to a standalone half instead of sliding every later frame of
+ * the other view by one. AV_NOPTS_VALUE on either half means there is no clock
+ * to key by (an untimed stream) and the caller falls back to queue order. */
+static int64_t h264_sbs_pair_key(const H264Picture *p)
+{
+    const AVFrame *f = p ? (p->needs_fg ? p->f_grain : p->f) : NULL;
+
+    return f ? f->pts : AV_NOPTS_VALUE;
+}
+
 /* Subtitle depth travels with the dependent view, whose half is what the
  * composed frame shows next to the base view. The property inheritance of the
  * assembly above already brought that half's entry over with the rest of its
@@ -2275,10 +2294,32 @@ static void h264_note_standalone_delivery(H264Context *h, int composed)
                "multiview: delivered a standalone composed half (%d delivered "
                "so far); the pairing did not assemble it with a partner of "
                "the other view%s\n", h->sbs_standalone_emitted,
-               composed ? "; it ships composed into a full-width frame with a "
-                        "black opposite half, so the output geometry stays put"
-                        : "");
+                composed ? "; it ships composed into a full-width frame with a "
+                         "black opposite half, so the output geometry stays put"
+                         : "");
 }
+
+/* Witness an access-unit identity mismatch at the composed assembly (see
+ * h264_sbs_process()): the half just shipped and the half still waiting for a
+ * partner carry different access-unit times, so the pairing refused to weld
+ * them together and shipped the older one alone. Count it and leave a debug
+ * line naming both access-unit times - one line per locally-degraded row, the
+ * pairing-skew signature that was previously invisible because a mis-pair
+ * looked like an ordinary pair. */
+static void h264_note_pair_key_mismatch(H264Context *h,
+                                        const H264Picture *shipped,
+                                        const H264Picture *waiting)
+{
+    h->sbs_pair_key_mismatch++;
+    av_log(h->avctx, AV_LOG_DEBUG,
+           "multiview: composed halves of different access units met (shipped "
+           "view %d pts %lld, waiting view %d pts %lld); shipping the older one "
+           "standalone - access-unit mismatches so far: %d\n",
+           shipped->view_id, (long long) h264_sbs_pair_key(shipped),
+           waiting->view_id, (long long) h264_sbs_pair_key(waiting),
+           h->sbs_pair_key_mismatch);
+}
+
 
 /* Paint a rectangle of one plane at a constant sample value. Sample sizes of
  * one byte are memset; the two-byte formats (the deep 4:2:0/4:2:2/4:4:4
@@ -2467,12 +2508,18 @@ out:
     return ret;
 }
 
-/* Post-process a just-finalized multiview frame for native SBS
- * (display-ordinal FIFO pairing, see the block comment above):
+/* Post-process a just-finalized multiview frame for the native SBS composed
+ * output. Halves are paired by access-unit identity (h264_sbs_pair_key()): a
+ * pending half and an arrival weld only when they carry the same access-unit
+ * time; an orphan from a perturbed session start ships standalone rather than
+ * sliding the whole opposite eye by one (see the block comment above and the
+ * pair branch below). Returns
  * 0 = deliver as-is, 1 = half held for its partner (*got_frame cleared),
- * 2 = assembled side-by-side frame in `pict`, 3 = the oldest held half of
- * this role shipped standalone, composed with a black opposite half
- * (*got_frame set) while the new half is held, or a negative error code. */
+ * 2 = assembled side-by-side frame in `pict`, 3 = a composed half shipped
+ * standalone with a black opposite half (*got_frame set) - either a queue
+ * overflow shipping its oldest half while holding the new one, or the older of
+ * two halves that met without belonging to the same access unit - or a
+ * negative error code. */
 static int h264_sbs_process(H264Context *h, AVFrame *pict,
                             H264Picture *out, int *got_frame)
 {
@@ -2487,11 +2534,69 @@ static int h264_sbs_process(H264Context *h, AVFrame *pict,
     role = out->view_idx;
 
     if (h264_sbs_q_head(h, 1 - role)) {
-        /* The other role holds a pending half: this arrival completes the
-         * next pair (k-th with k-th). The arrival is its role's head by
+        /* The other role holds a pending half. Weld it to this arrival only
+         * when the two carry the SAME access-unit time (h264_sbs_pair_key()).
+         * A pending half and an arrival of different access units mean one
+         * view lost or gained an output somewhere - the shape a seek or warm
+         * session start leaves behind - and pairing them by queue position
+         * then relabels one eye as its neighbour's and keeps it one access unit
+         * off for the rest of the stream. Ship the older of the two orphaned
+         * halves out on its own (fail-visible, black opposite half) and let the
+         * newer one wait for a partner of its own, so the loss stays local to
+         * the access unit that caused it. */
+        H264Picture *other = h264_sbs_q_head(h, 1 - role);
+        int64_t k_arr = h264_sbs_pair_key(out);
+        int64_t k_oth = h264_sbs_pair_key(other);
+
+        if (k_arr != AV_NOPTS_VALUE && k_oth != AV_NOPTS_VALUE &&
+            k_arr != k_oth) {
+            if (k_oth < k_arr) {
+                /* The queued half is from an earlier access unit than this
+                 * arrival, so this role already delivered that access unit and
+                 * the queued half's partner is gone for good: ship it out
+                 * standalone and hold this arrival for its own partner. */
+                int got_other = 0;
+
+                av_frame_unref(pict);
+                ret = finalize_frame(h, pict, other, &got_other);
+                if (ret < 0)
+                    return ret;
+                if (!got_other)
+                    goto hold;      /* head unshowable now: hold and retry */
+                h264_sbs_q_pop(h, 1 - role);
+                if (role == 1)      /* the head just shipped is a base half */
+                    h264_iv_anchor_retain(h, other);
+                else
+                    other->reference &= ~DELAYED_PIC_REF;
+                composed = h264_sbs_compose_half_black(h, pict, 1 - role);
+                h264_note_standalone_delivery(h, composed);
+                h264_note_pair_key_mismatch(h, other, out);
+                *got_frame = 1;
+                /* hold the arrival until its own partner arrives */
+                out->reference |= DELAYED_PIC_REF;
+                h264_sbs_q_push(h, out, role);
+                return 3;
+            }
+            /* This arrival is from an earlier access unit than anything the
+             * other view still holds, so its partner has already left that
+             * queue: ship the arrival standalone and leave the newer head
+             * queued to await its own partner. */
+            if (role == 0)          /* a base half leaving the pipeline */
+                h264_iv_anchor_retain(h, out);
+            composed = h264_sbs_compose_half_black(h, pict, role);
+            h264_note_standalone_delivery(h, composed);
+            h264_note_pair_key_mismatch(h, out, other);
+            *got_frame = 1;
+            return 3;
+        }
+
+        /* The pending half and this arrival carry the same access-unit time
+         * (or there is no clock to tell them apart, and queue order stands):
+         * this arrival completes the pair. The arrival is its role's head by
          * construction, so the explicit heads are base/dependent. */
         H264Picture *base = (role == 0) ? out : h264_sbs_q_head(h, 0);
         H264Picture *dep  = (role == 1) ? out : h264_sbs_q_head(h, 1);
+
 
         if (role == 0) {
             /* `pict` still shows the arriving base half, which the caller has
@@ -2664,6 +2769,43 @@ static int h264_sbs_drain_eof(H264Context *h, AVFrame *pict, int *got_frame)
 
     base = h264_sbs_q_head(h, 0);
     dep  = h264_sbs_q_head(h, 1);
+
+    /* The drain keys on the access unit like the live pairing: two heads from
+     * different access units were never a pair, and the older one met no
+     * partner for the whole stream. Ship that older head out on its own (its
+     * opposite half black) and keep the newer one queued for a call of its
+     * own, so a trailing orphan is not welded to an unrelated access unit.
+     * Two heads of one access unit - or a stream with no clock to tell them
+     * apart - assemble exactly as they always did below. */
+    {
+        int64_t k_base = h264_sbs_pair_key(base);
+        int64_t k_dep  = h264_sbs_pair_key(dep);
+
+        if (k_base != AV_NOPTS_VALUE && k_dep != AV_NOPTS_VALUE &&
+            k_base != k_dep) {
+            H264Picture *waiting;
+
+            role   = (k_base < k_dep) ? 0 : 1;
+            base   = h264_sbs_q_head(h, role);
+            waiting = h264_sbs_q_head(h, 1 - role);
+            ret = finalize_frame(h, pict, base, &got);
+            if (ret < 0)
+                return ret;               /* failed delivery, not an empty queue */
+            if (!got)
+                return 0;
+            h264_sbs_q_pop(h, role);
+            if (role == 0)
+                h264_iv_anchor_retain(h, base);
+            else
+                base->reference &= ~DELAYED_PIC_REF;
+            composed = h264_sbs_compose_half_black(h, pict, role);
+            h264_note_pair_key_mismatch(h, base, waiting);
+            *got_frame = 1;
+            h264_note_standalone_delivery(h, composed);
+            return 0;
+        }
+    }
+
     ret = finalize_frame(h, pict, dep, &got);
     if (ret < 0)
         return ret;                   /* failed delivery, not an empty queue */
