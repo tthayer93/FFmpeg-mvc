@@ -637,4 +637,45 @@ verbatim - one attribution and one test inconsistency - on the record.
   moves to 7. The containment recorded above stands whole under
   the new number, and this ship neither restates nor relaxes any
   of it.
+- **Same-version reissue (2026-09-17).** This leg reissues the
+  build already named **`n8.1.2-mvc7-jf4`**; it opens no new
+  release number. The delta under that name is one compile fix
+  carried on a merge of its own, set under the state the pairing
+  ship above records. The release name is deliberately held
+  (the owner's decision): the code-delta counter stays at seven
+  and the jellyfin digit stays at four, so tag, `VERSION` file
+  and banner keep naming the one identity they already named,
+  now over a tree that also carries this fix.
+- **The compile fix carried (2026-09-17).** A build configured for
+  the `libvpl` hardware path has failed to compile since
+  `n8.1.2-mvc5-jf4`. The break sat at a seam rather than in fresh
+  decode logic: this fork's shared SEI decode routine grew an
+  argument, while the call into it from the jellyfin queue's QSV
+  path kept the older argument list, so a libvpl-enabled build
+  stopped at that call and could not compile. A software-only
+  build, which never reaches the QSV path, kept building untouched
+  throughout. The fix is one line: the QSV call now passes the
+  argument the wider routine asks for, restoring the behavior that
+  site held before the break. Software decode never enters the
+  code the fix edits, so its output is byte-unaffected; the
+  goldens below are the witness.
+- **What this reissue keeps the name over (2026-09-17).** No feature
+  moves and no output moves, so the release string does not move.
+  The counter that counts this fork's own code delta stays at
+  seven; the jellyfin digit, tied to **`jellyfin-ffmpeg v8.1.2-4`**,
+  stays at four. The containment recorded in the entries above
+  stands whole under the held number, and this reissue neither
+  restates nor relaxes any of it.
+- **What this reissue was certified on (2026-09-17).** A libvpl
+  compile leg on the fixed tree, which is the class the fix lives
+  in and where the break used to stop the build; the product gate
+  on this same tree - `checkasm` 14903 checks, FATE 362 tests with
+  0 failures, and the provenance self-test harness at 191 passed,
+  0 failed; and the composed contract row-sets, byte-identical to
+  the stored goldens: the composed 30 s row-set (720 rows, its
+  sha256 beginning `de08be58`) and the composed 60 s grid (1439
+  rows, its sha256 beginning `2675c6da`), replayed on the gate
+  build's own binary. Certification for a fix that moves no byte
+  of software output is this compile leg, this gate, and these
+  byte-identical goldens together.
 
