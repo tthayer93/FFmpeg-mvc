@@ -411,6 +411,7 @@ static void h264_sbs_q_clear(H264Context *h)
         h->sbs_pair_head[r]  = 0;
         h->sbs_pair_count[r] = 0;
     }
+    h->sbs_pair_pending = 0;
 }
 
 /* --------------------------------------------------------------------
@@ -1819,18 +1820,27 @@ static int send_next_delayed_frame(H264Context *h, AVFrame *dst_frame,
  * (AV_STEREO3D_SIDEBYSIDE) entry, instead of two interleaved full-size
  * frames.
  *
- * Pairing rule: the k-th output picture of the base view pairs
- * with the k-th output picture of the dependent view - display-ordinal,
- * FIFO structure, no counters, no POC/pts keys, no DPB slot indices. The
- * halves finalize in emission order (global lowest-POC first), so the
- * first half to arrive is held in the context-local queues in
- * H264Context (h->sbs_pair_q, pinned with DELAYED_PIC_REF while held) and
- * the next half of the other role pops the head of both (either role may
- * be the one waiting). A half whose partner never caught up ships
- * STANDALONE: the oldest pending half goes out unpaired when its role's
- * queue overflows, and the end-of-stream drain pairs what pairs and ships
- * the leftovers - fail-visible, never silently mis-paired, never silently
- * dropped. Such a half leaves composed into a full double-width frame with a
+ * Pairing rule: halves weld by access-unit identity - the two views of one
+ * access unit share its delivery pts (h264_sbs_pair_key()) and only halves
+ * carrying the same key assemble. Keys, not display ordinals; no counters,
+ * no POC keys, no DPB slot indices. Halves finalize in emission order
+ * (global lowest-POC first), so the first half to arrive is held in the
+ * context-local queues in H264Context (h->sbs_pair_q, pinned with
+ * DELAYED_PIC_REF while held) and the next half of the other role that
+ * carries the same key pops the head of both (either role may be the one
+ * waiting). A meeting of two different keys is a locally degraded row, not
+ * a weld to keep: the older half ships STANDALONE and the newer one stays
+ * queued for a partner of its own. A half whose partner never caught up
+ * ships the same way: the oldest pending half goes out unpaired when its
+ * role's queue overflows, and the end-of-stream drain pairs what pairs and
+ * ships the leftovers - fail-visible, never silently mis-paired, never
+ * silently dropped. On an UNTIMED stream - fragments carrying no pts -
+ * there is no key to pair by and queue order stands there as the legacy
+ * pairing (correct pairing is inexpressible without a clock; the
+ * fixture-only shape that reaches it is a known review decision), while
+ * pairs of timed streams stay under the display-time audit warn of
+ * h264_sbs_pair_audit(). Such a half leaves composed into a full
+ * double-width frame with a
  * black opposite half (see h264_sbs_compose_half_black()), so that a degraded
  * composed stream keeps one output geometry from its first frame to its last
  * rather than changing width at every unpaired frame; the missing eye is what
@@ -1921,7 +1931,9 @@ static int h264_sbs_should_assemble(H264Context *h, const AVFrame *frame)
  * above). A held half is pinned with DELAYED_PIC_REF (added at hold, see
  * h264_sbs_process()) so the DPB cannot recycle its slot, and the pin is
  * retired when the half leaves the queue - into an assembled frame, a
- * standalone shipment, or a flush. Identity is queue order only. */
+ * standalone shipment, or a flush. Identity is the access-unit delivery pts
+ * (h264_sbs_pair_key()); queue order stands only where no clock exists to
+ * key by. */
 static void h264_sbs_q_push(H264Context *h, H264Picture *p, int role)
 {
     h->sbs_pair_q[role][(h->sbs_pair_head[role] + h->sbs_pair_count[role]) %
@@ -1950,6 +1962,25 @@ static H264Picture *h264_sbs_q_head(const H264Context *h, int role)
     if (!h->sbs_pair_count[role])
         return NULL;
     return h->sbs_pair_q[role][h->sbs_pair_head[role]];
+}
+
+/* The access-unit identity of a composed half: the delivery pts of its pinned
+ * picture. Both views of one access unit carry that one time - the demuxer
+ * hands an access unit's pts to its first fragment and h264_adopt_base_view_poc()
+ * gives it to the dependent picture whose own fragment arrived without one, so
+ * on a timed stream the base half and the dependent half of an access unit
+ * share this key exactly, while consecutive access units differ by a frame
+ * duration (this is the same pts pair_audit() compares, read the same way). The
+ * composed pairing pairs halves by this key rather than by queue ordinal, so a
+ * session start that loses or gains one output of a single view degrades only
+ * that access unit to a standalone half instead of sliding every later frame of
+ * the other view by one. AV_NOPTS_VALUE on either half means there is no clock
+ * to key by (an untimed stream) and the caller falls back to queue order. */
+static int64_t h264_sbs_pair_key(const H264Picture *p)
+{
+    const AVFrame *f = p ? (p->needs_fg ? p->f_grain : p->f) : NULL;
+
+    return f ? f->pts : AV_NOPTS_VALUE;
 }
 
 /* Subtitle depth travels with the dependent view, whose half is what the
@@ -2141,8 +2172,8 @@ fail:
 
 /* Permanent composed-pair health audit: a gross-fault detector for the
  * composed pairing, deliberately not a content-skew probe. The halves of one
- * composed frame are matched by display ordinal, so how far apart their pts
- * values sit says nothing by itself about whether the pairing is right. The
+ * composed frame are matched by their shared access-unit delivery pts
+ * (h264_sbs_pair_key()); untimed streams fall back to queue order. The
  * two views of a stream routinely carry a per-view container offset, and on
  * streams that timestamp their views independently that offset is not even
  * steady: measured across a whole feature it runs from zero to four frame
@@ -2225,6 +2256,27 @@ static void h264_note_standalone_delivery(H264Context *h, int composed)
                composed ? "; it ships composed into a full-width frame with a "
                         "black opposite half, so the output geometry stays put"
                         : "");
+}
+
+/* Witness an access-unit identity mismatch at the composed assembly (see
+ * h264_sbs_process()): the half just shipped and the half still waiting for a
+ * partner carry different access-unit times, so the pairing refused to weld
+ * them together and shipped the older one alone. Count it and leave a debug
+ * line naming both access-unit times - one line per locally-degraded row, the
+ * pairing-skew signature that was previously invisible because a mis-pair
+ * looked like an ordinary pair. */
+static void h264_note_pair_key_mismatch(H264Context *h,
+                                        const H264Picture *shipped,
+                                        const H264Picture *waiting)
+{
+    h->sbs_pair_key_mismatch++;
+    av_log(h->avctx, AV_LOG_DEBUG,
+           "multiview: composed halves of different access units met (shipped "
+           "view %d pts %lld, waiting view %d pts %lld); shipping the older one "
+           "standalone - access-unit mismatches so far: %d\n",
+           shipped->view_id, (long long) h264_sbs_pair_key(shipped),
+           waiting->view_id, (long long) h264_sbs_pair_key(waiting),
+           h->sbs_pair_key_mismatch);
 }
 
 /* Paint a rectangle of one plane at a constant sample value. Sample sizes of
@@ -2414,12 +2466,150 @@ out:
     return ret;
 }
 
-/* Post-process a just-finalized multiview frame for native SBS
- * (display-ordinal FIFO pairing, see the block comment above):
+/* A key-mismatch shipment can uncover a pair that is already sitting in the
+ * queues: when the older half of an orphaned meeting goes out on its own, the
+ * newer arrival joins the queue while a same-role half of the arrival's own
+ * access unit may still be queued behind the orphan. There is no new half to
+ * trigger that pair on the next turn, so the next arrival first lets the queued
+ * pair (or the next orphan, if several were left behind) leave the queue, then
+ * joins it itself. This keeps one frame per delivery turn and still never welds
+ * different access units. The return codes are those of h264_sbs_process():
+ * 0 = nothing was delivered and the arrival is NOT in either queue, so the
+ * arrival's normal path should run; 1 = this turn only held - the arrival is
+ * queued and the head it came to serve still cannot be shown, *got_frame
+ * cleared, the next delivery turn retries; 2 = the queued pair assembled into
+ * `pict`; 3 = a composed half shipped standalone with a black opposite half
+ * (*got_frame set); a negative error when a delivery this turn attempted
+ * failed. INVARIANT: 0 may be returned only if the arrival is in neither
+ * queue AND nothing was delivered - a path that pushed the arrival onto a
+ * queue or shipped a frame must report it (1 or 3), because the caller reads
+ * 0 as "nothing delivered, run the normal path", which would push the same
+ * picture into the ring a second time and reprocess a picture whose row was
+ * already on its way out. */
+static int h264_sbs_service_queued(H264Context *h, AVFrame *pict,
+                                   H264Picture *out, int role, int *got_frame)
+{
+    H264Picture *base, *dep, *older, *waiting;
+    int64_t k_arrival, k_base, k_dep;
+    int svc_role, got = 0, composed, ret;
+
+    if (!h->sbs_pair_pending)
+        return 0;
+
+    if (!h->sbs_pair_count[0] || !h->sbs_pair_count[1]) {
+        h->sbs_pair_pending = 0;
+        return 0;
+    }
+
+    /* The queued pair must be taken from the heads BEFORE this arrival joins
+     * either queue; otherwise a queued half could be confused with the arrival
+     * or the queue could be asked to hold it past its bound. */
+    if (h->sbs_pair_count[role] >= H264_SBS_PAIR_Q_SIZE) {
+        h->sbs_pair_pending = 0;
+        return 0;
+    }
+
+    base = h264_sbs_q_head(h, 0);
+    dep  = h264_sbs_q_head(h, 1);
+    k_base = h264_sbs_pair_key(base);
+    k_dep  = h264_sbs_pair_key(dep);
+
+    /* If this arrival is older than BOTH queued heads, it is not the turn that
+     * the pending queue is waiting for: let the normal arrival path ship this
+     * older half (or hold it if it has a partner), and leave the queued pair
+     * pending for a newer turn. */
+    k_arrival = h264_sbs_pair_key(out);
+    if (k_arrival != AV_NOPTS_VALUE && k_base != AV_NOPTS_VALUE &&
+        k_dep  != AV_NOPTS_VALUE && k_arrival < k_base && k_arrival < k_dep) {
+        return 0;
+    }
+
+    out->reference |= DELAYED_PIC_REF;
+    h264_sbs_q_push(h, out, role);
+
+    if (k_base != AV_NOPTS_VALUE && k_dep != AV_NOPTS_VALUE &&
+        k_base != k_dep) {
+        svc_role = k_base < k_dep ? 0 : 1;
+        older    = h264_sbs_q_head(h, svc_role);
+        waiting  = h264_sbs_q_head(h, 1 - svc_role);
+
+        av_frame_unref(pict);
+        ret = finalize_frame(h, pict, older, &got);
+        if (ret < 0)
+            return ret;
+        if (!got) {
+            /* The older queued half still cannot be shown (gray gap / corrupt
+             * filtering). Leave the queued pair and the arrival held; the next
+             * delivery turn retries before processing a later arrival. The
+             * arrival has joined its queue above, so this turn is spent:
+             * report the hold (1), never the 0 that would let the caller run
+             * the normal path over the queued picture. */
+            h->sbs_pair_pending = 1;
+            *got_frame = 0;
+            return 1;
+        }
+
+        h264_sbs_q_pop(h, svc_role);
+        if (svc_role == 0)
+            h264_iv_anchor_retain(h, older);
+        else
+            older->reference &= ~DELAYED_PIC_REF;
+        composed = h264_sbs_compose_half_black(h, pict, svc_role);
+        h264_note_standalone_delivery(h, composed);
+        h264_note_pair_key_mismatch(h, older, waiting);
+        *got_frame = 1;
+        h->sbs_pair_pending = h->sbs_pair_count[0] && h->sbs_pair_count[1];
+        return 3;
+    }
+
+    /* Same access-unit time (or no clock to tell them apart): finish the queued
+     * dependent half first, because a composed frame inherits its properties. */
+    av_frame_unref(pict);
+    ret = finalize_frame(h, pict, dep, &got);
+    if (ret < 0)
+        return ret;
+    if (!got) {
+        /* The queued dependent head still cannot be shown (gray gap / corrupt
+         * filtering): the pair is not consumed and the arrival has joined its
+         * queue above - a spent turn, reported as the hold whose next-turn
+         * retry is the contract (see the older-head retry). */
+        h->sbs_pair_pending = 1;
+        *got_frame = 0;
+        return 1;
+    }
+
+    h264_sbs_q_pop(h, 0);
+    h264_sbs_q_pop(h, 1);
+    ret = h264_sbs_assemble(h, pict, base, dep);
+    if (ret < 0)
+        return ret;
+    if (ret > 0) {
+        h264_sbs_pair_audit(h, base, dep);
+    } else {
+        /* Not assemblable: the popped dependent half went out composed with a
+         * black base side (*got_frame set below), so this turn delivered as
+         * much as any other standalone shipment and must say so - returning 0
+         * here would have the caller rebuild the frame it just destroyed. */
+        composed = h264_sbs_compose_half_black(h, pict, 1);
+        h264_note_standalone_delivery(h, composed);
+    }
+    *got_frame = 1;
+    h->sbs_pair_pending = h->sbs_pair_count[0] && h->sbs_pair_count[1];
+    return ret > 0 ? 2 : 3;
+}
+
+/* Post-process a just-finalized multiview frame for the native SBS composed
+ * output. Halves are paired by access-unit identity (h264_sbs_pair_key()): a
+ * pending half and an arrival weld only when they carry the same access-unit
+ * time; an orphan from a perturbed session start ships standalone rather than
+ * sliding the whole opposite eye by one (see the block comment above and the
+ * pair branch below). Returns
  * 0 = deliver as-is, 1 = half held for its partner (*got_frame cleared),
- * 2 = assembled side-by-side frame in `pict`, 3 = the oldest held half of
- * this role shipped standalone, composed with a black opposite half
- * (*got_frame set) while the new half is held, or a negative error code. */
+ * 2 = assembled side-by-side frame in `pict`, 3 = a composed half shipped
+ * standalone with a black opposite half (*got_frame set) - either a queue
+ * overflow shipping its oldest half while holding the new one, or the older of
+ * two halves that met without belonging to the same access unit - or a
+ * negative error code. */
 static int h264_sbs_process(H264Context *h, AVFrame *pict,
                             H264Picture *out, int *got_frame)
 {
@@ -2433,9 +2623,78 @@ static int h264_sbs_process(H264Context *h, AVFrame *pict,
      * the dependent half (view_idx 1). */
     role = out->view_idx;
 
+    /* A previous key mismatch may have left a complete pair queued behind the
+     * half it just shipped. Give that queued half this turn before the arrival
+     * joins the queues; otherwise the arrival would be compared against the
+     * older orphan instead of its own partner. */
+    ret = h264_sbs_service_queued(h, pict, out, role, got_frame);
+    if (ret)
+        return ret;
+
     if (h264_sbs_q_head(h, 1 - role)) {
-        /* The other role holds a pending half: this arrival completes the
-         * next pair (k-th with k-th). The arrival is its role's head by
+        /* The other role holds a pending half. Weld it to this arrival only
+         * when the two carry the SAME access-unit time (h264_sbs_pair_key()).
+         * A pending half and an arrival of different access units mean one
+         * view lost or gained an output somewhere - the shape a seek or warm
+         * session start leaves behind - and pairing them by queue position
+         * then relabels one eye as its neighbour's and keeps it one access unit
+         * off for the rest of the stream. Ship the older of the two orphaned
+         * halves out on its own (fail-visible, black opposite half) and let the
+         * newer one wait for a partner of its own, so the loss stays local to
+         * the access unit that caused it. */
+        H264Picture *other = h264_sbs_q_head(h, 1 - role);
+        int64_t k_arr = h264_sbs_pair_key(out);
+        int64_t k_oth = h264_sbs_pair_key(other);
+
+        if (k_arr != AV_NOPTS_VALUE && k_oth != AV_NOPTS_VALUE &&
+            k_arr != k_oth) {
+            if (k_oth < k_arr) {
+                /* The queued half is from an earlier access unit than this
+                 * arrival, so this role already delivered that access unit and
+                 * the queued half's partner is gone for good: ship it out
+                 * standalone and hold this arrival for its own partner. */
+                int got_other = 0;
+
+                av_frame_unref(pict);
+                ret = finalize_frame(h, pict, other, &got_other);
+                if (ret < 0)
+                    return ret;
+                if (!got_other)
+                    goto hold;      /* head unshowable now: hold and retry */
+                h264_sbs_q_pop(h, 1 - role);
+                if (role == 1)      /* the head just shipped is a base half */
+                    h264_iv_anchor_retain(h, other);
+                else
+                    other->reference &= ~DELAYED_PIC_REF;
+                composed = h264_sbs_compose_half_black(h, pict, 1 - role);
+                h264_note_standalone_delivery(h, composed);
+                h264_note_pair_key_mismatch(h, other, out);
+                *got_frame = 1;
+                /* hold the arrival until its own partner arrives */
+                out->reference |= DELAYED_PIC_REF;
+                h264_sbs_q_push(h, out, role);
+                h->sbs_pair_pending = h->sbs_pair_count[0] &&
+                                      h->sbs_pair_count[1];
+                return 3;
+            }
+            /* This arrival is from an earlier access unit than anything the
+             * other view still holds, so its partner has already left that
+             * queue: ship the arrival standalone and leave the newer head
+             * queued to await its own partner. */
+            if (role == 0)          /* a base half leaving the pipeline */
+                h264_iv_anchor_retain(h, out);
+            composed = h264_sbs_compose_half_black(h, pict, role);
+            h264_note_standalone_delivery(h, composed);
+            h264_note_pair_key_mismatch(h, out, other);
+            h->sbs_pair_pending = h->sbs_pair_count[0] &&
+                                  h->sbs_pair_count[1];
+            *got_frame = 1;
+            return 3;
+        }
+
+        /* The pending half and this arrival carry the same access-unit time
+         * (or there is no clock to tell them apart, and queue order stands):
+         * this arrival completes the pair. The arrival is its role's head by
          * construction, so the explicit heads are base/dependent. */
         H264Picture *base = (role == 0) ? out : h264_sbs_q_head(h, 0);
         H264Picture *dep  = (role == 1) ? out : h264_sbs_q_head(h, 1);
@@ -2525,6 +2784,8 @@ hold:
             h264_note_standalone_delivery(h, composed);
             out->reference |= DELAYED_PIC_REF;
             h264_sbs_q_push(h, out, role);
+            h->sbs_pair_pending = h->sbs_pair_count[0] &&
+                                  h->sbs_pair_count[1];
             return 3;
         }
         /* The oldest half cannot be shown right now (gray gap / corrupt
@@ -2611,6 +2872,43 @@ static int h264_sbs_drain_eof(H264Context *h, AVFrame *pict, int *got_frame)
 
     base = h264_sbs_q_head(h, 0);
     dep  = h264_sbs_q_head(h, 1);
+
+    /* The drain keys on the access unit like the live pairing: two heads from
+     * different access units were never a pair, and the older one met no
+     * partner for the whole stream. Ship that older head out on its own (its
+     * opposite half black) and keep the newer one queued for a call of its
+     * own, so a trailing orphan is not welded to an unrelated access unit.
+     * Two heads of one access unit - or a stream with no clock to tell them
+     * apart - assemble exactly as they always did below. */
+    {
+        int64_t k_base = h264_sbs_pair_key(base);
+        int64_t k_dep  = h264_sbs_pair_key(dep);
+
+        if (k_base != AV_NOPTS_VALUE && k_dep != AV_NOPTS_VALUE &&
+            k_base != k_dep) {
+            H264Picture *waiting;
+
+            role   = (k_base < k_dep) ? 0 : 1;
+            base   = h264_sbs_q_head(h, role);
+            waiting = h264_sbs_q_head(h, 1 - role);
+            ret = finalize_frame(h, pict, base, &got);
+            if (ret < 0)
+                return ret;               /* failed delivery, not an empty queue */
+            if (!got)
+                return 0;
+            h264_sbs_q_pop(h, role);
+            if (role == 0)
+                h264_iv_anchor_retain(h, base);
+            else
+                base->reference &= ~DELAYED_PIC_REF;
+            composed = h264_sbs_compose_half_black(h, pict, role);
+            h264_note_pair_key_mismatch(h, base, waiting);
+            *got_frame = 1;
+            h264_note_standalone_delivery(h, composed);
+            return 0;
+        }
+    }
+
     ret = finalize_frame(h, pict, dep, &got);
     if (ret < 0)
         return ret;                   /* failed delivery, not an empty queue */
