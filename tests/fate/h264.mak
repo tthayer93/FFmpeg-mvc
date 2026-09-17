@@ -203,11 +203,14 @@ FATE_H264  := $(FATE_H264:%=fate-h264-conformance-%)                    \
                fate-h264-mvc-diffcontent-allviews                        \
                fate-h264-mvc-diffcontent-default                         \
                fate-h264-mvc-diffcontent-view1                           \
-               fate-h264-mvc-uneven-base-allviews                        \
-               fate-h264-mvc-uneven-base-default                         \
-               fate-h264-mvc-uneven-base-view1                           \
-               fate-h264-mvc-uneven-dep-allviews                         \
-              fate-h264-ref-pic-mod-overflow                            \
+                fate-h264-mvc-uneven-base-allviews                        \
+                fate-h264-mvc-uneven-base-default                         \
+                fate-h264-mvc-uneven-base-view1                           \
+                fate-h264-mvc-uneven-dep-allviews                         \
+                fate-h264-mvc-baselead-default                            \
+                fate-h264-mvc-baselead-view1                              \
+                fate-h264-mvc-baselead-allviews                           \
+               fate-h264-ref-pic-mod-overflow                            \
               fate-h264-timecode                                        \
 
 FATE_H264-$(call FRAMECRC, H264, H264, H264_PARSER SCALE_FILTER) += $(FATE_H264_REINIT_TESTS:%=fate-h264-reinit-%)
@@ -215,7 +218,9 @@ FATE_H264-$(call FRAMECRC, H264, H264, H264_PARSER) += $(FATE_H264)
 FATE_H264-$(call FRAMECRC, H264, H264, H264_PARSER CROP_FILTER) +=      \
                          fate-h264-mvc-uneven-base-left                  \
                          fate-h264-mvc-uneven-base-right                 \
-                         fate-h264-mvc-uneven-dep-left
+                         fate-h264-mvc-uneven-dep-left                   \
+                         fate-h264-mvc-baselead-left                     \
+                         fate-h264-mvc-baselead-right
 FATE_H264-$(call FRAMEMD5, H264, H264, H264_PARSER) += fate-h264-extreme-plane-pred
 FATE_H264-$(call FRAMEMD5, MOV,  H264) += fate-h264-crop-to-container
 FATE_H264-$(call DEMDEC,   H264, H264, H264_PARSER)   += fate-h264-encparams
@@ -571,6 +576,35 @@ fate-h264-mvc-uneven-dep-allviews:                CMD = framecrc -view_ids -1 -i
 fate-h264-mvc-uneven-base-left:                   CMD = framecrc -view_ids -1 -i $(TARGET_SAMPLES)/h264-mvc/2view-uneven-base.h264 -vf crop=iw/2:ih:0:0
 fate-h264-mvc-uneven-base-right:                  CMD = framecrc -view_ids -1 -i $(TARGET_SAMPLES)/h264-mvc/2view-uneven-base.h264 -vf crop=iw/2:ih:iw/2:0
 fate-h264-mvc-uneven-dep-left:                    CMD = framecrc -view_ids -1 -i $(TARGET_SAMPLES)/h264-mvc/2view-uneven-dep.h264 -vf crop=iw/2:ih:0:0
+
+# The same two-view layout one more step on: 2view-baselead.h264 carries the
+# base view's first eight access units, starts the dependent view one access unit
+# later, and makes BOTH views frame-distinct rather than merely view-distinct.
+# The alternating DC coefficients are the reason these rows can prove what the
+# earlier flat fixtures cannot: with a constant colour inside each view, a
+# one-access-unit pairing shift is invisible, while a base view that is a frame
+# ahead of the dependent view makes the left half one alternating step off if the
+# composed pairing welds queue ordinals instead of access units.
+#
+# -default and -view1 remain the per-view source sequences. -allviews pins the
+# composed run's row grid and both halves together. -left and -right read the
+# composed run one eye at a time, which is the shipped-contract comparison that
+# previously had no fixture shape: the left half is the base standalone sequence,
+# including the first base half whose dependent partner never arrived, and the
+# right half is the dependent standalone sequence preceded by the black half that
+# carries that missing partner.
+#
+# Regenerated from the repository root as
+#
+#   perl tests/fate/h264-mvc/mvc-mkfix.pl --base-frames=8 --dep-frames=7 \
+#        --view1-start=1 --base=100 --base2=116 --dep=-100 --dep2=-116 \
+#        --out=tests/fate/h264-mvc/2view-baselead.h264
+fate-h264-mvc-baselead-default:                   CMD = framecrc -i $(TARGET_SAMPLES)/h264-mvc/2view-baselead.h264
+fate-h264-mvc-baselead-view1:                     CMD = framecrc -view_ids 1 -i $(TARGET_SAMPLES)/h264-mvc/2view-baselead.h264
+fate-h264-mvc-baselead-allviews:                  CMD = framecrc -view_ids -1 -i $(TARGET_SAMPLES)/h264-mvc/2view-baselead.h264
+
+fate-h264-mvc-baselead-left:                      CMD = framecrc -view_ids -1 -i $(TARGET_SAMPLES)/h264-mvc/2view-baselead.h264 -vf crop=iw/2:ih:0:0
+fate-h264-mvc-baselead-right:                     CMD = framecrc -view_ids -1 -i $(TARGET_SAMPLES)/h264-mvc/2view-baselead.h264 -vf crop=iw/2:ih:iw/2:0
 
 # The same two-view layout once more, this time with subtitle depth authored
 # into it: 2view-ofmd.h264 (tests/fate/h264-mvc/mvc-mkfix.pl --ofmd) carries the
