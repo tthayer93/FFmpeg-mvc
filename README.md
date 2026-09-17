@@ -128,15 +128,17 @@ Authored depth is the default, so a bare filter is the whole command:
         -filter_complex "[0:v]format=rgba[vc];[0:s:0]format=rgba[sub];[vc][sub]mvcsubdepth=eof_action=pass[out]" \
         -map "[out]" -c:v ffv1 subs.mkv
 
-`mvcsubdepth` knobs, all under `depth=` (whose default is `auto`):
+`mvcsubdepth` knobs, all under `depth=`:
 
+- `depth=auto` (the default): the depth the disc authored for
+  this track, taken from its metadata tag, `3d-plane-<lang>` or
+  bare `3d-plane`; a track with no usable tag renders flat.
 - `depth=flat`: both copies on the screen plane, authored depth
   ignored.
 - `depth=shift=<px>`: a constant shift instead of the authored
   depth, positive toward the viewer.
-- `depth=plane=<n>`: read sequence `n` (`0..31`) directly instead
-  of the track's metadata tag, `3d-plane-<lang>` or bare
-  `3d-plane`; a track with no usable tag renders flat.
+- `depth=plane=<n>`: reads depth sequence `n` (`0..31`) directly,
+  ignoring the track's tag.
 
 Keep `mvcsubdepth` right after the composed video source: stack
 filters drop the video's markers and `overlay` drops the subtitle's.
