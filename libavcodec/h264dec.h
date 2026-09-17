@@ -590,6 +590,16 @@ typedef struct H264Context {
      *  Rate-limited: first ten individually, then every hundredth. */
     int sbs_dup_stale;
 
+    /** Count of composed halves delivered standalone because they met a
+     *  pending half of the opposite view carrying a DIFFERENT access-unit
+     *  time than their own (h264_sbs_pair_key()): the pairing keys each half
+     *  to its access unit, so a half whose partner's output was lost at a
+     *  session start goes out on its own rather than being mis-paired with a
+     *  neighbouring access unit and sliding the whole stream by one. Every
+     *  trip is one locally-degraded row; a run of them says the skew is not
+     *  localised and belongs in a bug report. */
+    int sbs_pair_key_mismatch;
+
     /** Monotonic token generator for H264Picture.slot_epoch. Not synced:
      *  composing with cross-context state requires a serialized pipeline, and
      *  the output-band duplicate capture/emit sites run in the same
