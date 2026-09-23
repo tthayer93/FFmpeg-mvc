@@ -14,8 +14,19 @@ API changes, most recent first:
   Add AV_FRAME_DATA_MVC_SS_OFFSETS.
   Add AV_FRAME_DATA_MVC_SUB_PLANE.
 
+2026-09-12 - xxxxxxxxxx - lavc 63.13.100 - codec_id.h, defs.h
+  Add AV_CODEC_ID_ASTC and the AV_PROFILE_ASTC_* profile values.
+
+2026-09-09 - xxxxxxxxxx - lavc 63.12.100 - avcodec.h
+  Add FF_DCT_RVV to enable the RISC-V Vector FDCT implementation.
+
 2026-09-xx - xxxxxxxxxx - lavu 61.7.100 - samplefmt.h
   Add AV_SAMPLE_FMT_DSD.
+
+2026-09-08 - 053585bc91b - lavc 63.11.101 - mediacodec.h
+  av_mediacodec_release_buffer() and av_mediacodec_render_buffer_at_time()
+  now return AVERROR(ENOENT) when trying to render a buffer that was already
+  released or invalidated by a codec flush.
 
 2026-09-01 - xxxxxxxxxx - lavc 63.10.100 - avcodec.h
   Add AVCodecContext.skip_pred.
