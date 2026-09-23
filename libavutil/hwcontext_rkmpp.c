@@ -303,8 +303,9 @@ static int rkmpp_frames_init(AVHWFramesContext *hwfc)
             return AVERROR(ENOMEM);
     }
 
+    avfc->flags |= hwctx->flags;
     ret = mpp_buffer_group_get_internal(&avfc->buf_group,
-                                        MPP_BUFFER_TYPE_DRM | hwctx->flags | avfc->flags);
+                                        MPP_BUFFER_TYPE_DRM | avfc->flags);
     if (ret != MPP_OK) {
         av_log(hwfc, AV_LOG_ERROR, "Failed to get MPP internal buffer group: %d\n", ret);
         return AVERROR_EXTERNAL;

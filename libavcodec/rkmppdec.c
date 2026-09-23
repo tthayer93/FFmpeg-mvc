@@ -579,73 +579,78 @@ static int rkmpp_export_mastering_display(AVCodecContext *avctx, AVFrame *frame,
                                           MppFrameMasteringDisplayMetadata mpp_mastering)
 {
     AVMasteringDisplayMetadata *mastering = NULL;
-    AVFrameSideData *sd = NULL;
+    static const MppFrameMasteringDisplayMetadata zero_meta = { 0 };
     int mapping[3] = { 0, 1, 2 };
-    int chroma_den = 0;
-    int max_luma_den = 0;
-    int min_luma_den = 0;
-    int i;
+    int chroma_den;
+    int max_luma_den;
+    int min_luma_den;
+    int ret;
+
+    if (!memcmp(&mpp_mastering, &zero_meta, sizeof(zero_meta)))
+        return 0;
 
     switch (avctx->codec_id) {
-        case AV_CODEC_ID_HEVC:
-            // HEVC uses a g,b,r ordering, which we convert to a more natural r,g,b
-            mapping[0] = 2;
-            mapping[1] = 0;
-            mapping[2] = 1;
-            chroma_den = 50000;
-            max_luma_den = 10000;
-            min_luma_den = 10000;
-            break;
-        case AV_CODEC_ID_AV1:
-            chroma_den = 1 << 16;
-            max_luma_den = 1 << 8;
-            min_luma_den = 1 << 14;
-            break;
-        default:
-            return 0;
+    case AV_CODEC_ID_HEVC:
+        // HEVC uses a g,b,r ordering, which we convert to a more natural r,g,b
+        mapping[0] = 2;
+        mapping[1] = 0;
+        mapping[2] = 1;
+        chroma_den = 50000;
+        max_luma_den = 10000;
+        min_luma_den = 10000;
+        break;
+    case AV_CODEC_ID_AV1:
+        chroma_den = 1 << 16;
+        max_luma_den = 1 << 8;
+        min_luma_den = 1 << 14;
+        break;
+    default:
+        return 0;
     }
 
-    sd = av_frame_get_side_data(frame, AV_FRAME_DATA_MASTERING_DISPLAY_METADATA);
-    if (sd)
-        mastering = (AVMasteringDisplayMetadata *)sd->data;
-    else
-        mastering = av_mastering_display_metadata_create_side_data(frame);
-    if (!mastering)
-        return AVERROR(ENOMEM);
+    ret = ff_decode_mastering_display_new(avctx, frame, &mastering);
+    if (ret < 0)
+        return ret;
 
-    for (i = 0; i < 3; i++) {
-        const int j = mapping[i];
-        mastering->display_primaries[i][0] = av_make_q(mpp_mastering.display_primaries[j][0], chroma_den);
-        mastering->display_primaries[i][1] = av_make_q(mpp_mastering.display_primaries[j][1], chroma_den);
+    if (mastering) {
+        for (int i = 0; i < 3; i++) {
+            const int j = mapping[i];
+            mastering->display_primaries[i][0] =
+                av_make_q(mpp_mastering.display_primaries[j][0], chroma_den);
+            mastering->display_primaries[i][1] =
+                av_make_q(mpp_mastering.display_primaries[j][1], chroma_den);
+        }
+        mastering->white_point[0] = av_make_q(mpp_mastering.white_point[0], chroma_den);
+        mastering->white_point[1] = av_make_q(mpp_mastering.white_point[1], chroma_den);
+
+        mastering->max_luminance = av_make_q(mpp_mastering.max_luminance, max_luma_den);
+        mastering->min_luminance = av_make_q(mpp_mastering.min_luminance, min_luma_den);
+
+        mastering->has_luminance = 1;
+        mastering->has_primaries = 1;
     }
-    mastering->white_point[0] = av_make_q(mpp_mastering.white_point[0], chroma_den);
-    mastering->white_point[1] = av_make_q(mpp_mastering.white_point[1], chroma_den);
-
-    mastering->max_luminance = av_make_q(mpp_mastering.max_luminance, max_luma_den);
-    mastering->min_luminance = av_make_q(mpp_mastering.min_luminance, min_luma_den);
-
-    mastering->has_luminance = 1;
-    mastering->has_primaries = 1;
 
     return 0;
 }
 
-static int rkmpp_export_content_light(AVFrame *frame,
+static int rkmpp_export_content_light(AVCodecContext *avctx, AVFrame *frame,
                                       MppFrameContentLightMetadata mpp_light)
 {
     AVContentLightMetadata *light = NULL;
+    static const MppFrameContentLightMetadata zero_meta = { 0 };
+    int ret;
 
-    AVFrameSideData *sd = av_frame_get_side_data(frame, AV_FRAME_DATA_CONTENT_LIGHT_LEVEL);
-    if (sd)
-        light = (AVContentLightMetadata *)sd->data;
-    else
-        light = av_content_light_metadata_create_side_data(frame);
-    if (!light)
-        return AVERROR(ENOMEM);
+    if (!memcmp(&mpp_light, &zero_meta, sizeof(zero_meta)))
+        return 0;
 
-    light->MaxCLL  = mpp_light.MaxCLL;
-    light->MaxFALL = mpp_light.MaxFALL;
+    ret = ff_decode_content_light_new(avctx, frame, &light);
+    if (ret < 0)
+        return ret;
 
+    if (light) {
+        light->MaxCLL  = mpp_light.MaxCLL;
+        light->MaxFALL = mpp_light.MaxFALL;
+    }
     return 0;
 }
 
@@ -779,13 +784,14 @@ static int rkmpp_export_frame(AVCodecContext *avctx, AVFrame *frame, MppFrame mp
                                               (AVRational) { frame->width, frame->height });
     }
 
-    if (avctx->codec_id == AV_CODEC_ID_HEVC &&
+    if ((avctx->codec_id == AV_CODEC_ID_HEVC ||
+         avctx->codec_id == AV_CODEC_ID_AV1) &&
         (frame->color_trc == AVCOL_TRC_SMPTE2084 ||
          frame->color_trc == AVCOL_TRC_ARIB_STD_B67)) {
         ret = rkmpp_export_mastering_display(avctx, frame, mpp_frame_get_mastering_display(mpp_frame));
         if (ret < 0)
             return ret;
-        ret = rkmpp_export_content_light(frame, mpp_frame_get_content_light(mpp_frame));
+        ret = rkmpp_export_content_light(avctx, frame, mpp_frame_get_content_light(mpp_frame));
         if (ret < 0)
             return ret;
     }
