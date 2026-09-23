@@ -145,8 +145,8 @@ static int av1_metadata_update_fragment(AVBSFContext *bsf, AVPacket *pkt,
         }
     }
 
-    if (ctx->remove_dovi ||ctx->remove_hdr10plus) {
-        int provider_code, provider_oriented_code, application_identifier;
+    if (ctx->remove_dovi || ctx->remove_hdr10plus) {
+        int provider_code, provider_oriented_code;
         for (i = frag->nb_units - 1; i >= 0; i--) {
             if (frag->units[i].type == AV1_OBU_METADATA) {
                 AV1RawOBU *obu = frag->units[i].content;
@@ -165,17 +165,15 @@ static int av1_metadata_update_fragment(AVBSFContext *bsf, AVPacket *pkt,
                     if (provider_oriented_code == 0x800) {
                         av_log(bsf, AV_LOG_DEBUG, "Removing Dolby Vision RPU\n");
                         ff_cbs_delete_unit(frag, i);
+                        continue;
                     }
                 }
 
-                if (ctx->remove_hdr10plus && provider_code == ITU_T_T35_PROVIDER_CODE_SAMSUNG) {
-                    provider_oriented_code = AV_RB16(t35->payload + 2);
-                    application_identifier = AV_RB8(t35->payload + 4);
-                    // HDR10+ Metadata
-                    if (provider_oriented_code == 0x01 && application_identifier == 0x04) {
-                        av_log(bsf, AV_LOG_DEBUG, "Removing HDR10+ Metadata\n");
-                        ff_cbs_delete_unit(frag, i);
-                    }
+                if (ctx->remove_hdr10plus &&
+                    ff_itut35_is_hdr10plus(t35->itu_t_t35_country_code,
+                                          t35->payload, t35->payload_size)) {
+                    av_log(bsf, AV_LOG_DEBUG, "Removing HDR10+ Metadata\n");
+                    ff_cbs_delete_unit(frag, i);
                 }
             }
         }
