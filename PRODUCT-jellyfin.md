@@ -678,4 +678,170 @@ verbatim - one attribution and one test inconsistency - on the record.
   build's own binary. Certification for a fix that moves no byte
   of software output is this compile leg, this gate, and these
   byte-identical goldens together.
+- **Queue-sync ship onto their -5 build (2026-09-23).** This tree builds
+  and ships as **`n8.1.2-mvc8-jf5`**, superseding `n8.1.2-mvc7-jf4`. On
+  top of the tree recorded above, the delta is nine commits: the seven
+  queue commits named below, the version commit that names this build,
+  and this entry. The release tag for this state is that same string,
+  so tag, `VERSION` file and banner state one identity over one tree.
+- **Why both parts of the suffix moved (2026-09-23).** "Build identity"
+  above reserves its `-jf<N>` part for one event: their build line
+  moving, and this branch realigning to the new build. That event
+  happened - `jellyfin/jellyfin-ffmpeg` issued `v8.1.2-5` - so the
+  pointer moves from `-jf4` to `-jf5`, and this build is the drop-in for
+  **`jellyfin-ffmpeg v8.1.2-5`**. The `mvc` part moved for the reason
+  every entry above records for it: content from that build line is
+  source in this tree now, and that part counts this branch's own code
+  delta, so it moves from 7 to 8 - the same counter moving the same way
+  it moved when this branch first took their queue.
+- **The FFmpeg base stays 8.1.2, and that is the design (2026-09-23).**
+  Their `v8.1.2-5` is the fifth issue of an FFmpeg 8.1.2 build with a
+  patch queue on top of it, not a newer FFmpeg. So the `n8.1.2` part of
+  this branch's name - the part stating which FFmpeg release a build
+  sits on - does not move here, and this line stays an 8.1.2 line even
+  while this fork's own 8.1 release line advances past 8.1.2. What this
+  branch keeps is the rule that its FFmpeg base follows the base of the
+  build its own name points at: taking a newer FFmpeg micro than their
+  build uses would put a `-jf5` pointer on a build line that does not
+  exist, and would leave this drop-in ahead of the server packages it
+  exists to replace. The other half of that rule is on the record with
+  it: this ship lands no FFmpeg maintenance fix newer than 8.1.2, so
+  the only content moving here is theirs.
+- **The seven queue entries this ship lands (2026-09-23).** Their delta
+  from `v8.1.2-4` to `v8.1.2-5` is nineteen commits, and their queue
+  under `-5` holds a hundred patch files where `-4` held ninety-eight.
+  Nine of those commits are source this line cares about, and they land
+  here as seven commits - one per queue entry, in the order of their
+  queue, each carrying the bytes of the `-5` form of its patch file and
+  naming the commit of theirs it comes from in its own message. Five of
+  the seven update an entry this tree already held; two are new entries.
+  Every commit of this branch is titled after the queue entry it lands,
+  which is the handle to look it up by.
+  - `0019`, updated - queue file
+    `0019-add-fixes-for-qsv-vpp-filters.patch`, their commit "Fix the
+    hard cap on frame pool size for D3D11 hwctx". The fixed array-size
+    ceiling, and the clamp that applied it while a D3D11 frame pool was
+    being initialised, are deleted: a pool asking for more slots than
+    that constant died instead of growing.
+  - `0042`, updated - queue file
+    `0042-add-full-hwa-pipeline-for-rockchip-rk3588-platform.patch`,
+    from their two commits moving the Rockchip decoder onto the shared
+    decoder-side helpers for the two kinds of HDR metadata, and their
+    follow-up syncing further fixes from the out-of-tree decoder of the
+    same platform. The hardware decoder now asks those helpers to
+    allocate and attach its mastering-display and light-level side data
+    instead of open-coding that allocation, keeps an all-zero payload off
+    the frame instead of publishing it, covers AV1 frames as it already
+    covered HEVC ones, and passes the codec context's flags into the
+    buffer-pool request its frame init makes. The same queue entry also
+    mends the short-row tails of the packed ten-bit to planar software
+    conversion, where a width not divisible by the vector step lost its
+    last samples unseen.
+  - `0061`, updated - queue file
+    `0061-add-remove-dovi-hdr10plus-bsf.patch`, their commit "Make
+    HDR10+ removal more precise". The filter that strips HDR10+ dynamic
+    metadata from an HEVC stream used to sniff the leading bytes of
+    every SEI packet and delete the whole packet on a match, which took
+    unrelated messages that merely started the same way; the `-5` form
+    reads the packet's message list and removes only the registered
+    user-data messages that are HDR10+, dropping the packet only once no
+    message is left in it. Asking "is this HDR10+" is now one shared
+    helper the HEVC and AV1 filters use alike, and the AV1 path no
+    longer re-reads a Dolby-Vision packet as something else there.
+  - `0074`, updated - queue file
+    `0074-fix-mapped-hwframe-to-swframe-swscale-conversion.patch`, their
+    commit "Fix using hwmap with swscale unstable", and its follow-up on
+    the test reference that assumption had been written into. Setting up
+    a software-scale frame now derives both pixel-format descriptors up
+    front and asks for a hardware frames context only where the format
+    really is a hardware one, so mapping a frame into the scaler no
+    longer rests on the assumption that every such frame arrives with a
+    pool of its own.
+  - `0079`, updated - queue file
+    `0079-add-fixes-for-vaapi-drm-prime-vulkan-interop.patch`, their
+    commit "Fix potential RADV hang with linear images on ARM64".
+    Binding a linear Vulkan image now asks for device-local memory
+    first and falls back to host-visible memory only when that request
+    is refused, instead of preferring the host-visible path outright;
+    that preference is what could hang the driver.
+  - `0099`, new - queue file
+    `0099-fix-qsv-av1-decoder-exporting-hdr-side-data.patch`, from their
+    commit "Fix QSV AV1 decoder exporting HDR side data" and its polish
+    follow-up. The QSV path's HDR metadata export is now one routine
+    shared by the HEVC and AV1 hardware decoders, choosing its mapping
+    and its luminance denominators per codec, running for AV1 once the
+    runtime reports itself ready for it. Before this, the AV1 decoder
+    exported HEVC's reading of the same bytes.
+  - `0100`, new - queue file
+    `0100-backport-trim-bitstream-filter.patch`, their commit "Backport
+    trim bitstream filter". A trim at packet level: a start bound and an
+    end bound, each naming the quantity it is counted on, the unit it is
+    given in and what it is counted from; packets a bound falls inside
+    are trimmed rather than only kept or dropped, and an optional
+    preroll exports the packets ahead of the range that a decoder needs
+    in order to open on the first packet kept - flagged for that decoder
+    to drop, so the frames delivered still begin where the caller asked.
+- **The standing refusal, re-checked on the -5 queue (2026-09-23).**
+  `0054-add-ac4-decoder-for-atsc-3-0.patch` is the one queue entry this
+  branch refuses, and `-5` carries work on exactly that lineage: one of
+  the nineteen commits in their window syncs that parser and decoder.
+  The finding of 2026-09-08 stands unchanged. That import is
+  GPL-3-or-later code, and the same patch lifts the float
+  reverse-multiply routine out of `libavutil/float_dsp.c` into a new
+  GPL-3 file that libavutil builds unconditionally - which would place
+  GPL-3-only code inside the library this product ships as LGPL-2.1 or
+  later, whatever `./configure` is told. This ship relaxes none of it,
+  and the tree is proved clean of it again here: neither file that patch
+  would add exists, `ac4` appears in none of `configure`,
+  `libavcodec/Makefile`, `allcodecs.c` or `parsers.c`, and the LGPL form
+  of that routine is still the one in place where it has always lived.
+  The route back is unchanged and remains the honest answer if that
+  audio system is ever wanted: keep the gated decoder and parser,
+  restore the small LGPL function to the file it came from, and leave
+  the two GPL-3 files out. Of their nineteen commits, the nine of
+  source interest are the seven entries above, the one on that lineage
+  is refused with its reason, and the remaining nine are their own
+  release bookkeeping - changelog entries, packaging and
+  continuous-integration work in trees this branch does not carry.
+- **What this ship was measured on (2026-09-23).** Product gate on this
+  exact tree: `checkasm` 14903 checks, FATE 362 tests with 0 failures -
+  the same set this branch gated on at the ship above, none added and
+  none dropped - and the provenance self-test harness at 220 passed, 0
+  failed. That is the bar of the shared toolchain this ship runs under:
+  its self-test carries more assertions than the 191 the ships above
+  quoted. The composed contract row-sets replay byte-identical on this
+  build, regenerated from its own binary and compared row for row: the
+  composed 30 s row-set (720 rows, sha256 beginning `de08be58`) and the
+  composed 60 s grid (1439 rows, sha256 beginning `2675c6da`). The
+  libvpl hardware compile leg is green on this tree, and it is the leg
+  that builds the two new entries' code: the shared HDR export this ship
+  introduces sits in the same translation unit as the AV1 hardware
+  decoder it now serves, and the packet-trimming filter is its own
+  object there.
+- **The surface this ship adds, and the identity held (2026-09-23).**
+  One bitstream filter name is registered where it was not before, so
+  the bitstream-filter list answers with one entry more than the build
+  this ship supersedes prints. No decoder, encoder, filter-graph filter
+  or hardware acceleration method is added or removed: none of those
+  registrations is in this ship's diff. That keeps both capability
+  claims of this document standing as written - the lists the consuming
+  server probes are the ones it has always seen. The build-identity
+  claims hold for the same reason and by the same evidence: no library
+  version header moves with this ship, so the libav* versions a consumer
+  links against, and the SONAMEs derived from them, are exactly the ones
+  the build this ship supersedes had. That is the whole of what makes
+  this build a drop-in.
+- **Compatibility under the new number (2026-09-23).** The containment of
+  every entry above stands, and its counts read against their new build:
+  their queue at `v8.1.2-5` is a hundred patch files. Ninety-six of them
+  are contents this tree holds - the ninety-four landed one per commit
+  in the wave recorded above, the two `-5` entries this ship lands the
+  same way, and five of them now in their `-5` form. Three are contents
+  the earlier ports already carried, listed by name in "Ported fixes"
+  above, and one is the entry refused on licence. `-jf5` therefore
+  claims what `-jf4` claimed, one build line later: the applicable whole
+  of that build's queue is in this tree and can be shown entry by entry,
+  and nothing beyond it is claimed - not parity with their packaging,
+  and not that their queue is current with upstream's maintenance fixes,
+  which this branch tracks directly instead.
 
