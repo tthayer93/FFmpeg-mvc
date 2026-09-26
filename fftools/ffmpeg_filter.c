@@ -349,9 +349,13 @@ static void sub2video_copy_rect(uint8_t *dst, int dst_linesize, int w, int h,
  * The canvas is reused and re-pushed (a heartbeat duplicate pushes it again
  * without an update), so any previous marker is dropped before a fresh one is
  * written - a caption frame and its duplicates then always carry exactly one.
- * A stream that names no plane and paints no caption carries no marker at all,
- * leaving such inputs byte-identical to a build without this feature. */
-static void sub2video_stamp_plane(InputFilterPriv *ifp, AVFrame *frame)
+ * A heartbeat duplicate also gets its own bit, so a consumer that pairs by pts
+ * can keep the clock witness out of the display schedule without guessing.
+ * A stream that names no plane, paints no caption and is not re-pushing carries
+ * no marker at all, leaving those inputs byte-identical to a build without this
+ * feature. */
+static void sub2video_stamp_plane(InputFilterPriv *ifp, AVFrame *frame,
+                                  int heartbeat)
 {
     int plane     = ifp->opts.sub_plane_id;
     int has_plane = plane >= 0;
@@ -365,12 +369,13 @@ static void sub2video_stamp_plane(InputFilterPriv *ifp, AVFrame *frame)
     if (ifp->sub2video.bbox_valid &&
         (ifp->sub2video.origin_x > 32767 || ifp->sub2video.extent_w > 32767))
         has_bbox = 0;
-    if (!has_plane && !has_bbox)
+    if (!has_plane && !has_bbox && !heartbeat)
         return;
 
     buf[0] = has_plane ? (uint8_t)plane : FF_SUB_PLANE_ID_NONE;
     buf[1] = (has_plane ? FF_SUB_PLANE_FLAG_PLANE : 0) |
-             (has_bbox  ? FF_SUB_PLANE_FLAG_BBOX  : 0);
+             (has_bbox  ? FF_SUB_PLANE_FLAG_BBOX  : 0) |
+             (heartbeat ? FF_SUB_PLANE_FLAG_HEARTBEAT : 0);
     if (has_bbox) {
         AV_WL16(buf + 2, (uint16_t)(int16_t)ifp->sub2video.origin_x);
         AV_WL16(buf + 4, (uint16_t)(int16_t)ifp->sub2video.extent_w);
@@ -394,14 +399,42 @@ static void sub2video_stamp_plane(InputFilterPriv *ifp, AVFrame *frame)
     }
 }
 
-static void sub2video_push_ref(InputFilterPriv *ifp, int64_t pts)
+/* Push the current canvas into the filtergraph, stamped with the pts at which
+ * its CONTENT takes effect.
+ *
+ * CONTRACT, relied on by anything downstream that pairs the canvas by
+ * timestamp rather than by arrival (the mvcsubdepth filter is the consumer):
+ * the push stream below is a display SCHEDULE in pts, not a log of when a
+ * subtitle happened to be decoded.
+ *
+ *   - a caption canvas is pushed at the caption's own start pts
+ *     (sub->pts + start_display_time), whatever moment that subtitle reaches
+ *     us;
+ *   - a cleared canvas is pushed at the END pts of the caption it retires
+ *     (ifp->sub2video.end_pts), not at the heartbeat that happened to be
+ *     current when we noticed the end;
+ *   - a heartbeat re-push (sub2video_heartbeat()'s else branch) carries the
+ *     SAME content again at the heartbeat pts, so it can never change which
+ *     epoch covers an output frame; it is stamped as a heartbeat so the
+ *     consumer can tell that clock witness from a display edge; and
+ *   - at input EOF the final clear is pushed at the last known end pts before
+ *     the source is closed.
+ *
+ * So the epoch covering an output pts P is always "the last push at or before
+ * P", which is a property of the pts values alone and therefore reproducible.
+ * Consequences to preserve when editing: do not coalesce pushes, do not push
+ * content under a pts other than the one its display interval starts at, and
+ * keep the heartbeat pts strictly increasing (last_pts guards it). The -1 in
+ * sub2video_heartbeat() is a deliberate one-tick bias for streams muxed behind
+ * video; mvcsubdepth accounts for it at the end of the video clock. */
+static void sub2video_push_ref(InputFilterPriv *ifp, int64_t pts, int heartbeat)
 {
     AVFrame *frame = ifp->sub2video.frame;
     int ret;
 
     av_assert1(frame->data[0]);
     ifp->sub2video.last_pts = frame->pts = pts;
-    sub2video_stamp_plane(ifp, frame);
+    sub2video_stamp_plane(ifp, frame, heartbeat);
     ret = av_buffersrc_add_frame_flags(ifp->ifilter.filter, frame,
                                        AV_BUFFERSRC_FLAG_KEEP_REF |
                                        AV_BUFFERSRC_FLAG_PUSH);
@@ -418,10 +451,17 @@ static void sub2video_update(InputFilterPriv *ifp, int64_t heartbeat_pts,
     int8_t *dst;
     int     dst_linesize;
     int num_rects;
+    int heartbeat;
     int64_t pts, end_pts;
     FFSubBBox bbox;
 
     ff_sub_bbox_reset(&bbox);
+
+    /* The only sub2video_update() call that does not change the displayed
+     * caption is the first heartbeat, which exists to give the graph a canvas
+     * at all.  Mark that one as a heartbeat; a clear at a real end pts is a
+     * schedule edge, not a duplicate. */
+    heartbeat = !sub && ifp->sub2video.initialize;
 
     if (sub) {
         pts       = av_rescale_q(sub->pts + sub->start_display_time * 1000LL,
@@ -462,7 +502,7 @@ static void sub2video_update(InputFilterPriv *ifp, int64_t heartbeat_pts,
     ifp->sub2video.origin_x   = ifp->sub2video.bbox_valid ?
                                 ff_sub_bbox_center_x(&bbox) : 0;
     ifp->sub2video.extent_w   = ff_sub_bbox_width(&bbox);
-    sub2video_push_ref(ifp, pts);
+    sub2video_push_ref(ifp, pts, heartbeat);
     ifp->sub2video.end_pts = end_pts;
     ifp->sub2video.initialize = 0;
 }
@@ -3083,7 +3123,7 @@ static void sub2video_heartbeat(InputFilter *ifilter, int64_t pts, AVRational tb
            overlaid subpicture and its start/end times */
         sub2video_update(ifp, pts2 + 1, NULL);
     else
-        sub2video_push_ref(ifp, pts2);
+        sub2video_push_ref(ifp, pts2, 1);
 }
 
 static int sub2video_frame(InputFilter *ifilter, AVFrame *frame, int buffer)
