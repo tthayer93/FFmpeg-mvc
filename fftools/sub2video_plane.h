@@ -37,6 +37,9 @@
 #define FF_SUB_PLANE_ID_NONE     0xFF
 #define FF_SUB_PLANE_FLAG_PLANE  0x01
 #define FF_SUB_PLANE_FLAG_BBOX   0x02
+/* Set only on a heartbeat duplicate re-push.  Such a push carries content that
+ * is already on screen; it is a clock witness, not a display schedule edge. */
+#define FF_SUB_PLANE_FLAG_HEARTBEAT 0x04
 
 /* Highest plane a tag may name; matches the depth-sequence ceiling the OFMD
  * metadata carries and the plane_id byte's meaningful range. */

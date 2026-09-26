@@ -50,9 +50,13 @@
 #include "libavutil/avassert.h"
 #include "libavutil/common.h"
 #include "libavutil/error.h"
+#include "libavutil/fifo.h"
 #include "libavutil/frame.h"
+#include "libavutil/mathematics.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/pixdesc.h"
+#include "libavutil/rational.h"
 #include "libavutil/stereo3d.h"
 #include "libswscale/swscale.h"
 #include "avfilter.h"
@@ -73,9 +77,70 @@
  * its alpha in. */
 #define PIX_STEP 4
 
+/* THE PTS-KEYED PAIRING CONTRACT (why this filter does not run on framesync)
+ *
+ * The rule this filter implements, in one line:
+ *
+ *   the canvas painted for an output frame at pts P is the subtitle epoch
+ *   whose DISPLAY INTERVAL covers P - the last non-heartbeat epoch that started
+ *   before P and is superseded by no epoch that also starts at or before P.
+ *   An epoch whose pts is exactly P is the edge itself: it has taken effect but
+ *   the frame on that exact grid line is the last one carrying the previous
+ *   state.  Nothing the filter paints depends on anything else; in particular
+ *   it does not depend on when a frame happened to arrive.
+ *
+ * The generic framesync helper cannot express that rule for this filter's
+ * shipping option combination.  The shipping graph runs mvcsubdepth with
+ * eof_action=pass, which makes framesync drop the sync flag from the subtitle
+ * input (framesync.c gives only the main input a sync level), so
+ * ff_framesync_get_frame() hands back whatever canvas last ARRIVED, and
+ * framesync_advance() replaces it only when a canvas pts lands exactly on the
+ * event pts.  Arrival order is decided by the transcoder's subtitle heartbeat,
+ * which runs on a different thread from the filter graph, so at a caption start
+ * or end the canvas held for an output frame can flip between two runs of the
+ * same command over the same input bytes.  That is a scheduling race, not
+ * arithmetic: a cold, no-seek repeat of the shipping command was measured to
+ * differ on 27 of 14386 overlay rows with every underlying pad byte-identical,
+ * and adding -loglevel alone moved a caption start row.
+ *
+ * The transcoder side already supplies the interval information, unchanged:
+ * every canvas the sub2video choke point pushes carries the pts at which its
+ * content takes effect - a caption at its own start pts, a cleared canvas at
+ * the previous caption's end pts - and the heartbeat re-pushes in between carry
+ * the same content again under a heartbeat stamp.  Those duplicates are only
+ * watermarks proving that the subtitle side has advanced; they do not enter the
+ * display schedule.  The rule is therefore recoverable from the pts stream
+ * alone, which is what the two queues below do:
+ *
+ *   sub_q   - display-schedule canvases held in ascending push pts; the head is
+ *             the covering epoch.  A canvas arriving out of pts order (a caption
+ *             cleared at an end pts that reaches us after a later push) is
+ *             inserted into position, so the order the queue keeps is pts order,
+ *             not arrival order.
+ *   main_q  - main frames held until the subtitle side has passed their pts.
+ *
+ * A main frame at P is emitted once a canvas starting strictly after P has
+ * arrived (that push is the watermark proving no future canvas can still land
+ * at or before P), or once the subtitle side has ended.  Waiting for that
+ * watermark is what removes the boundary race, and it costs about one frame of
+ * latency.  Framesync cannot be told to "wait for the secondary past the
+ * primary" at all under eof_action=pass, which is the second reason the pump
+ * lives here.
+ *
+ * The framesync OPTION SURFACE is kept as it was: FRAMESYNC_DEFINE_CLASS still
+ * defines eof_action/shortest/repeatlast/ts_sync_mode, and config_output()
+ * mirrors the same normalisation and the same four behaviours (repeat, endall,
+ * pass, and the ts_sync_mode=nearest choice) that ff_framesync_configure() and
+ * framesync_advance() used to give, so no spelling of this filter changes
+ * meaning.  Only the pump is bespoke. */
+typedef struct MVCSubEpoch {
+    AVFrame *frame;   /* a subtitle canvas the filter holds a reference to */
+    int64_t  pts;     /* its push pts, in the OUTPUT time base */
+} MVCSubEpoch;
+
 typedef struct MVCSubDepthContext {
     const AVClass *class;
-    FFFrameSync fs;
+    FFFrameSync fs;    /* carries the option surface only; the pump is bespoke */
 
     const char *depth;    /* the option's spelling of the mode, parsed at init */
     int eye_width;        /* 0 = take half of the video input's width */
@@ -97,6 +162,23 @@ typedef struct MVCSubDepthContext {
     unsigned nb_frames; /* frames delivered, of which: */
     unsigned nb_placed; /* got a subtitle and a window pair */
     unsigned nb_shifted;/* of those, got a non-zero per-eye displacement */
+
+    /* Bespoke, pts-keyed pairing state (see the contract above). */
+    int eof_action;         /* EOF_ACTION_*, after the framesync normalisation */
+    int ts_nearest;         /* ts_sync_mode=nearest, mirrored from the class   */
+    AVRational in1_tb;      /* subtitle input time base (canvas pts live here) */
+    AVRational out_tb;      /* output (== video input) time base */
+    MVCSubEpoch **sub_q;    /* held canvases, ascending pts, head = covering   */
+    unsigned sub_q_nb;      /* entries in sub_q                                */
+    unsigned sub_q_cap;     /* slots allocated for sub_q                       */
+    AVFifo *main_q;         /* of AVFrame*, ascending pts, awaiting their turn */
+    int64_t sub_frontier;   /* greatest subtitle push pts seen, output base    */
+    int64_t sub_eof_pts;    /* pts the subtitle side ended with, output base   */
+    int64_t last_out_pts;   /* pts last given to ff_outlink_set_status         */
+    int64_t hb_bias;        /* one subtitle tick in the output base, >= 1      */
+    int     sub_eof;        /* subtitle input reached EOF */
+    int     main_eof;       /* main input reached EOF */
+    int     out_eof_set;    /* EOF status already set on the output */
 } MVCSubDepthContext;
 
 #define OFFSET(x) offsetof(MVCSubDepthContext, x)
@@ -142,6 +224,17 @@ static int check_marker(MVCSubDepthContext *s, AVFilterContext *ctx,
         s->marker_warned = 1;
     }
     return 0;
+}
+
+/* Is this subtitle canvas a heartbeat duplicate rather than a display edge?
+ * The transcoder stamps the answer on the frame; without the stamp, the safe
+ * reading is that a push is content, not a clock witness. */
+static int heartbeat_of(const AVFrame *sub)
+{
+    const AVFrameSideData *sd = av_frame_get_side_data(sub,
+                                                       AV_FRAME_DATA_MVC_SUB_PLANE);
+
+    return ff_mvc_sub_is_heartbeat(sd ? sd->data : NULL, sd ? sd->size : 0);
 }
 
 /* The depth sequence this frame's caption belongs to: the one the user named
@@ -290,18 +383,19 @@ static void blend_window(AVFrame *dst, int dst_x0, const AVFrame *src,
     }
 }
 
-static int place_frame(FFFrameSync *fs)
+/* Burn the covering epoch's caption into both eyes of one main frame.
+ *
+ * main is owned by the caller and made writable here; sub is the covering
+ * subtitle canvas (owned by the epoch queue), or NULL to leave the frame
+ * unchanged.  This is the whole of the filter's work; the pts-keyed decision
+ * of WHICH sub (if any) reaches it is made by the activation pump. */
+static int place_main(AVFilterContext *ctx, AVFrame *main, const AVFrame *sub)
 {
-    AVFilterContext *ctx = fs->parent;
     MVCSubDepthContext *s = ctx->priv;
-    AVFrame *main, *sub = NULL;
     const AVFrame *layer;
     int eye_w, eye_h, plane, off;
     int start_l, start_r, ret;
 
-    ret = ff_framesync_dualinput_get_writable(fs, &main, &sub);
-    if (ret < 0)
-        return ret;
     if (!sub)
         return ff_filter_frame(ctx->outputs[0], main);
 
@@ -348,7 +442,8 @@ static int place_frame(FFFrameSync *fs)
     s->nb_placed++;
     s->nb_shifted += off != 0;
 
-    return ff_filter_frame(ctx->outputs[0], main);
+    ret = ff_filter_frame(ctx->outputs[0], main);
+    return ret;
 }
 
 static av_cold int init(AVFilterContext *ctx)
@@ -364,20 +459,38 @@ static av_cold int init(AVFilterContext *ctx)
     }
     s->depth_mode  = mode;
     s->depth_param = param;
-
-    s->fs.on_event = place_frame;
+    /* The pairing pump is bespoke (see the pts-keyed contract above); s->fs is
+     * present only to carry the framesync option surface (eof_action and
+     * friends), whose default is resolved by the framesync child class and
+     * whose normalisation config_output() mirrors. */
     return 0;
 }
 
 static av_cold void uninit(AVFilterContext *ctx)
 {
     MVCSubDepthContext *s = ctx->priv;
+    AVFrame *m;
 
     av_log(ctx, AV_LOG_VERBOSE, "%u frames, %u with a subtitle placed, %u of "
            "those displaced per eye\n", s->nb_frames, s->nb_placed,
            s->nb_shifted);
 
-    ff_framesync_uninit(&s->fs);
+    /* s->fs was never ff_framesync_init()'d, so there is nothing to hand to
+     * ff_framesync_uninit(); the queues are ours to drain. */
+    for (unsigned i = 0; i < s->sub_q_nb; i++) {
+        av_frame_free(&s->sub_q[i]->frame);
+        av_freep(&s->sub_q[i]);
+    }
+    av_freep(&s->sub_q);
+    s->sub_q_nb = s->sub_q_cap = 0;
+    if (s->main_q) {
+        while (av_fifo_can_read(s->main_q) > 0) {
+            av_fifo_read(s->main_q, &m, 1);
+            av_frame_free(&m);
+        }
+        av_fifo_freep2(&s->main_q);
+    }
+
     sws_freeContext(s->sws);
     s->sws = NULL;
     av_frame_free(&s->canvas);
@@ -390,7 +503,6 @@ static int config_output(AVFilterLink *outlink)
     FilterLink *inl = ff_filter_link(inlink);
     FilterLink *outl = ff_filter_link(outlink);
     MVCSubDepthContext *s = ctx->priv;
-    int ret;
 
     s->eye_w = s->eye_width > 0 ? s->eye_width : inlink->w / 2;
     if (inlink->w < 2 || inlink->h < 1 || s->eye_w < 1 ||
@@ -405,19 +517,297 @@ static int config_output(AVFilterLink *outlink)
     outlink->sample_aspect_ratio = inlink->sample_aspect_ratio;
     outl->frame_rate = inl->frame_rate;
 
-    if ((ret = ff_framesync_init_dualinput(&s->fs, ctx)) < 0)
-        return ret;
+    /* The output rides the video input's clock; main frames reach the pump with
+     * pts already in this base, so a held main frame is emitted with its pts
+     * unchanged (exactly the identity that the framesync dualinput path used).
+     * Canvas pts are brought into this same base at the same rounding the old
+     * path used, so stable caption rows land on the same grid as before. */
+    s->out_tb = outlink->time_base = inlink->time_base;
+    s->in1_tb = ctx->inputs[1]->time_base;
+    s->hb_bias = FFMAX(1, av_rescale_q(1, s->in1_tb, s->out_tb));
+    s->sub_frontier = AV_NOPTS_VALUE;
+    s->sub_eof_pts  = AV_NOPTS_VALUE;
+    s->last_out_pts = AV_NOPTS_VALUE;
 
-    ret = ff_framesync_configure(&s->fs);
-    outlink->time_base = s->fs.time_base;
-    return ret;
+    /* Mirror what ff_framesync_configure() did to the option before the pump
+     * ever sees it: repeatlast=0 and eof_action=pass are one and the same
+     * thing, and shortest means endall.  Doing it here (rather than calling
+     * into framesync, which this filter does not run on) keeps every spelling
+     * of the option meaning exactly what it meant. */
+    if (!s->fs.opt_repeatlast || s->fs.opt_eof_action == EOF_ACTION_PASS)
+        s->eof_action = EOF_ACTION_PASS;
+    else if (s->fs.opt_shortest || s->fs.opt_eof_action == EOF_ACTION_ENDALL)
+        s->eof_action = EOF_ACTION_ENDALL;
+    else
+        s->eof_action = EOF_ACTION_REPEAT;
+    s->ts_nearest = s->fs.opt_ts_sync_mode > TS_DEFAULT;
+
+    /* AUTO_GROW matters: a fifo allocated without it refuses a write once it is
+     * full rather than growing, and this queue is never sized in advance - the
+     * point is that it holds whatever the subtitle side has run ahead of the
+     * video clock by, which is not known at configuration time. */
+    s->main_q = av_fifo_alloc2(0, sizeof(AVFrame *), AV_FIFO_FLAG_AUTO_GROW);
+    if (!s->main_q)
+        return AVERROR(ENOMEM);
+
+    return 0;
+}
+
+/* Hold one arriving canvas frame, inserted in pts order.
+ *
+ * Its push pts is normalised into the output base with the same rounding the
+ * framesync path used.  Insertion (rather than append) matters because the
+ * push stream is only nearly monotonic: a canvas cleared at a caption's end pts
+ * is pushed when that end is reached, which is normally before anything later
+ * arrives but can land behind an earlier push of a different epoch.  Keeping
+ * pts order here is what lets trim_covering() and cover_of() read the queue as
+ * a display schedule instead of as an arrival log.  Heartbeat re-pushes of the
+ * same content advance the watermark but do not enter the queue: they are the
+ * subtitle clock catching up, not a new display edge. */
+static int hold_canvas(AVFilterContext *ctx, AVFrame *frame)
+{
+    MVCSubDepthContext *s = ctx->priv;
+    MVCSubEpoch *e;
+    unsigned i;
+    int hb;
+    int64_t pts;
+
+    pts = av_rescale_q_rnd(frame->pts, s->in1_tb, s->out_tb,
+                           AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
+    hb = heartbeat_of(frame);
+    if (s->sub_frontier == AV_NOPTS_VALUE || pts > s->sub_frontier)
+        s->sub_frontier = pts;
+    if (hb) {
+        /* A heartbeat duplicate only proves that the subtitle side has reached
+         * this pts.  It carries a canvas that is already on screen, so it must
+         * not become a schedule edge or displace the epoch that is covering. */
+        av_frame_free(&frame);
+        return 0;
+    }
+
+    e = av_mallocz(sizeof(*e));
+    if (!e) {
+        av_frame_free(&frame);
+        return AVERROR(ENOMEM);
+    }
+    e->frame = frame;
+    e->pts = pts;
+
+    /* slots: 8 to start, then geometric - the queue holds one covering epoch,
+     * its successor, and whatever the subtitle side has run ahead of the
+     * video clock by. */
+    if (s->sub_q_nb == s->sub_q_cap) {
+        unsigned cap = s->sub_q_cap ? s->sub_q_cap * 2 : 8;
+        MVCSubEpoch **t = av_realloc_array(s->sub_q, cap, sizeof(*s->sub_q));
+        if (!t) {
+            av_frame_free(&e->frame);
+            av_freep(&e);
+            return AVERROR(ENOMEM);
+        }
+        s->sub_q = t;
+        s->sub_q_cap = cap;
+    }
+    /* behind the last entry with a pts at or before this one, so that of two
+     * pushes sharing a pts the later (the one actually on screen at that
+     * instant) is the one that ends up covering */
+    for (i = 0; i < s->sub_q_nb && s->sub_q[i]->pts <= e->pts; i++)
+        ;
+    if (i < s->sub_q_nb)
+        memmove(s->sub_q + i + 1, s->sub_q + i,
+                (s->sub_q_nb - i) * sizeof(*s->sub_q));
+    s->sub_q[i] = e;
+    s->sub_q_nb++;
+    return 0;
+}
+
+/* Drop the held canvases no output frame can ever select again.
+ *
+ * Output pts only increase, so a canvas is dead as soon as a later canvas
+ * starts at or before the current P: with the queue in pts order, everything
+ * up to the last entry starting at or before P except the head candidate goes.
+ * Called once per emitted frame, so the queue stays at the covering epoch plus
+ * whatever the subtitle side has run ahead of the video clock by. */
+static void trim_covering(AVFilterContext *ctx, int64_t P)
+{
+    MVCSubDepthContext *s = ctx->priv;
+
+    while (s->sub_q_nb >= 2 && s->sub_q[1]->pts <= P) {
+        av_frame_free(&s->sub_q[0]->frame);
+        av_freep(&s->sub_q[0]);
+        memmove(s->sub_q, s->sub_q + 1, (s->sub_q_nb - 1) * sizeof(*s->sub_q));
+        s->sub_q_nb--;
+    }
+}
+
+/* The canvas that covers output pts P, or NULL for "paint nothing".
+ *
+ * trim_covering() has run, so the head of sub_q is the last epoch that started
+ * at or before P (or the next one, if nothing has started yet).  Three rules
+ * can still say no, all of them the framesync behaviour this filter had before
+ * the pump, restated on pts:
+ *
+ *   - nothing has started before P: the frame passes through (framesync
+ *     EXT_NULL before the secondary's first frame);
+ *   - P is exactly the edge at which a new epoch starts: that frame keeps the
+ *     previous display state, and the new state takes the next grid line;
+ *   - eof_action=pass beyond the subtitle side's EOF: no secondary at all;
+ *   - ts_sync_mode=nearest: the upcoming epoch wins when its start is nearer
+ *     to P than the covering epoch's start is (the framesync NEAREST rule for a
+ *     non-sync secondary, which took the next frame when it was the closer one). */
+static const AVFrame *cover_of(const MVCSubDepthContext *s, int64_t P)
+{
+    const MVCSubEpoch *e0, *e1 = NULL;
+
+    if (s->sub_q_nb == 0)
+        return NULL;
+    e0 = s->sub_q[0];
+    if (s->sub_q_nb >= 2)
+        e1 = s->sub_q[1];
+
+    if (s->ts_nearest && e0->pts < P && e1 &&
+        e1->pts - P < P - e0->pts)
+        return e1->frame;
+    if (e0->pts >= P)
+        return NULL;
+    if (s->sub_eof && s->eof_action == EOF_ACTION_PASS &&
+        s->sub_eof_pts != AV_NOPTS_VALUE && P > s->sub_eof_pts)
+        return NULL;
+    return e0->frame;
+}
+
+/* May the epoch covering P be considered final yet?
+ *
+ * A canvas that starts strictly after P is the watermark proving that no future
+ * push can still land at or before P; subtitle EOF is the other proof, and it
+ * ends the schedule outright.  Until one of them arrives the frame waits in
+ * main_q - that wait is the fix.
+ *
+ * The end of the video clock is a third, narrower case.  The heartbeat that
+ * drives the subtitle side deliberately stamps itself one subtitle tick
+ * EARLIER than the video packet it rides (see sub2video_heartbeat() in
+ * fftools), so the watermark from the very last video packet can never satisfy
+ * a strict "later than P" test for the final frame.  Once the main input has
+ * sent its EOF status, that frame's pts is the last word on the video clock,
+ * so accept a watermark within one subtitle tick of it: the held frames then go
+ * out with the epoch covering them as of the watermark, instead of being
+ * stranded by a bias meant for a stream that has not ended. */
+static int epoch_decided(const MVCSubDepthContext *s, int64_t P)
+{
+    if (s->sub_eof)
+        return 1;
+    if (s->sub_frontier == AV_NOPTS_VALUE)
+        return 0;
+    if (s->sub_frontier > P)
+        return 1;
+    return s->main_eof && s->sub_frontier + s->hb_bias >= P;
 }
 
 static int activate(AVFilterContext *ctx)
 {
     MVCSubDepthContext *s = ctx->priv;
+    AVFilterLink *in0 = ctx->inputs[0];   /* video, the output clock */
+    AVFilterLink *in1 = ctx->inputs[1];   /* subtitle canvas */
+    AVFilterLink *out = ctx->outputs[0];
+    AVFrame *frame = NULL;
+    int ret, status;
+    int64_t pts;
 
-    return ff_framesync_activate(&s->fs);
+    FF_FILTER_FORWARD_STATUS_BACK_ALL(out, ctx);
+
+    /* 1. ingest subtitle canvas frames (kept in ascending push pts). */
+    while ((ret = ff_inlink_consume_frame(in1, &frame)) > 0) {
+        ret = hold_canvas(ctx, frame);
+        if (ret < 0)
+            return ret;
+    }
+    if (ret < 0)
+        return ret;
+    if (!s->sub_eof && ff_inlink_acknowledge_status(in1, &status, &pts)) {
+        s->sub_eof = 1;
+        s->sub_eof_pts = av_rescale_q_rnd(pts, in1->time_base, s->out_tb,
+                                          AV_ROUND_NEAR_INF |
+                                          AV_ROUND_PASS_MINMAX);
+        /* eof_action=endall (and its synonym shortest=1) ends the whole graph
+         * at the secondary's EOF - framesync set both inputs to EXT_STOP and
+         * closed the output once the secondary ran out.  Anything still held
+         * goes with it, which is the point of the option. */
+        if (s->eof_action == EOF_ACTION_ENDALL && !s->out_eof_set) {
+            ff_outlink_set_status(out, AVERROR_EOF, s->sub_eof_pts);
+            s->out_eof_set = 1;
+            return 0;
+        }
+    }
+
+    /* 2. ingest main frames; they wait in main_q until the subtitle side has
+     *    passed their pts (or the subtitle side ends), which is the whole of
+     *    the last-arrived race fix. */
+    while ((ret = ff_inlink_consume_frame(in0, &frame)) > 0) {
+        ret = av_fifo_write(s->main_q, &frame, 1);
+        if (ret < 0) {
+            av_frame_free(&frame);
+            return ret;
+        }
+    }
+    if (ret < 0)
+        return ret;
+    if (!s->main_eof && ff_inlink_acknowledge_status(in0, &status, &pts)) {
+        s->main_eof = 1;
+        s->last_out_pts = pts;
+    }
+
+    /* 3. emit every held main frame whose covering epoch is decided.  Output
+     *    pts increase, so stop at the first frame still short of its
+     *    watermark. */
+    while (av_fifo_can_read(s->main_q) > 0) {
+        AVFrame *main;
+        int64_t P;
+
+        av_fifo_peek(s->main_q, &main, 1, 0);
+        P = main->pts;
+        if (!epoch_decided(s, P))
+            break;
+
+        trim_covering(ctx, P);
+
+        av_fifo_drain2(s->main_q, 1);   /* take ownership of the head */
+        ret = ff_inlink_make_frame_writable(in0, &main);
+        if (ret < 0) {
+            av_frame_free(&main);
+            return ret;
+        }
+        ret = place_main(ctx, main, cover_of(s, P));  /* owns and emits main */
+        if (ret < 0)
+            return ret;
+    }
+
+    /* 4. EOF: the video clock drives the output.  The held frames above went
+     *    out in step 3 (sub_eof lifts the watermark gate outright, and the end
+     *    of the video clock covers the last one). */
+    if (!s->out_eof_set && s->main_eof && av_fifo_can_read(s->main_q) == 0) {
+        ff_outlink_set_status(out, AVERROR_EOF, s->last_out_pts);
+        s->out_eof_set = 1;
+        return 0;
+    }
+
+    /* 5. requests: advance the subtitle side only as far as the oldest held
+     *    main needs (keeps the canvas queue tiny and just-in-time), and keep
+     *    the video clock fed.  One request per undecided frame is enough: the
+     *    graph will come back to us when the canvas arrives. */
+    if (!s->out_eof_set && ff_outlink_frame_wanted(out)) {
+        if (av_fifo_can_read(s->main_q) > 0 && !s->sub_eof) {
+            AVFrame *main;
+            av_fifo_peek(s->main_q, &main, 1, 0);
+            if (!epoch_decided(s, main->pts))
+                ff_inlink_request_frame(in1);
+        }
+        if (!s->main_eof)
+            ff_inlink_request_frame(in0);
+        else if (!s->sub_eof)
+            ff_inlink_request_frame(in1);
+        return FFERROR_NOT_READY;
+    }
+
+    return 0;
 }
 
 static const AVFilterPad mvcsubdepth_inputs[] = {

@@ -53,6 +53,10 @@
 #define FF_MVC_SUB_PLANE_ID_NONE    0xFF
 #define FF_MVC_SUB_PLANE_FLAG_PLANE 0x01
 #define FF_MVC_SUB_PLANE_FLAG_BBOX  0x02
+/* The transcoder's heartbeat re-push carries a canvas whose content is already
+ * on screen.  A consumer that pairs canvases by pts can use this to keep a
+ * clock witness out of the display schedule. */
+#define FF_MVC_SUB_PLANE_FLAG_HEARTBEAT 0x04
 
 /* The eye a window is being cut for.  Input 0 of the filter is the composed
  * frame, whose left half is the left eye. */
@@ -126,6 +130,20 @@ static inline int ff_mvc_sub_center_x(const uint8_t *data, int size)
         return INT_MIN;
     origin_x = (int16_t)((unsigned)data[2] | ((unsigned)data[3] << 8));
     return (int)origin_x;
+}
+
+/**
+ * Read whether an AV_FRAME_DATA_MVC_SUB_PLANE payload marks a heartbeat
+ * duplicate.
+ *
+ * @return 1 when the marker is present and says this push is a heartbeat
+ *         duplicate, 0 otherwise (absent or malformed marker included).
+ */
+static inline int ff_mvc_sub_is_heartbeat(const uint8_t *data, int size)
+{
+    if (!data || size < FF_MVC_SUB_PLANE_SIZE)
+        return 0;
+    return (data[1] & FF_MVC_SUB_PLANE_FLAG_HEARTBEAT) != 0;
 }
 
 /* ---------------------------------------------------------------------------
