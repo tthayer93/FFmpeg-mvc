@@ -38,11 +38,11 @@
 #      requires byte-identical output, because those spellings of the option are
 #      still supposed to mean what they meant.
 #
-# The caption edges deliberately do not sit on frame times.  At an exact
-# boundary the answer is decided by the one-tick bias the transcoder's subtitle
-# heartbeat carries with it, which is a property of the schedule rather than of
-# this pairing; the real boundaries of that kind are covered by the media
-# acceptance runs, where the packet times are what they are.
+# Most caption edges deliberately miss the frame grid, but a few sit exactly on
+# it.  Those exact edges are what lock the filter's boundary rule: the frame on
+# the edge keeps the previous display state, and the edge's successor is only
+# allowed to cover the next grid line.  The media acceptance runs repeat that
+# check on real packet times.
 #
 # Usage:  sh tests/subtitle-canvas/determinism-harness.sh [path-to-ffmpeg]
 #         (default: the ffmpeg the build left at the repository root, or $FFMPEG)
@@ -103,6 +103,8 @@ D 820 1 40 120 400 40 1
 D 1620 2 60 300 480 40 2
 C 2380
 D 3180 3 80 480 400 40 3
+D 4000 5 20 200 240 40 1
+C 4400
 D 4780 4 100 600 320 40 4
 C 5580
 SCHEDULE
@@ -274,7 +276,7 @@ paint=$(awk -v tick="$TICK" '
             t = (i - 1) * tick
             want = 0; own = 0
             for (k = 1; k <= ns; k++)
-                if (at[k] <= t) { want = (kind[k] == "D"); own = want ? k : 0 }
+                if (at[k] < t) { want = (kind[k] == "D"); own = want ? k : 0 }
             if (want) cov++
             got = (over[i] != raw[i])
             if (got) paint++
@@ -306,7 +308,7 @@ expect=$(awk -v tick="$TICK" -v nf="$NF" '
         c = 0
         for (i = 0; i < nf; i++) {
             t = i * tick; want = 0
-            for (k = 1; k <= n; k++) if (at[k] <= t) want = (kind[k] == "D")
+            for (k = 1; k <= n; k++) if (at[k] < t) want = (kind[k] == "D")
             c += want
         }
         printf "%d", c
@@ -359,32 +361,64 @@ if [ "$barebad" = 0 ]; then ok "every frame outside every caption interval is pa
 else bad "$barebad frames outside the caption intervals were modified"; fi
 
 # -------------------------------------- [6] both sides of each caption boundary
+frame_want() {
+    printf '%s\n' "$paint" | awk -F'|' -v F="$1" '
+        $1 == "FRAME" && $2 == F { print $4; found = 1; exit }
+        END { if (!found) print "?" }'
+}
+frame_got() {
+    printf '%s\n' "$paint" | awk -F'|' -v F="$1" '
+        $1 == "FRAME" && $2 == F { print ($6 != $7); found = 1; exit }
+        END { if (!found) print "?" }'
+}
 for edge in $(awk '$1 == "D" || $1 == "C" { printf "%s:%s\n", $1, $2 }' "$T/schedule.txt"); do
     kind=${edge%%:*}; tms=${edge##*:}
-    after=$(((tms + TICK - 1) / TICK))  # the first frame at or after this edge
-    before=$((after - 1))               # and the frame just before it
-    got_after=$(printf '%s\n' "$paint" | awk -F'|' -v F="$after" '
-        $1 == "FRAME" && $2 == F { print ($6 != $7); found = 1; exit }
-        END { if (!found) print "?" }')
-    got_before=$(printf '%s\n' "$paint" | awk -F'|' -v F="$before" '
-        $1 == "FRAME" && $2 == F { print ($6 != $7); found = 1; exit }
-        END { if (!found) print "?" }')
+    if [ $((tms % TICK)) -eq 0 ]; then
+        exact=1
+        edge_frame=$((tms / TICK))
+        before=$((edge_frame - 1))
+        new=$((edge_frame + 1))       # the edge's state begins on the NEXT frame
+        edge_want=$(frame_want "$edge_frame")
+        edge_got=$(frame_got "$edge_frame")
+    else
+        exact=0
+        before=$(((tms - 1) / TICK))
+        new=$(((tms + TICK - 1) / TICK))
+        edge_frame=-1
+        edge_want=""
+        edge_got=""
+    fi
     # The expectation here comes from the schedule, not from the edge kind: a
     # caption that begins while another one is still on screen changes which
     # caption is painted, not whether a caption is painted at all.  The distinct
     # images above are what keep the filter honest about the first.
-    want_after=$(printf '%s\n' "$paint" | awk -F'|' -v F="$after" '
-        $1 == "FRAME" && $2 == F { print $4; found = 1; exit } END { if (!found) print "?" }')
-    want_before=$(printf '%s\n' "$paint" | awk -F'|' -v F="$before" '
-        $1 == "FRAME" && $2 == F { print $4; found = 1; exit } END { if (!found) print "?" }')
+    want_before=$(frame_want "$before")
+    got_before=$(frame_got "$before")
+    want_new=$(frame_want "$new")
+    got_new=$(frame_got "$new")
     case "$kind" in
         D) word="caption start" ;;
         *) word="caption end" ;;
     esac
-    if [ "$got_after" = "$want_after" ] && [ "$got_before" = "$want_before" ]; then
-        ok "$word at ${tms} ms: frame $before holds the previous state, frame $after the new one"
+    if [ "$before" -lt 0 ] || [ "$new" -ge "$NF" ]; then
+        bad "$word at ${tms} ms: frames $before/$new fall outside the fixture"
+        continue
+    fi
+    if [ "$exact" = 1 ]; then
+        if [ "$got_before" = "$want_before" ] &&
+           [ "$got_new" = "$want_new" ] &&
+           [ "$edge_got" = "$edge_want" ] &&
+           [ "$edge_got" = "$want_before" ]; then
+            ok "$word at ${tms} ms: frames $before/$edge_frame hold the previous state, frame $new the new one"
+        else
+            bad "$word at ${tms} ms: frame $before says $got_before (want $want_before), edge frame $edge_frame says $edge_got (want $edge_want), frame $new says $got_new (want $want_new)"
+        fi
     else
-        bad "$word at ${tms} ms: frame $before says $got_before (want $want_before), frame $after says $got_after (want $want_after)"
+        if [ "$got_before" = "$want_before" ] && [ "$got_new" = "$want_new" ]; then
+            ok "$word at ${tms} ms: frame $before holds the previous state, frame $new the new one"
+        else
+            bad "$word at ${tms} ms: frame $before says $got_before (want $want_before), frame $new says $got_new (want $want_new)"
+        fi
     fi
 done
 
