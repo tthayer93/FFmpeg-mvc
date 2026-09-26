@@ -623,15 +623,18 @@ static int hold_canvas(AVFilterContext *ctx, AVFrame *frame)
 /* Drop the held canvases no output frame can ever select again.
  *
  * Output pts only increase, so a canvas is dead as soon as a later canvas
- * starts at or before the current P: with the queue in pts order, everything
- * up to the last entry starting at or before P except the head candidate goes.
- * Called once per emitted frame, so the queue stays at the covering epoch plus
- * whatever the subtitle side has run ahead of the video clock by. */
+ * starts strictly before the current P: with the queue in pts order, everything
+ * up to the last entry starting before P except the head candidate goes.  A
+ * later entry at exactly P is the edge itself: this frame is the last one on
+ * which the previous epoch can cover, so the trim is deliberately strict and
+ * leaves the predecessor in place until the *next* frame.  Called once per
+ * emitted frame, so the queue stays at the covering epoch plus whatever the
+ * subtitle side has run ahead of the video clock by. */
 static void trim_covering(AVFilterContext *ctx, int64_t P)
 {
     MVCSubDepthContext *s = ctx->priv;
 
-    while (s->sub_q_nb >= 2 && s->sub_q[1]->pts <= P) {
+    while (s->sub_q_nb >= 2 && s->sub_q[1]->pts < P) {
         av_frame_free(&s->sub_q[0]->frame);
         av_freep(&s->sub_q[0]);
         memmove(s->sub_q, s->sub_q + 1, (s->sub_q_nb - 1) * sizeof(*s->sub_q));
@@ -641,17 +644,19 @@ static void trim_covering(AVFilterContext *ctx, int64_t P)
 
 /* The canvas that covers output pts P, or NULL for "paint nothing".
  *
- * trim_covering() has run, so the head of sub_q is the last epoch that started
- * at or before P (or the next one, if nothing has started yet).  Three rules
- * can still say no, all of them the framesync behaviour this filter had before
+ * trim_covering() has run, so the head of sub_q is the last display edge that
+ * started strictly before P, if there is one; otherwise it is the first edge at
+ * or after P.  The successor, when present, is the edge exactly at P or later.
+ * Four rules decide, all of them the framesync behaviour this filter had before
  * the pump, restated on pts:
  *
- *   - nothing has started before P: the frame passes through (framesync
+ *   - nothing has started strictly before P: the frame passes through (framesync
  *     EXT_NULL before the secondary's first frame);
- *   - P is exactly the edge at which a new epoch starts: that frame keeps the
- *     previous display state, and the new state takes the next grid line;
+ *   - P is exactly the edge at which a new epoch starts: in the default mode the
+ *     successor is not allowed to cover P, so that frame keeps the previous
+ *     display state and the new state takes the next grid line;
  *   - eof_action=pass beyond the subtitle side's EOF: no secondary at all;
- *   - ts_sync_mode=nearest: the upcoming epoch wins when its start is nearer
+ *   - ts_sync_mode=nearest: the successor may still win when its start is nearer
  *     to P than the covering epoch's start is (the framesync NEAREST rule for a
  *     non-sync secondary, which took the next frame when it was the closer one). */
 static const AVFrame *cover_of(const MVCSubDepthContext *s, int64_t P)
