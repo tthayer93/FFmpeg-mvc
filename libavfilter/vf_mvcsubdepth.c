@@ -83,11 +83,13 @@
  *
  *   the canvas painted for an output frame at pts P is the subtitle epoch
  *   whose DISPLAY INTERVAL covers P - the last non-heartbeat epoch that started
- *   before P and is superseded by no epoch that also starts at or before P.
- *   An epoch whose pts is exactly P is the edge itself: it has taken effect but
- *   the frame on that exact grid line is the last one carrying the previous
- *   state.  Nothing the filter paints depends on anything else; in particular
- *   it does not depend on when a frame happened to arrive.
+ *   strictly before P and is superseded by no epoch that also starts strictly
+ *   before P.  A successor takes a grid line only by starting strictly before
+ *   it: an epoch whose pts is exactly P is the edge itself - it has taken
+ *   effect for the frames after it, but the frame on that exact grid line is
+ *   the last one carrying the previous state.  Nothing the filter paints
+ *   depends on anything else; in particular it does not depend on when a frame
+ *   happened to arrive.
  *
  * The generic framesync helper cannot express that rule for this filter's
  * shipping option combination.  The shipping graph runs mvcsubdepth with
@@ -132,7 +134,14 @@
  * mirrors the same normalisation and the same four behaviours (repeat, endall,
  * pass, and the ts_sync_mode=nearest choice) that ff_framesync_configure() and
  * framesync_advance() used to give, so no spelling of this filter changes
- * meaning.  Only the pump is bespoke. */
+ * meaning.  Only the pump is bespoke.
+ *
+ * One visible difference from the old framesync dualinput path: the output now
+ * rides the video input's time base (config_output sets outlink->time_base to
+ * inlink->time_base) rather than the gcd of the two inputs that path chose.
+ * For the constant-frame-rate caption case this filter ships with, the
+ * delivered pts are numerically identical, but the coarser base is visible to
+ * anything downstream that reads it - an enc_time_base consumer, for one. */
 typedef struct MVCSubEpoch {
     AVFrame *frame;   /* a subtitle canvas the filter holds a reference to */
     int64_t  pts;     /* its push pts, in the OUTPUT time base */
@@ -530,16 +539,21 @@ static int config_output(AVFilterLink *outlink)
     s->last_out_pts = AV_NOPTS_VALUE;
 
     /* Mirror what ff_framesync_configure() did to the option before the pump
-     * ever sees it: repeatlast=0 and eof_action=pass are one and the same
-     * thing, and shortest means endall.  Doing it here (rather than calling
-     * into framesync, which this filter does not run on) keeps every spelling
-     * of the option meaning exactly what it meant. */
-    if (!s->fs.opt_repeatlast || s->fs.opt_eof_action == EOF_ACTION_PASS)
+     * ever sees it (framesync.c:141-148): two INDEPENDENT ifs, not an if/else
+     * chain.  The first collapses repeatlast=0 or an explicit eof_action=pass
+     * to pass; the second then promotes to endall if shortest is set OR the
+     * action already is endall.  Because they are independent, shortest=1 wins
+     * over a pass preselection: shortest=1:eof_action=pass and
+     * shortest=1:repeatlast=0 both mean endall, exactly as they did before the
+     * bespoke pump.  Seeding a local from the spelled action and re-running the
+     * same two ifs reproduces that ordering.  Doing it here (rather than
+     * calling into framesync, which this filter does not run on) keeps every
+     * spelling of the option meaning exactly what it meant. */
+    s->eof_action = s->fs.opt_eof_action;
+    if (!s->fs.opt_repeatlast || s->eof_action == EOF_ACTION_PASS)
         s->eof_action = EOF_ACTION_PASS;
-    else if (s->fs.opt_shortest || s->fs.opt_eof_action == EOF_ACTION_ENDALL)
+    if (s->fs.opt_shortest || s->eof_action == EOF_ACTION_ENDALL)
         s->eof_action = EOF_ACTION_ENDALL;
-    else
-        s->eof_action = EOF_ACTION_REPEAT;
     s->ts_nearest = s->fs.opt_ts_sync_mode > TS_DEFAULT;
 
     /* AUTO_GROW matters: a fifo allocated without it refuses a write once it is
