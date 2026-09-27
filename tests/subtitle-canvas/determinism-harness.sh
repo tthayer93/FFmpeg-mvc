@@ -36,7 +36,22 @@
 #      a stranded frame would be a bug of the same family as the one replaced;
 #   7. re-runs the shape with eof_action=repeat and with repeatlast=0 and
 #      requires byte-identical output, because those spellings of the option are
-#      still supposed to mean what they meant.
+#      still supposed to mean what they meant; and it re-runs the shape with
+#      shortest=1 (alone, and spelled together with eof_action=pass) and requires
+#      the whole graph to END at the subtitle side's EOF: shortest forces endall
+#      over a pass preselection, so both spellings - not eof_action=pass alone -
+#      must end the mvcsubdepth output short of the full delivery while the
+#      video-side pads it shares keep all their frames (how far an endall run
+#      drains before the EOF aborts the graph is scheduling-sensitive, so the lock
+#      is that it falls short, not a fixed frame count).
+#   8. builds a SECOND input from the same schedule with sup-fixture.awk - the raw
+#      presentation-graphic segment stream that the supdec demuxer reads, rather
+#      than the transport-stream wrapper caption-fixture.awk writes - and runs the
+#      whole painted==covered determinism battery against it: it must be
+#      deterministic across two runs, cover the frames the schedule says, and paint
+#      the identical picture to the wrapped input on all four pads, so the delivered
+#      overlay is shown to be a function of the pts schedule rather than of how the
+#      caption track was framed.
 #
 # Most caption edges deliberately miss the frame grid, but a few sit exactly on
 # it.  Those exact edges are what lock the filter's boundary rule: the frame on
@@ -170,13 +185,16 @@ G_TAIL="[rgba]"
 OV_PASS="mvcsubdepth=depth=plane=0:eof_action=pass"
 OV_REPEAT="mvcsubdepth=depth=plane=0:eof_action=repeat"
 OV_RLAST0="mvcsubdepth=depth=plane=0:repeatlast=0"
+OV_SHORTEST="mvcsubdepth=depth=plane=0:shortest=1"
+OV_SHORTEST_PASS="mvcsubdepth=depth=plane=0:shortest=1:eof_action=pass"
 G_FULL="${G_HEAD}${OV_PASS}${G_TAIL}"
 G_NOSUB="[0:v]split=3[mraw][ml0][mr0];[mraw]format=rgba[mrawf];\
 [ml0]format=rgba[ml0f];[mr0]format=rgba[mr0f];\
 [ml0f]crop=iw/2:ih:0:0[Ml];[mr0f]crop=iw/2:ih:iw/2:0[Mr]"
 
 # run_leg <tag> <graph> <pad=name>...
-# Writes $T/<tag>-<name>.fmd5 and its .payload (the "0," data lines).
+# Writes $T/<tag>-<name>.fmd5 and its .payload (the "0," data lines).  The input
+# file is $IN, which the second-input leg repoints at the raw .sup fixture.
 run_leg() {
     tag=$1; graph=$2; shift 2
     opts=""
@@ -184,7 +202,7 @@ run_leg() {
         opts="$opts -map ${spec%%=*} -f framemd5 -y $T/$tag-${spec##*=}.fmd5"
     done
     # shellcheck disable=SC2086
-    "$FF" -hide_banner -nostdin -v error -stats -i "$T/fixture.mkv" -an \
+    "$FF" -hide_banner -nostdin -v error -stats -i "${IN:-$T/fixture.mkv}" -an \
          -filter_complex "$graph" $opts 2>"$T/$tag.log"
     rc=$?
     for spec in "$@"; do
@@ -192,6 +210,10 @@ run_leg() {
     done
     return $rc
 }
+
+# The wrapped transport-stream fixture is the input by default; the second-input
+# leg repoints IN at the raw .sup fixture and restores it after.
+IN=$T/fixture.mkv
 
 # ------------------------------------------------------------------- the runs
 allran=1
@@ -212,6 +234,8 @@ run_leg "rep2" "${G_HEAD}${OV_REPEAT}${G_TAIL}" "[mrawf]=raw" "[Ml]=l" "[Mr]=r" 
 REPRC2=$?
 run_leg "rl0"  "${G_HEAD}${OV_RLAST0}${G_TAIL}" "[mrawf]=raw" "[Ml]=l" "[Mr]=r" "[rgba]=rgba"
 RL0RC=$?
+# The shortest=1 spellings are run several times each in section [7] (the endall
+# tail is scheduling-sensitive), so they are not run here.
 run_leg "nosub" "$G_NOSUB" "[mrawf]=raw" "[Ml]=l" "[Mr]=r"
 
 md5of() { if [ -s "$1" ]; then md5sum "$1" | awk '{printf "%s", $1}'; else printf NOFILE; fi; }
@@ -423,7 +447,9 @@ for edge in $(awk '$1 == "D" || $1 == "C" { printf "%s:%s\n", $1, $2 }' "$T/sche
 done
 
 # ------------------------------------------- [7] the option surface still means
-# what it meant: with this schedule the three spellings agree.
+# what it meant.  With this schedule eof_action=repeat and repeatlast=0 agree
+# byte for byte with eof_action=pass; shortest=1 is deliberately different - it
+# forces endall, which ends the whole graph at the subtitle side's EOF.
 if [ "$REPRC1" = 0 ] && [ "$REPRC2" = 0 ] && [ "$RL0RC" = 0 ]; then
     repsame=YES; rl0same=YES
     for pad in raw l r rgba; do
@@ -438,6 +464,142 @@ if [ "$REPRC1" = 0 ] && [ "$REPRC2" = 0 ] && [ "$RL0RC" = 0 ]; then
     else bad "repeatlast=0 differs from eof_action=pass on some pad"; fi
 else
     bad "the option-surface legs did not run (repeat rc=$REPRC1,$REPRC2 repeatlast=0 rc=$RL0RC)"
+fi
+
+# shortest=1 must still mean endall: the whole graph ends at the subtitle side's
+# EOF, so the [rgba] pad (the only one that runs through mvcsubdepth) falls short
+# of the full shipping delivery while the video-side pads it shares, which do not
+# pass through the filter, keep every frame.  shortest=1:eof_action=pass is the
+# SAME spelling - shortest forces endall over a pass preselection - so it must
+# ALSO fall short, and not run the full length that eof_action=pass alone gives.
+# (An if/else-if chain instead of framesync's two independent ifs would have let
+# the pass preselection win, delivering all NF frames.)  How far one endall run
+# drains before the subtitle EOF aborts the graph is scheduling-sensitive, and a
+# run whose held video queue happens to reach the video's own end delivers the
+# full count, so no single run is a fixed target.  The lock is therefore
+# statistical rather than a fixed frame count: a mis-mirror to pass NEVER ends
+# early, so if the shortest spelling delivers the full NF frames on EVERY one of
+# KSHORTEST runs it is behaving like pass and that fails; ending short on at least
+# one of those runs - with the video pads it shares still intact - is the pass.
+KSHORTEST=5
+# run_shortest_surface <graph> <tagbase>
+#   runs the graph KSHORTEST times, and echoes "<allrc> <min_rgba> <raw_at_min>"
+#   where min_rgba is the fewest [rgba] frames any single run delivered.
+run_shortest_surface() {
+    graph=$1; base=$2
+    min=-1; raw_at_min=0; allrc=0; k=1
+    while [ "$k" -le "$KSHORTEST" ]; do
+        run_leg "$base$k" "$graph" "[mrawf]=raw" "[Ml]=l" "[Mr]=r" "[rgba]=rgba" || allrc=1
+        n=$(nrows "$T/$base$k-rgba.payload")
+        if [ "$min" -lt 0 ] || [ "$n" -lt "$min" ]; then
+            min=$n; raw_at_min=$(nrows "$T/$base$k-raw.payload")
+        fi
+        k=$((k + 1))
+    done
+    printf '%s %s %s' "$allrc" "$min" "$raw_at_min"
+}
+set -- $(run_shortest_surface "${G_HEAD}${OV_SHORTEST}${G_TAIL}" "shrt")
+shrt_allrc=$1; shrt_min=$2; shrt_raw=$3
+set -- $(run_shortest_surface "${G_HEAD}${OV_SHORTEST_PASS}${G_TAIL}" "shrtp")
+shrtp_allrc=$1; shrtp_min=$2; shrtp_raw=$3
+if [ "$shrt_allrc" = 0 ]; then
+    if [ "$shrt_min" -gt 0 ] && [ "$shrt_min" -lt "$NF" ] && [ "$shrt_raw" = "$NF" ]; then
+        ok "shortest=1 forces endall: [rgba] fell short of $NF on at least one of $KSHORTEST runs (min $shrt_min, video pads at $shrt_raw)"
+    else
+        bad "shortest=1 ran like pass, not endall (min $shrt_min of $NF across $KSHORTEST runs, video side $shrt_raw)"
+    fi
+else
+    bad "the shortest option-surface legs did not run cleanly (shortest rc=$shrt_allrc)"
+fi
+if [ "$shrtp_allrc" = 0 ]; then
+    if [ "$shrtp_min" -gt 0 ] && [ "$shrtp_min" -lt "$NF" ] && [ "$shrtp_raw" = "$NF" ]; then
+        ok "shortest=1:eof_action=pass is endall, not pass: [rgba] fell short on at least one of $KSHORTEST runs (min $shrtp_min of $NF)"
+    else
+        bad "shortest=1:eof_action=pass ran like pass, not endall (min $shrtp_min of $NF across $KSHORTEST runs, video side $shrtp_raw)"
+    fi
+else
+    bad "the shortest:eof_action=pass option-surface leg did not run cleanly (rc=$shrtp_allrc)"
+fi
+
+# -------------------------------------- [8] second input: the raw .sup framing
+# The same display schedule, generated by sup-fixture.awk as the raw presentation
+# graphic segment stream that the supdec demuxer reads, instead of the transport-
+# stream wrapper caption-fixture.awk writes.  How a caption track is framed is not
+# part of the picture this filter paints: re-run the painted==covered determinism
+# battery through that second demuxer and require the same delivered bytes.
+IN=$T/sup.mkv
+if awk -f "$HERE/sup-fixture.awk" -v vw=$CAPW -v vh=$CAPH \
+       < "$T/schedule.txt" > "$T/caps.sup" 2>"$T/supgen.err"; then
+    ok "raw .sup caption track written ($(wc -c < "$T/caps.sup" | tr -d ' ') bytes, synthetic)"
+else
+    bad "raw .sup generation failed"
+    printf -- '--- generator stderr ---\n%s\n--- end ---\n' "$(cat "$T/supgen.err")"
+fi
+if "$FF" -hide_banner -nostdin -v error -copyts \
+         -f lavfi -i "smptebars=size=${FIXW}x${FIXH}:rate=${FR}:duration=${DUR}" \
+         -f sup -i "$T/caps.sup" -map 0:v -map 1:s:0 \
+         -c:v ffv1 -g "$FR" -fps_mode cfr -c:s copy -y "$T/sup.mkv" \
+         >"$T/supmux.log" 2>&1 && [ -s "$T/sup.mkv" ]; then
+    ok "sup fixture muxed from the raw segment stream: one video, one caption stream"
+else
+    bad "sup fixture mux failed"
+    printf -- '--- sup mux log ---\n%s\n--- end ---\n' "$(cat "$T/supmux.log")"
+fi
+supprobe=$("$FFPROBE" -v error -show_entries stream=codec_name \
+               -of default=nw=1:nk=1 "$T/sup.mkv" 2>&1)
+case "$supprobe" in
+    *pgs_subtitle*) ok "sup captions decode as a bitmap caption stream" ;;
+    *)              bad "sup captions missing or undecodable: $supprobe" ;;
+esac
+
+sup1rc=0; run_leg "sup1" "$G_FULL" "[mrawf]=raw" "[Ml]=l" "[Mr]=r" "[rgba]=rgba" || sup1rc=$?
+sup2rc=0; run_leg "sup2" "$G_FULL" "[mrawf]=raw" "[Ml]=l" "[Mr]=r" "[rgba]=rgba" || sup2rc=$?
+IN=$T/fixture.mkv
+
+suptally=0; supsame=YES
+for pad in raw l r rgba; do
+    [ "$(nrows "$T/sup1-$pad.payload")" = "$NF" ] || suptally=1
+    samefile "$T/sup2-$pad.payload" "$T/sup1-$pad.payload" || supsame=NO
+done
+if [ "$sup1rc" = 0 ] && [ "$sup2rc" = 0 ] && [ "$suptally" = 0 ]; then
+    ok "sup: all four pads delivered $NF frames off the raw .sup input"
+else
+    bad "sup: the raw .sup pads did not deliver $NF frames (rc=$sup1rc,$sup2rc)"
+fi
+if [ "$sup1rc" = 0 ] && [ "$sup2rc" = 0 ] && [ "$supsame" = YES ]; then
+    ok "sup: two runs are byte-identical on all four pads (deterministic through supdec)"
+else
+    bad "sup: the two raw .sup runs differ (framing-dependent nondeterminism)"
+fi
+# painted==covered, read off this fixture's own bytes against the schedule.
+supwrong=$(awk -v tick="$TICK" '
+    FILENAME ~ /schedule/         { kind[++ns] = $1; at[ns] = $2 + 0; next }
+    FILENAME ~ /sup1-raw\.payload/  { raw[FNR] = $NF; nr = FNR; next }
+    FILENAME ~ /sup1-rgba\.payload/ { over[FNR] = $NF; next }
+    END {
+        wrong = 0
+        for (i = 1; i <= nr; i++) {
+            t = (i - 1) * tick; want = 0
+            for (k = 1; k <= ns; k++) if (at[k] < t) want = (kind[k] == "D")
+            if ((over[i] != raw[i]) != want) wrong++
+        }
+        printf "%d", wrong
+    }' "$T/schedule.txt" "$T/sup1-raw.payload" "$T/sup1-rgba.payload")
+if [ "${supwrong:-x}" = 0 ]; then
+    ok "sup: overlay and schedule agree on all $NF frames (painted==covered, raw .sup input)"
+else
+    bad "sup: overlay and schedule disagree on ${supwrong:-?} frames (raw .sup input)"
+fi
+# The decisive cross-input claim: the same picture, byte for byte, from the other
+# framing (run1 is the wrapped transport-stream delivery of the same schedule).
+supsamepict=YES
+for pad in raw l r rgba; do
+    samefile "$T/sup1-$pad.payload" "$T/run1-$pad.payload" || supsamepict=NO
+done
+if [ "$supsamepict" = YES ]; then
+    ok "sup: the raw .sup input paints the identical picture to the wrapped input on all four pads"
+else
+    bad "sup: the raw .sup input differs from the wrapped input on some pad (framing leaked into the picture)"
 fi
 
 printf '=== subtitle-canvas harness result: %d passed, %d failed ===\n' "$PASS" "$FAIL"
