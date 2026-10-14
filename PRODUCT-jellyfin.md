@@ -844,4 +844,75 @@ verbatim - one attribution and one test inconsistency - on the record.
   and nothing beyond it is claimed - not parity with their packaging,
   and not that their queue is current with upstream's maintenance fixes,
   which this branch tracks directly instead.
+- **Deterministic-canvas content ship onto the same -5 build
+  (2026-10-14).** This tree builds and ships as **`n8.1.2-mvc9-jf5`**,
+  superseding `n8.1.2-mvc8-jf5`. The delta over the tree recorded above
+  is eight commits: the six that carry this branch's content wave, the
+  version commit that names this build, and this entry. The release tag
+  for this state is that same string, so tag, `VERSION` file and banner
+  state one identity over one tree.
+- **Why only the content part of the suffix moved (2026-10-14).**
+  "Build identity" above reserves its `-jf<N>` part for one event: their
+  build line moving, and this branch realigning to the new build. That
+  event has not happened here: `jellyfin/jellyfin-ffmpeg` has issued
+  nothing newer than `v8.1.2-5`, so their queue sits where the entry
+  above counted it - a hundred patch files, ninety-six of them contents
+  this tree holds - and the pointer stays `-jf5`. This build is still
+  the drop-in for **`jellyfin-ffmpeg v8.1.2-5`**. The `mvc` part moved
+  for the reason every entry above records for it: this wave's content
+  is source in this tree now, and that part counts this branch's own
+  code delta, so it moves from 8 to 9 - the same counter moving as the
+  content ships above moved it.
+- **The content wave this ship lands (2026-10-14).** Six commits, in
+  the order of the branch, carry one behaviour: a deterministic,
+  pts-keyed subtitle canvas. The multiview subtitle-depth filter used
+  to take whichever subtitle canvas had last arrived, and that arrival
+  order is driven by the transcoder's subtitle heartbeat, so caption
+  start and end rows could change between repeated runs over identical
+  bytes. The wave replaces the framesync pump with a bespoke dual-input
+  activation inside the filter: canvases are held in ascending
+  push-pts order, the caption painted for an output frame is the last
+  display edge started strictly before that frame's pts, an exact
+  display edge holds the previous canvas instead of dropping it, and
+  the end-of-input normalisation of the pump it replaces is mirrored,
+  not reinvented. The transcoder, for its side, stamps heartbeat
+  duplicate pushes with a flag consumers may ignore, so the clock
+  witness can no longer displace the schedule. What covers an output
+  pts is then a pure function of the pts and the subtitle schedule, so
+  composed subtitled output is byte-identical across repeated runs,
+  video-only frames pass through untouched, and the filter's option
+  surface is unchanged. Three test commits ship with the wave: a
+  synthetic determinism harness, a synthetic caption generator, and
+  locks on the shortest-option endall behaviour and on the raw bitmap
+  caption input.
+- **The one line where the wave met their queue (2026-10-14).** The
+  wave's heartbeat stamping reaches a call site that queue entry
+  `0058` had already rewritten: since their sub2video performance fix,
+  that re-push runs only where the buffer source has unanswered frame
+  requests. The landing keeps their guard and gives the guarded call
+  its stamp argument, so this build ships fewer heartbeat duplicates
+  under an unchanged display schedule and an unchanged stamp - guard
+  and stamping contract compose without either giving ground.
+- **What this ship is measured on (2026-10-14).** The bar is the
+  standing one of the shared toolchain this branch gates under, and
+  this ship is certified by nothing less than running under it: the
+  product gate green, `checkasm` at 14903 checks, the FATE set this
+  branch has gated on at every ship above with no failure - on the
+  subtitle-overlay reference that queue entry `0058` moved with its
+  guard, not on the upstream one - the new canvas harness green as its
+  own gate step at 44 checks, and the provenance self-test at 220
+  passed, 0 failed. The composed contract row-sets replay against the
+  hashes recorded above, byte-identical on this build: the composed
+  30 s row-set (720 rows, sha256 beginning `de08be58`) and the composed
+  60 s grid (1439 rows, sha256 beginning `2675c6da`). The banner and
+  the `ffprobe` build identity both carry `n8.1.2-mvc9-jf5`.
+- **The surface held (2026-10-14).** Nothing is registered and nothing
+  is removed: no decoder, encoder, filter, bitstream filter or
+  hardware method moves with this wave, so the lists the consuming
+  server probes are the ones it has always seen; no library version
+  header moves, so the libav* versions a consumer links against, and
+  the SONAMEs derived from them, are exactly the ones
+  `n8.1.2-mvc8-jf5` had. The drop-in claim stands unamended: same
+  FFmpeg base 8.1.2, same queue at `v8.1.2-5`, same capabilities -
+  one content wave more.
 
