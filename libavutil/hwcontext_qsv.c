@@ -2030,8 +2030,7 @@ static int qsv_transfer_data_to(AVHWFramesContext *ctx, AVFrame *dst,
 
     if (!s->session_upload
 #if CONFIG_D3D11VA /* Wa an out of sync issue in MSDK RT on Windows */
-        || ((src_frame->format == AV_PIX_FMT_BGRA) &&
-            !QSV_RUNTIME_VERSION_ATLEAST(device_priv->ver, 1, 255) &&
+        || (!QSV_RUNTIME_VERSION_ATLEAST(device_priv->ver, 1, 255) &&
             (device_priv->handle_type == MFX_HANDLE_D3D11_DEVICE))
 #endif
         ) {
@@ -2065,7 +2064,7 @@ static int qsv_transfer_data_to(AVHWFramesContext *ctx, AVFrame *dst,
         err = MFXVideoCORE_SyncOperation(s->session_upload, sync, 1000);
     } while (err == MFX_WRN_IN_EXECUTION);
     if (err < 0) {
-        av_log(ctx, AV_LOG_ERROR, "Error synchronizing the operation\n");
+        av_log(ctx, AV_LOG_ERROR, "Error synchronizing the operation: %d\n", err);
         return AVERROR_UNKNOWN;
     }
 
