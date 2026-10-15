@@ -803,6 +803,7 @@ static int scale_d3d11_config_props(AVFilterLink *outlink)
         s->direct_output_uav = 0;
     }
 
+
     if (s->shader_fallback) {
         av_log(ctx, AV_LOG_VERBOSE, "D3D11 scale: using P010 output path\n");
         if (s->direct_output_uav > 0)
@@ -811,8 +812,8 @@ static int scale_d3d11_config_props(AVFilterLink *outlink)
             av_log(ctx, AV_LOG_DEBUG, "D3D11 shader output: forced copy from internal UAV texture\n");
     }
 
-    ///< Propagate hw_frames_ctx to output
     av_buffer_unref(&outl->hw_frames_ctx);
+    ///< Propagate hw_frames_ctx to output
     outl->hw_frames_ctx = av_buffer_ref(s->hw_frames_ctx_out);
     if (!outl->hw_frames_ctx)
         return AVERROR(ENOMEM);
