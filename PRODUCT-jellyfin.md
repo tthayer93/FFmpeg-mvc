@@ -915,4 +915,121 @@ verbatim - one attribution and one test inconsistency - on the record.
   `n8.1.2-mvc8-jf5` had. The drop-in claim stands unamended: same
   FFmpeg base 8.1.2, same queue at `v8.1.2-5`, same capabilities -
   one content wave more.
+- **Base advance and queue re-sync (2026-10-15).** This tree builds and ships
+  as **`n8.1.3-mvc9-jf6`**, superseding `n8.1.2-mvc9-jf5`. The line move is
+  eleven commits: the merge of FFmpeg's `n8.1.3` release commit
+  (`1041abdc96`), the eight queue landings tabulated below, the version commit
+  that names this build, and this entry. `RELEASE` reads 8.1.3 and the
+  `VERSION` file follows the base, so tag, `VERSION` file and banner state one
+  identity over one tree.
+- **What the base move took, and what it kept (2026-10-15).** Upstream's
+  rework of the demuxer read-rate path replaces this branch's own read-rate
+  entry outright: queue entry `0077` had carried that fix since the landing
+  wave, and the merge is where it died - an absorption, met again below at the
+  landing of the entry that holds that position now. Everywhere else the merge
+  kept both sides where both sides had work to keep: the CUDA scaler holds
+  the dither path their queue carries against upstream's new texture-mapping
+  and intermediate-buffer work, and the D3D11 scaler holds the P010 fallback
+  work against upstream's output-reference leak fix. This branch's own library
+  numbers are held where this line has them - libavutil at 60.27.100 and
+  libavfilter at 11.14.102, with the other libraries taking upstream's new
+  micro - so no major and no minor moves with this ship and the SONAMEs a
+  consumer links against are exactly the ones `n8.1.2-mvc9-jf5` had. The
+  deterministic-canvas wave above is intact and untouched by the move:
+  upstream changed the frame synchronizer not at all between 8.1.2 and 8.1.3,
+  which is what the option mirror of that wave's filter was checked against at
+  the merge, and the queue guard this branch composes with its heartbeat
+  stamping still stands at that call site.
+- **The queue re-sync (2026-10-15).** Their build line moved, which is the one
+  event the `-jf<N>` part of the identity reserves for a new number: this build
+  is the drop-in for **`jellyfin-ffmpeg v8.1.3-1`** (their commit
+  `253db2a7b0`), and the pointer moves from `-jf5` to `-jf6`. Their queue is
+  still a hundred patch files. Compared file for file against the release this
+  branch re-synced from, ninety-two of the hundred are byte-identical, seven
+  changed content, and one was replaced at its position under a new name. Each
+  moved entry landed as one commit of its own, named for the entry, in queue
+  order, each carrying one provenance sentence in its message:
+
+  | Queue entry | What moved in their `v8.1.3-1` release | What this tree holds now |
+  |---|---|---|
+  | `0003` - enhanced CUDA pixel-format conversion | Their entry is now largely a revert of the generic weight-LUT scaler upstream shipped in 8.1.3: it drops upstream's internal copy of the scale filter code, the weight-LUT option of `scale_cuda`, and the wider 16-bit input list of `thumbnail_cuda`, and keeps its dither matrix and conversion path on top of upstream's new texture-map helpers. | The CUDA scaler and thumbnail scaler in their release form: their dither matrix and conversion path retained, upstream's internal filter copy and weight-LUT option absent. Net against the build this ship supersedes, these files do not move at all. |
+  | `0010` - OpenCL reverse-mapping hack | The bind-flag choice `hwupload` makes for a D3D11 output pool now applies only where the pool's software format is not RGB. | Their release form. |
+  | `0019` - QSV VPP filter fixes | The D3D11 out-of-sync workaround on the upload path no longer keys on BGRA: the runtime version and the handle type decide it on their own, and a failed upload synchronisation now reports the codec-layer error number. | Their release form. |
+  | `0074` - mapped hardware frame to software frame through the scaler | The added hardware checks are taken from the pixel-format descriptor flags directly, in place of the checks on frame-context presence they were written against. | Their release form. |
+  | `0077` - position replaced | This position held their read-rate catch-up stall fix, which upstream's own rework absorbed at the merge above. The entry there now is one line: the notice that reading resumed at a presentation time after a lag is reported as verbose output, not as a warning. | Their release form, landed on upstream's read-rate code. |
+  | `0078` - Vulkan backports | Retaken against 8.1.3. Adds a validity guard before a capability query on both the decode and the encode side, takes the interlaced H.264 picture layout from the stream's own sequence parameter set, maps two further driver "not supported" answers onto the ordinary unsupported-format path, tolerates a driver that offers only coinciding decode output without separate reference images, fixes the error propagation in the encoder parameter setup path, and closes one layout-switch branch that had been falling through. | Their release form. |
+  | `0083` - CUDA backports | One hunk shorter: upstream now ships the fix for the overlapping chroma planes of a `yuv420p` CUDA frame allocation on its own. | Their release form. This is the one landing that left the tree unchanged, and its commit says so; the tree's remaining difference from upstream in that file is the one hunk this entry still carries. |
+  | `0095` - D3D11 P010 shader fallback | It no longer deletes the block that propagates the output frame context, because upstream moved that block below the point where this entry's own output pool exists. | Their release form. |
+
+- **Every landing checked against its own file (2026-10-15).** The check is
+  the release's patch file reversed out of the finished tree: if it lifts the
+  entry's text back out byte for byte, the tree holds that text and nothing
+  else of it. That passes outright for `0019`, `0074`, `0083` and `0095`, for
+  every file of `0010` and `0078` but the places named next, and for every
+  file of `0003` but its object list line. Where it does not pass, the text
+  sitting in the checked entry's own context lines belongs to a *later* entry
+  of the same queue - which is what a queue applied in order does to a file
+  read back on its own: `0095` extends the object list of the D3D11 scaler
+  inside `0003`'s context, `0081` extends the include list of the hardware
+  mapping filter inside `0010`'s, `0064` puts its dynamic-pool guard into the
+  output configuration of `hwupload` inside that entry's, `0072` rewrites the
+  allocator and pool-initialisation conditions of the D3D11 frame pool inside
+  `0010`'s and `0019`'s, and `0079` rewrites the layout-switch branch and the
+  DRM export region of the Vulkan helper inside `0078`'s. Those places were
+  taken from their file line for line and read back against it, and they are
+  named here precisely because the whole-file check could not speak for them.
+  Nowhere does a landing keep a line of the superseded form, and nowhere does
+  it write a line their release does not write.
+- **The refusal, re-checked against the new release (2026-10-15).** Queue
+  entry `0054` is unchanged between the two releases - byte-identical, one of
+  the ninety-two - and it stays refused for the reason recorded above: it puts
+  GPL-3-only code unconditionally into the library this product ships as
+  LGPL-2.1 or later, for a codec that is not part of anything this branch
+  exists for. The proof of absence was re-run on this tree today, in the same
+  four shapes as at the landing: neither file that entry would add exists here
+  (`libavutil/float_fmul_reverse.c` is absent), the entry's codec name appears
+  in none of `configure`, `libavcodec/Makefile`, `allcodecs.c` or
+  `parsers.c`, and the upstream form of the reverse-multiply DSP function is
+  still the one in `libavutil/float_dsp.c`. The route back recorded by the
+  licensing review is unchanged and still applies.
+- **Counts read against the new queue (2026-10-15).** The counts of the entry
+  above hold, unchanged, against `v8.1.3-1`: of the hundred entries,
+  ninety-six are contents this tree holds - the ninety-four of the landing
+  wave, of which seven now in their `v8.1.3-1` form and one of them replaced
+  outright at the same position, plus the two of the `-5` build - three are
+  contents the earlier ports already carried, and one is the entry refused on
+  licence. `-jf6` therefore claims what `-jf5` claimed, one build line later:
+  the applicable whole of that build's queue is in this tree and can be shown
+  entry by entry, and nothing beyond it is claimed - not parity with their
+  packaging, and not that their queue is current with upstream's maintenance
+  fixes, which this branch tracks directly instead.
+- **Why only the base and the pointer moved (2026-10-15).** The `n8.1.3` part
+  follows the base this tree now merges. The `-jf6` part moves because their
+  build line moved and this branch realigned to it. The `mvc` part, which
+  counts this branch's own code delta, stays at 9: nothing of ours is source in
+  this ship - the eight landings are their content, attributed one commit per
+  entry, and the merge is upstream's, attributed by its parent. That counter is
+  shared across the lines of this fork and carries across a base move, as it
+  did at the last one; the sentence in "Build identity" above that reads as a
+  restart at each base move describes the scheme as first written, not the
+  practice the sibling lines have used since, and it is left standing here
+  rather than rewritten.
+- **The surface held (2026-10-15).** Nothing is registered and nothing is
+  removed with this ship: no decoder, encoder, filter, bitstream filter or
+  hardware method moves, so the lists the consuming server probes are the ones
+  it has always seen. The option surface of the CUDA scaler is the same point
+  of care, and it is unchanged in both directions: the generic weight-LUT
+  option upstream added in 8.1.3 is not in this build, exactly as it was not in
+  `n8.1.2-mvc9-jf5`, because the landing of `0003` is what keeps it out - and
+  the 16-bit input list of the thumbnail scaler is likewise back to what this
+  build has always offered. No library major or minor moves, so the versions a
+  consumer links against and the SONAMEs derived from them are unchanged for
+  the reason given above. The drop-in claim stands, one base level higher: same
+  fork content, FFmpeg base 8.1.3, queue at `v8.1.3-1`.
+- **What this entry does not claim (2026-10-15).** This is the record of the
+  line move, made on the branch before it is merged to the product line. The
+  certification run of this exact tree - the product gate, the composed
+  contract row-sets, the seek repeaters, the hardware compile legs - is the
+  next step and is certified by being run; nothing here pre-empts its numbers,
+  and no measurement quoted above belongs to this ship.
 
