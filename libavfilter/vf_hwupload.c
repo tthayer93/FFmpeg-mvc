@@ -164,7 +164,9 @@ static int hwupload_config_output(AVFilterLink *outlink)
 #if CONFIG_D3D11VA
     if (ctx->hwframes->format == AV_PIX_FMT_D3D11) {
         AVD3D11VAFramesContext *frames_d3d11 = ctx->hwframes->hwctx;
-        frames_d3d11->BindFlags = D3D11_BIND_DECODER;
+        const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(ctx->hwframes->sw_format);
+        if (!(desc->flags & AV_PIX_FMT_FLAG_RGB))
+            frames_d3d11->BindFlags = D3D11_BIND_DECODER;
     }
 #endif
 
