@@ -1032,4 +1032,25 @@ verbatim - one attribution and one test inconsistency - on the record.
   contract row-sets, the seek repeaters, the hardware compile legs - is the
   next step and is certified by being run; nothing here pre-empts its numbers,
   and no measurement quoted above belongs to this ship.
+- **What was measured for the move itself (2026-10-15).** A build of this
+  exact tree from a clean configuration with the shared toolchain, through to
+  the linked and stripped `ffmpeg` and `ffprobe`, and the banner that build
+  prints is the string of this entry: `ffmpeg version n8.1.3-mvc9-jf6`. That is
+  the identity claim holding; the certification run above is what makes the
+  behavior claims hold.
+- **One hunk the reversal took back too far (2026-10-15).** The landing of
+  `0078` passed the check above and still let one thing through, and the reason
+  is worth recording. The release this branch re-synced from had that entry
+  rewrite the error paths of the Vulkan encoders' parameter setup into a shared
+  exit which frees the feedback buffer; upstream 8.1.3 carries an equivalent
+  change of its own, so the new release writes none of that work. Reversing the
+  superseded copy therefore laid the older shape - plain returns, no free -
+  back over upstream's: text neither upstream nor their release writes, and one
+  that reopened a leak and two swallowed errors. A commit on that entry's own
+  name takes it back. The files now differ from upstream by what the entry
+  still carries and nothing else, and those error paths read exactly as they
+  did in the build this ship supersedes. What the check of the landing could
+  not see is the shape of the check itself: reversing an entry's file out of the
+  tree proves the tree holds that entry's text, not that the reversal carried
+  nothing extra in the other direction.
 
