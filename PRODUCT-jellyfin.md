@@ -1053,4 +1053,38 @@ verbatim - one attribution and one test inconsistency - on the record.
   not see is the shape of the check itself: reversing an entry's file out of the
   tree proves the tree holds that entry's text, not that the reversal carried
   nothing extra in the other direction.
+- **The ship suffix is their release suffix (2026-10-15).** The owner ruled on
+  the `-jf<N>` part of the ship name, and the rule is a verbatim mirror: that
+  part carries the release suffix of the `jellyfin-ffmpeg` build this build is
+  the drop-in for, and it is not a counter of this branch's own ships. That is
+  how the two names already on this line were issued - `-jf4` for their
+  `v8.1.2-4`, `-jf5` for their `v8.1.2-5` - and nothing about this ship's content
+  asks for a number of our own. This build ships compatible with
+  **`jellyfin-ffmpeg v8.1.3-1`**, so this build is **`n8.1.3-mvc9-jf1`**: the
+  `VERSION` file says so in the commit before this entry, and tag, `VERSION`
+  file and banner hold that one string.
+- **The name the two entries above gave this build (2026-10-15).** Their
+  designation, `n8.1.3-mvc9-jf6`, is superseded by this entry and it was never
+  shipped: no tag of that name was published and no binary carrying it reached
+  anything. What those entries describe - the base move, the queue re-sync, the
+  hunk the reversal took back too far - is untouched by this correction, so
+  their text stands as written and this entry corrects the designation alone,
+  forward, over the same tree. Nothing here is rewritten and nothing is
+  withdrawn.
+- **Why the suffix may go from 5 back to 1 (2026-10-15).** Their numbering is
+  per release series: their `-5` closed their `v8.1.2` line and their `-1` opens
+  their `v8.1.3` line, so a mirror of it restarts at a base move. That is the
+  rule working, not this branch's identity stepping backwards, because the
+  series is already stated by the first part of the name. The three parts remain
+  independent and each states one thing: `n8.1.3` is the FFmpeg this tree merges,
+  `-mvc9` is which build of our own code sits on that base, and the suffix is
+  which of their releases this is the drop-in for. The counter of our own code
+  holds at 9 across this move for the reason the entry above gives, as it did
+  across the last one.
+- **What this correction costs in measurement (2026-10-15).** One string in the
+  `VERSION` file, and this entry. No source file of the tree moves with it, so
+  the certification of this tree's code is the run already recorded for it and
+  none of that is re-paid here. What a rebuild of the corrected tree does
+  establish is the claim of this entry alone: that the `VERSION` file, the
+  `ffmpeg` banner and the `ffprobe` banner all print the one string named above.
 
