@@ -23,6 +23,7 @@
 #include "libavutil/avassert.h"
 #include "libavutil/mem.h"
 #include "libavutil/vulkan_loader.h"
+#include "h264dec.h"
 
 #define DECODER_IS_SDR(codec_id) \
     (((codec_id) == AV_CODEC_ID_FFV1) || \
@@ -314,7 +315,7 @@ int ff_vk_decode_add_slice(AVCodecContext *avctx, FFVulkanDecodePicture *vp,
 
     if (offsets) {
         slice_off = av_fast_realloc(dec->slice_off, &dec->slice_off_max,
-                                    (nb + 1)*sizeof(slice_off));
+                                    (nb + 1)*sizeof(*slice_off));
         if (!slice_off)
             return AVERROR(ENOMEM);
 
@@ -822,10 +823,12 @@ static VkResult vulkan_setup_profile(AVCodecContext *avctx,
         h264_profile->stdProfileIdc = cur_profile & ~(AV_PROFILE_H264_CONSTRAINED |
                                                       AV_PROFILE_H264_INTRA);
 
-        h264_profile->pictureLayout = avctx->field_order == AV_FIELD_UNKNOWN ||
-                                      avctx->field_order == AV_FIELD_PROGRESSIVE ?
-                                      VK_VIDEO_DECODE_H264_PICTURE_LAYOUT_PROGRESSIVE_KHR :
-                                      VK_VIDEO_DECODE_H264_PICTURE_LAYOUT_INTERLACED_INTERLEAVED_LINES_BIT_KHR;
+        h264_profile->pictureLayout =
+            VK_VIDEO_DECODE_H264_PICTURE_LAYOUT_PROGRESSIVE_KHR;
+        const H264Context *h = avctx->priv_data;
+        if (h && h->ps.sps && !h->ps.sps->frame_mbs_only_flag)
+            h264_profile->pictureLayout =
+                VK_VIDEO_DECODE_H264_PICTURE_LAYOUT_INTERLACED_INTERLEAVED_LINES_BIT_KHR;
     } else if (avctx->codec_id == AV_CODEC_ID_H265) {
         dec_caps->pNext = h265_caps;
         usage->pNext = h265_profile;
@@ -855,6 +858,12 @@ static VkResult vulkan_setup_profile(AVCodecContext *avctx,
     profile->chromaSubsampling   = ff_vk_subsampling_from_av_desc(desc);
     profile->lumaBitDepth        = ff_vk_depth_from_av_depth(desc->comp[0].depth);
     profile->chromaBitDepth      = profile->lumaBitDepth;
+
+    /* A pixel format without a video profile representation is not a valid
+     * profile to query the capabilities for */
+    if (profile->chromaSubsampling == VK_VIDEO_CHROMA_SUBSAMPLING_INVALID_KHR ||
+        profile->lumaBitDepth == VK_VIDEO_COMPONENT_BIT_DEPTH_INVALID_KHR)
+        return VK_ERROR_VIDEO_PROFILE_FORMAT_NOT_SUPPORTED_KHR;
 
     profile_list->sType        = VK_STRUCTURE_TYPE_VIDEO_PROFILE_LIST_INFO_KHR;
     profile_list->profileCount = 1;
@@ -960,11 +969,21 @@ static int vulkan_decode_get_profile(AVCodecContext *avctx, AVBufferRef *frames_
                                    cur_profile);
     }
 
-    if (ret == VK_ERROR_VIDEO_PROFILE_OPERATION_NOT_SUPPORTED_KHR) {
+    if (ret == VK_ERROR_VIDEO_PROFILE_OPERATION_NOT_SUPPORTED_KHR ||
+        ret == VK_ERROR_VIDEO_PROFILE_CODEC_NOT_SUPPORTED_KHR) {
         av_log(avctx, AV_LOG_VERBOSE, "Unable to initialize video session: "
                "%s profile \"%s\" not supported!\n",
                avcodec_get_name(avctx->codec_id),
                avcodec_profile_name(avctx->codec_id, cur_profile));
+        return AVERROR(EINVAL);
+    } else if (ret == VK_ERROR_VIDEO_PICTURE_LAYOUT_NOT_SUPPORTED_KHR) {
+        if (avctx->codec_id == AV_CODEC_ID_H264)
+            av_log(avctx, AV_LOG_VERBOSE, "Unable to initialize video session: "
+                   "pictureLayout %#x not supported!\n",
+                   (unsigned)prof->h264_profile.pictureLayout);
+        else
+            av_log(avctx, AV_LOG_VERBOSE, "Unable to initialize video session: "
+                   "pictureLayout not supported!\n");
         return AVERROR(EINVAL);
     } else if (ret == VK_ERROR_VIDEO_PROFILE_FORMAT_NOT_SUPPORTED_KHR) {
         av_log(avctx, AV_LOG_VERBOSE, "Unable to initialize video session: "
@@ -1050,10 +1069,9 @@ static int vulkan_decode_get_profile(AVCodecContext *avctx, AVBufferRef *frames_
                                    VK_VIDEO_DECODE_CAPABILITY_DPB_AND_OUTPUT_DISTINCT_BIT_KHR)) ==
                                    VK_VIDEO_DECODE_CAPABILITY_DPB_AND_OUTPUT_COINCIDE_BIT_KHR &&
                !(caps->flags & VK_VIDEO_CAPABILITY_SEPARATE_REFERENCE_IMAGES_BIT_KHR)) {
-        av_log(avctx, AV_LOG_ERROR, "Cannot initialize Vulkan decoding session, buggy driver: "
-               "VK_VIDEO_DECODE_CAPABILITY_DPB_AND_OUTPUT_COINCIDE_BIT_KHR set "
-               "but VK_VIDEO_CAPABILITY_SEPARATE_REFERENCE_IMAGES_BIT_KHR is unset!\n");
-        return AVERROR_EXTERNAL;
+        av_log(avctx, AV_LOG_VERBOSE,
+               "COINCIDE-only decode without SEPARATE_REFERENCE_IMAGES "
+               "(layered DPB capability); continuing\n");
     }
 
     dec->dedicated_dpb = !(dec_caps->flags & VK_VIDEO_DECODE_CAPABILITY_DPB_AND_OUTPUT_COINCIDE_BIT_KHR);
