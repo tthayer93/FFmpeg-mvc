@@ -48,6 +48,11 @@ typedef struct {
     CUtexObject dither_tex;
     float dither_size;
     float dither_quantization;
+
+    /* Weights for the generic filter kernel */
+    CUdeviceptr weights;
+    CUdeviceptr offsets;
+    int filter_size;
 } CUDAScaleKernelParams;
 
 #endif
