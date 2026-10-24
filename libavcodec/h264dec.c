@@ -909,14 +909,6 @@ static int h264_mvc_view_setup(H264Context *h)
             h->views[slot].next_outputed_poc  = INT_MIN;
             for (int j = 0; j < FF_ARRAY_ELEMS(h->views[slot].last_pocs); j++)
                 h->views[slot].last_pocs[j] = INT_MIN;
-            /* The first access units after a multiview registration can still
-             * show a short one-turn skew between the views' output lists. Park
-             * newer composed arrivals briefly until the older access unit can
-             * weld in display order. */
-            if (h->view_count == 2 && ff_h264_allviews_composition(h->avctx)) {
-                h->mvc_entry_recovery           = 1;
-                h->mvc_entry_recovery_successes = 0;
-            }
         }
 
         if (slot != i) {
@@ -1100,23 +1092,16 @@ void ff_h264_flush_change(H264Context *h)
      * same applies to the recently composed inter-view anchors: they are the
      * continuation of that composed lifecycle, not references allowed to
      * outlive a seek. */
-    /* A flush from an already-registered MVC session is a fast-seek entry: the
-     * first access units after the landing can still be skewed while the views
-     * re-register and the output lists settle. Latch recovery before clearing
-     * the state that tells us the previous session had two views. */
-    if (h->view_count > 1 && ff_h264_allviews_composition(h->avctx)) {
-        h->mvc_entry_recovery           = 1;
-        h->mvc_entry_recovery_successes = 0;
-    }
-
     h264_sbs_q_clear(h);
     h264_iv_anchor_clear(h);
     /* The fast-seek entry hold is also decode-session state: the copied
-     * registration-lag fragments and the base picture waiting behind them
-     * belong to the session before the flush, not to the one being seeked
-     * into. */
+     * registration-lag fragments, the base picture waiting behind them, and
+     * any recovery latch derived from that pre-seek skew belong to the session
+     * before the flush, not to the one being seeked into. */
     h264_mvc_entry_clear(h);
     h264_mvc_defer_clear(h);
+    h->mvc_entry_recovery           = 0;
+    h->mvc_entry_recovery_successes = 0;
 
     h->prev_interlaced_frame = 1;
     idr(h);
