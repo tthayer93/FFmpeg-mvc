@@ -295,8 +295,8 @@ FATE_H264_MVC_OFMD-$(call PARSERDEMDEC, H264, H264, H264) +=              \
 
 # What a seek means to the decoder: the same bytes delivered from three
 # starting points and compared against each other (see the rule below).  One
-# of these targets FAILS BY DESIGN until the defect it reproduces has a cure;
-# the failure is the point of it, and the rules say so.
+# of these targets was red by design until the cure for the defect it
+# reproduces landed on this branch; the rule says what it was pinning.
 FATE_H264_MVC_ENTRY-$(call PARSERDEMDEC, H264, H264, H264) +=             \
               fate-h264-mvc-seekentry
 
@@ -910,10 +910,10 @@ fate-h264-mvc-subdepth-shift:                       CMD = framecrc -threads 1 \
 # parameter sets at each group head, while the multiview registration - the
 # subset SPS and the dependent view's picture parameter set - is repeated
 # only at access unit 3, one whole unit after the refresh at access unit 2.
-# A shipped owner stream measured while writing this repeats its subset SPS
-# roughly every 293 NAL units against a group period of six, so whether a
-# keyframe's landing carries its own registration there is the luck of the
-# landing.  This fixture fixes that luck to the losing case.
+# A shipped two-view disc stream measured while writing this repeats its
+# subset SPS roughly every 293 NAL units against a group period of six, so
+# whether a keyframe's landing carries its own registration there is the luck
+# of the landing.  This fixture fixes that luck to the losing case.
 #
 # libavcodec/tests/h264_mvc_seekentry.c delivers the stream three ways -
 # from the front (cold), through a flush at the landing (the accurate-seek
@@ -925,22 +925,23 @@ fate-h264-mvc-subdepth-shift:                       CMD = framecrc -threads 1 \
 # session which met its views at the stream front keeps them across a
 # flush; the seekentry table is the answer a viewer actually gets.
 #
-# Status of this target: IT FAILS BY DESIGN.  The reference file pins the
-# answer the decoder owes every entry - the front's tail, identical to the
-# last pixel - and both entry legs answer differently today.  The fast-seek
-# leg refuses the landing's dependent fragment outright (its view is
-# unregistered at the byte it is offered at), escapes the refresh's own base
-# frame out at one view's width instead of the composed pair's - what a
-# downstream consumer then latches as the half-width picture the seek
-# "broke" - and even the frames it goes on to compose are not the frames the
-# front composes: whole rows of theirs differ.  The flush leg, which looks
-# composed at every row, shows corrupted rows at the same pts too.  Within
-# one run the two entries corrupt frame-for-frame identically, while across
-# runs the corrupted bytes take different values: pool contents no picture
+# Status of this target: it was red by design, until the cure for the defect
+# it reproduces landed on this branch.  The reference file pins the answer
+# the decoder owes every entry - the front's tail, identical to the last
+# pixel - and both entry legs used to answer differently.  The fast-seek leg
+# refused the landing's dependent fragment outright (its view was
+# unregistered at the byte it was offered at), and escaped the refresh's own
+# base frame out at one view's width instead of the composed pair's - what a
+# downstream consumer then latched as the half-width picture the seek
+# "broke" - and even the frames it went on to compose were not the frames the
+# front composed: whole rows of theirs differed.  The flush leg, which looked
+# composed at every row, showed corrupted rows at the same pts too.  Within
+# one run the two entries corrupted frame-for-frame identically, while across
+# runs the corrupted bytes took different values: pool contents no picture
 # ever wrote, which is the fingerprint of composing from memory that was
-# never filled.  A run of this target prints all of it as a diff against
-# the reference and exits nonzero.  The cure belongs to the decoder, and
-# when it lands this target turns result=ok without anything here moving.
+# never filled.  A red run printed all of that as a diff against the
+# reference and exited nonzero.  The cure is the decoder's own business; this
+# target turns result=ok, and nothing here moved for it.
 #
 # Regenerated from the repository root with
 #

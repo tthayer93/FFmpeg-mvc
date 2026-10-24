@@ -2582,7 +2582,6 @@ static int h264_sbs_assemble(H264Context *h, AVFrame *pict,
                        rowbytes);
             }
         }
-
     }
 
     /* The base half's pixels are now fully copied into the combined frame.
