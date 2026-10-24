@@ -805,9 +805,18 @@ typedef struct H264Context {
      * this small FIFO instead of being refused and lost.  They are replayed
      * once the registration has arrived.  The hold is bounded so a stream that
      * never registers cannot turn the decoder into an input buffer.
+     *
+     * The byte bound is the measured one.  On a shipped two-view disc whose
+     * subset SPS returns only every ~293 NAL units, the deepest hold any seek
+     * entry reached was 206769 bytes -- two packets, twelve dependent NALs --
+     * and fragments at a landing measure some 17 kB per NAL, so even an entry
+     * that had to wait out that whole period would hold just under 5 MB.
+     * 16 MB is three times that widest lag and eighty times what the entries
+     * actually paid; nothing was ever refused at it, and the FIFO depth below
+     * is the looser bound (a full period of that shape is fifty fragments).
      */
 #define H264_MVC_ENTRY_HOLD_DEPTH 1024
-#define H264_MVC_ENTRY_HOLD_MAX_BYTES (128 * 1024 * 1024)
+#define H264_MVC_ENTRY_HOLD_MAX_BYTES (16 * 1024 * 1024)
     uint8_t *mvc_entry_hold_buf[H264_MVC_ENTRY_HOLD_DEPTH];
     int      mvc_entry_hold_size[H264_MVC_ENTRY_HOLD_DEPTH];
     int64_t  mvc_entry_hold_pts[H264_MVC_ENTRY_HOLD_DEPTH];
