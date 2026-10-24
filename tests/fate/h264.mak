@@ -934,12 +934,13 @@ fate-h264-mvc-subdepth-shift:                       CMD = framecrc -threads 1 \
 # downstream consumer then latches as the half-width picture the seek
 # "broke" - and even the frames it goes on to compose are not the frames the
 # front composes: whole rows of theirs differ.  The flush leg, which looks
-# composed at every row, shows those same corrupted rows at the same pts;
-# the corruption is identical between the two entries frame for frame, so
-# it is a property of entering, not of noise.  A run of this target prints
-# all of it as a diff against the reference and exits nonzero.  The cure
-# belongs to the decoder, and when it lands this target turns result=ok
-# without anything here moving.
+# composed at every row, shows corrupted rows at the same pts too.  Within
+# one run the two entries corrupt frame-for-frame identically, while across
+# runs the corrupted bytes take different values: pool contents no picture
+# ever wrote, which is the fingerprint of composing from memory that was
+# never filled.  A run of this target prints all of it as a diff against
+# the reference and exits nonzero.  The cure belongs to the decoder, and
+# when it lands this target turns result=ok without anything here moving.
 #
 # Regenerated from the repository root with
 #
