@@ -909,22 +909,6 @@ static int h264_mvc_view_setup(H264Context *h)
             h->views[slot].next_outputed_poc  = INT_MIN;
             for (int j = 0; j < FF_ARRAY_ELEMS(h->views[slot].last_pocs); j++)
                 h->views[slot].last_pocs[j] = INT_MIN;
-
-            /* The view of a fast-seek landing that registers in-band starts its
-             * delayed-output list from scratch while the base view's list is
-             * already running, so the two views can hand the composed pairing
-             * the same access units in a different order for the first GOPs.
-             * Arm the bounded entry recovery here: the pairing then parks the
-             * newer arrival until the older access unit can weld, instead of
-             * degrading both halves of that unit to a black-fill standalone
-             * shipment. The recovery latch retires itself once the composed
-             * output has produced enough correctly paired units to trust, and
-             * it only ever acts on a real order disagreement, so a landing
-             * whose lists agree is untouched. */
-            if (h->view_count == 2 && ff_h264_allviews_composition(h->avctx)) {
-                h->mvc_entry_recovery           = 1;
-                h->mvc_entry_recovery_successes = 0;
-            }
         }
 
         if (slot != i) {
@@ -3206,6 +3190,41 @@ static int h264_sbs_service_queued(H264Context *h, AVFrame *pict,
     return ret > 0 ? 2 : 3;
 }
 
+/* A key mismatch is the composed pairing's own signal that a session-start
+ * skew has become visible: two half-frames just met while carrying different
+ * access-unit times, and the default policy is to degrade one of them with a
+ * black opposite half. For an MVC landing that registered in-band, the first
+ * such disagreement is exactly the point at which a bounded entry recovery can
+ * still do better than a phantom half: park the newer arrival until the older
+ * access unit can weld. Arm only for this attempt and only when the recovery
+ * can actually take the turn, so an ordinary decode without a visible skew
+ * keeps its old delivery path untouched. */
+static int h264_sbs_process_key_mismatch_recovery(H264Context *h, AVFrame *pict,
+                                                  H264Picture *out, int role,
+                                                  int *got_frame)
+{
+    int ret;
+
+    if (h->view_count != 2 || !ff_h264_allviews_composition(h->avctx))
+        return 0;
+
+    h->mvc_entry_recovery           = 1;
+    h->mvc_entry_recovery_successes = 0;
+
+    ret = h264_sbs_process_entry_recovery(h, pict, out, role, got_frame);
+    if (ret < 0) {
+        h->mvc_entry_recovery           = 0;
+        h->mvc_entry_recovery_successes = 0;
+        return ret;
+    }
+    if (ret == 0) {
+        h->mvc_entry_recovery           = 0;
+        h->mvc_entry_recovery_successes = 0;
+    }
+
+    return ret;
+}
+
 /* Post-process a just-finalized multiview frame for the native SBS composed
  * output. Halves are paired by access-unit identity (h264_sbs_pair_key()): a
  * pending half and an arrival weld only when they carry the same access-unit
@@ -3264,6 +3283,13 @@ static int h264_sbs_process(H264Context *h, AVFrame *pict,
 
         if (k_arr != AV_NOPTS_VALUE && k_oth != AV_NOPTS_VALUE &&
             k_arr != k_oth) {
+            if (!h->mvc_entry_recovery) {
+                ret = h264_sbs_process_key_mismatch_recovery(h, pict, out,
+                                                             role, got_frame);
+                if (ret)
+                    return ret;
+            }
+
             if (k_oth < k_arr) {
                 /* The queued half is from an earlier access unit than this
                  * arrival, so this role already delivered that access unit and
