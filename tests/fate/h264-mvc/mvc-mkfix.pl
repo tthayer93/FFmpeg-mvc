@@ -82,7 +82,7 @@
 #                    open at a keyframe - meets the dependent slice ahead of
 #                    the registration that makes it decodable. Real discs
 #                    do exactly this: their subset SPS repetition is far
-#                    wider than the GOP (one shipped owner stream measures
+#                    wider than the GOP (a shipped two-view disc measures
 #                    ~293 NAL units between subset SPS re-issues against a
 #                    6-NAL GOP period), so which keyframe a fast seek lands
 #                    on decides whether the multiview registration is within
