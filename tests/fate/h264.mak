@@ -293,6 +293,13 @@ FATE_H264_MVC_OFMD-$(call PARSERDEMDEC, H264, H264, H264) +=              \
               fate-h264-mvc-ofmd-lagmix-ontime-view1                      \
               fate-h264-mvc-ofmd-lagflat-view1
 
+# What a seek means to the decoder: the same bytes delivered from three
+# starting points and compared against each other (see the rule below).  One
+# of these targets FAILS BY DESIGN until the defect it reproduces has a cure;
+# the failure is the point of it, and the rules say so.
+FATE_H264_MVC_ENTRY-$(call PARSERDEMDEC, H264, H264, H264) +=             \
+              fate-h264-mvc-seekentry
+
 # The end-to-end rows above go through a hand-written schedule.  These need the
 # whole media stack (the fixture's video and subtitle tracks, the sub2video
 # path, and the depth-placement filter) in the transcode's normal route.
@@ -306,7 +313,9 @@ FATE_H264_MVC_OFMD-$(call FRAMECRC, NUT MATROSKA, H264 PGSSUB,             \
 FATE_SAMPLES_AVCONV += $(FATE_H264-yes)
 FATE_SAMPLES_FFPROBE += $(FATE_H264_FFPROBE-yes)
 FATE_SAMPLES_AVCONV += $(FATE_H264_MVC_OFMD-yes)
-fate-h264: $(FATE_H264-yes) $(FATE_H264_FFPROBE-yes) $(FATE_H264_MVC_OFMD-yes)
+FATE_SAMPLES_AVCONV += $(FATE_H264_MVC_ENTRY-yes)
+fate-h264: $(FATE_H264-yes) $(FATE_H264_FFPROBE-yes) $(FATE_H264_MVC_OFMD-yes) \
+           $(FATE_H264_MVC_ENTRY-yes)
 
 fate-h264-conformance-aud_mw_e:                   CMD = framecrc -i $(TARGET_SAMPLES)/h264-conformance/AUD_MW_E.264
 
@@ -893,6 +902,57 @@ fate-h264-mvc-subdepth-shift:                       CMD = framecrc -threads 1 \
                                                            -fps_mode passthrough -sws_flags +accurate_rnd+bitexact \
                                                            -filter_complex "[0:v]scale,format=rgba[vc];[1:s:0]scale,format=rgba[sub];[vc][sub]mvcsubdepth=depth=shift=8:eof_action=pass[out]" \
                                                            -map "[out]"
+
+# The same two bytes, three ways in.
+#
+# 2view-ssps-lag.h264 is authored to the shape of a seekable two-view disc:
+# the base view refreshes every two access units and re-announces its own
+# parameter sets at each group head, while the multiview registration - the
+# subset SPS and the dependent view's picture parameter set - is repeated
+# only at access unit 3, one whole unit after the refresh at access unit 2.
+# A shipped owner stream measured while writing this repeats its subset SPS
+# roughly every 293 NAL units against a group period of six, so whether a
+# keyframe's landing carries its own registration there is the luck of the
+# landing.  This fixture fixes that luck to the losing case.
+#
+# libavcodec/tests/h264_mvc_seekentry.c delivers the stream three ways -
+# from the front (cold), through a flush at the landing (the accurate-seek
+# entry, which is what a seek decoded against a live session is), and into
+# a fresh session opened at the landing itself (the fast-seek entry, which
+# is what a seek bar asks for) - and compares the two entry tables against
+# the cold one, frame for frame and pixel for pixel.  The cold table is
+# what these bytes are worth from the front; the flush table shows that a
+# session which met its views at the stream front keeps them across a
+# flush; the seekentry table is the answer a viewer actually gets.
+#
+# Status of this target: IT FAILS BY DESIGN.  The reference file pins the
+# answer the decoder owes every entry - the front's tail, identical to the
+# last pixel - and both entry legs answer differently today.  The fast-seek
+# leg refuses the landing's dependent fragment outright (its view is
+# unregistered at the byte it is offered at), escapes the refresh's own base
+# frame out at one view's width instead of the composed pair's - what a
+# downstream consumer then latches as the half-width picture the seek
+# "broke" - and even the frames it goes on to compose are not the frames the
+# front composes: whole rows of theirs differ.  The flush leg, which looks
+# composed at every row, shows those same corrupted rows at the same pts;
+# the corruption is identical between the two entries frame for frame, so
+# it is a property of entering, not of noise.  A run of this target prints
+# all of it as a diff against the reference and exits nonzero.  The cure
+# belongs to the decoder, and when it lands this target turns result=ok
+# without anything here moving.
+#
+# Regenerated from the repository root with
+#
+#   perl tests/fate/h264-mvc/mvc-mkfix.pl --idr-every=2 --gop-reissue=2 \
+#        --ssps-reissue=3 --base-frames=6 --dep-frames=6 \
+#        --base=100 --dep=-100 \
+#        --out=tests/fate/h264-mvc/2view-ssps-lag.h264
+#
+# and, like the fixtures above, staged into $(TARGET_SAMPLES)/h264-mvc/ by
+# the gate rather than fetched from the sample server.
+fate-h264-mvc-seekentry:                          libavcodec/tests/h264_mvc_seekentry$(EXESUF)
+fate-h264-mvc-seekentry:                          CMD = run libavcodec/tests/h264_mvc_seekentry$(EXESUF) \
+                                                          $(TARGET_SAMPLES)/h264-mvc/2view-ssps-lag.h264
 
 fate-h264-reinit-%:                               CMD = framecrc -i $(TARGET_SAMPLES)/h264/$(@:fate-h264-%=%).h264 -vf scale,format=yuv444p10le,scale=w=352:h=288
 
