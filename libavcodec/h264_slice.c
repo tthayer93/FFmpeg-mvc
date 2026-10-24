@@ -135,7 +135,12 @@ static int h264_pic_held_for_output(const H264Context *h, const H264Picture *pic
         return 1;
     /* A composed base half already delivered into an SBS frame remains held as
      * an inter-view anchor until its small hold-queue retires it. */
-    return ff_h264_pic_held_for_iv_anchor(h, pic);
+    if (ff_h264_pic_held_for_iv_anchor(h, pic))
+        return 1;
+    /* A base picture deferred at a fast-seek entry is held for output until
+     * the registration arrives to pair it, or until the session proves that
+     * there is nothing to pair and releases it as a plain view. */
+    return h->mvc_deferred_pic == pic;
 }
 
 /**
@@ -2389,6 +2394,7 @@ static int h264_field_start(H264Context *h, const H264SliceContext *sl,
         h264_view_selected(h, h->cur_view)) {
         const H264MVCSPS *mvc = &h->ps.sps->mvc;
         const int base_view_id = mvc->view_id[0];
+        int found_base = 0;
 
         for (int vs = 0; vs < h->view_count; vs++) {
             const H264ViewState *bv = &h->views[vs];
@@ -2401,11 +2407,21 @@ static int h264_field_start(H264Context *h, const H264SliceContext *sl,
 
                 if (bp->view_idx == vs && bp->poc == h->cur_pic_ptr->poc) {
                     h->cur_pic_ptr->recovered |= bp->recovered;
+                    found_base = 1;
                     break;
                 }
             }
             break;
         }
+
+        /* A fast-seek entry can hold the base half in the compose pairing
+         * instead of the base view's delayed output list. Recovery still
+         * travels with the co-located base picture, not with the queue that
+         * happens to own it at this instant. */
+        if (!found_base && h->mvc_deferred_pic &&
+            h->mvc_deferred_pic->view_idx == 0 &&
+            h->mvc_deferred_pic->poc == h->cur_pic_ptr->poc)
+            h->cur_pic_ptr->recovered |= h->mvc_deferred_pic->recovered;
     }
 
     /* Set the frame properties/side data. Only done for the second field in

@@ -800,6 +800,31 @@ typedef struct H264Context {
     int view_sel_skipped;
 
     /**
+     * Fast-seek MVC registration lag: dependent access-unit fragments that
+     * arrive before the subset SPS which registers their view are copied into
+     * this small FIFO instead of being refused and lost.  They are replayed
+     * once the registration has arrived.  The hold is bounded so a stream that
+     * never registers cannot turn the decoder into an input buffer.
+     */
+#define H264_MVC_ENTRY_HOLD_DEPTH 4
+    uint8_t *mvc_entry_hold_buf[H264_MVC_ENTRY_HOLD_DEPTH];
+    int      mvc_entry_hold_size[H264_MVC_ENTRY_HOLD_DEPTH];
+    int64_t  mvc_entry_hold_pts[H264_MVC_ENTRY_HOLD_DEPTH];
+    int64_t  mvc_entry_hold_dts[H264_MVC_ENTRY_HOLD_DEPTH];
+    int      mvc_entry_hold_count;
+    /** Per-packet latch: the packet was held as a registration-lag fragment. */
+    int      mvc_entry_hold_skipped;
+
+    /**
+     * A committed base picture that allviews composition would have emitted
+     * as a bare view while the multiview registration was still missing.  It
+     * is parked here rather than shipped, so that the dependent half which
+     * arrives behind the registration can still be paired with it.  A session
+     * that is in fact single-view releases this picture on its next turn.
+     */
+    H264Picture *mvc_deferred_pic;
+
+    /**
      * Dependent-view "2D+delta" anchor completion (see h264_slice.c):
      * first macroblock address of the region completed as skipped
      * macroblocks, so error resilience accounts for it once per picture;
