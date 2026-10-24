@@ -236,15 +236,17 @@ static int keep_frame(Run *run, const AVFrame *frame)
     }
 
     for (int y = 0; y < frame->height; y++)
-        memcpy(kf->pixels + off,
+        memcpy(kf->pixels + off + (size_t)y * frame->width,
                frame->data[0] + (size_t)y * frame->linesize[0],
                frame->width);
     off += (size_t)frame->width * frame->height;
-    for (int c = 1; c <= 2; c++)
+    for (int c = 1; c <= 2; c++) {
         for (int y = 0; y < frame->height / 2; y++)
-            memcpy(kf->pixels + off,
+            memcpy(kf->pixels + off + (size_t)y * (frame->width / 2),
                    frame->data[c] + (size_t)y * frame->linesize[c],
                    frame->width / 2);
+        off += (size_t)(frame->width / 2) * (frame->height / 2);
+    }
 
     /* The fixture's pictures are flat, so its corner luma is its whole
      * story: two levels, one per view, and nothing else should ever be
