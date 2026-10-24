@@ -1396,6 +1396,7 @@ TESTPROGS-$(CONFIG_MJPEG_ENCODER)         += mjpegenc_huffman
 TESTPROGS-$(CONFIG_MPEGAUDIOHEADER)       += mpegaudiodecheader
 TESTPROGS-$(CONFIG_MPEGVIDEO)             += mpeg12framerate
 TESTPROGS-$(CONFIG_H264_METADATA_BSF)     += h264_levels
+TESTPROGS-$(CONFIG_H264_DECODER)          += h264_mvc_seekentry
 TESTPROGS-$(CONFIG_H264_DECODER)          += h264_ofmd
 TESTPROGS-$(CONFIG_HEVC_METADATA_BSF)     += h265_levels
 TESTPROGS-$(CONFIG_RANGECODER)            += rangecoder
