@@ -907,6 +907,22 @@ static int h264_mvc_view_setup(H264Context *h)
             h->views[slot].next_outputed_poc  = INT_MIN;
             for (int j = 0; j < FF_ARRAY_ELEMS(h->views[slot].last_pocs); j++)
                 h->views[slot].last_pocs[j] = INT_MIN;
+
+            /* The view of a fast-seek landing that registers in-band starts its
+             * delayed-output list from scratch while the base view's list is
+             * already running, so the two views can hand the composed pairing
+             * the same access units in a different order for the first GOPs.
+             * Arm the bounded entry recovery here: the pairing then parks the
+             * newer arrival until the older access unit can weld, instead of
+             * degrading both halves of that unit to a black-fill standalone
+             * shipment. The recovery latch retires itself once the composed
+             * output has produced enough correctly paired units to trust, and
+             * it only ever acts on a real order disagreement, so a landing
+             * whose lists agree is untouched. */
+            if (h->view_count == 2 && ff_h264_allviews_composition(h->avctx)) {
+                h->mvc_entry_recovery           = 1;
+                h->mvc_entry_recovery_successes = 0;
+            }
         }
 
         if (slot != i) {
