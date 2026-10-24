@@ -797,12 +797,14 @@ typedef struct H264Context {
      * once the registration has arrived.  The hold is bounded so a stream that
      * never registers cannot turn the decoder into an input buffer.
      */
-#define H264_MVC_ENTRY_HOLD_DEPTH 4
+#define H264_MVC_ENTRY_HOLD_DEPTH 1024
+#define H264_MVC_ENTRY_HOLD_MAX_BYTES (128 * 1024 * 1024)
     uint8_t *mvc_entry_hold_buf[H264_MVC_ENTRY_HOLD_DEPTH];
     int      mvc_entry_hold_size[H264_MVC_ENTRY_HOLD_DEPTH];
     int64_t  mvc_entry_hold_pts[H264_MVC_ENTRY_HOLD_DEPTH];
     int64_t  mvc_entry_hold_dts[H264_MVC_ENTRY_HOLD_DEPTH];
     int      mvc_entry_hold_count;
+    int64_t  mvc_entry_hold_bytes;
     /** Per-packet latch: the packet was held as a registration-lag fragment. */
     int      mvc_entry_hold_skipped;
 
@@ -814,6 +816,18 @@ typedef struct H264Context {
      * that is in fact single-view releases this picture on its next turn.
      */
     H264Picture *mvc_deferred_pic;
+
+    /**
+     * Fast-seek entry recovery: the composed pairing queues may see a short
+     * output-order skew while the views register and the first access units
+     * after a landing settle. Latched when registration-lag fragments or base
+     * halves are held at entry, and retired after the composed output has
+     * produced enough correctly paired access units to trust it.
+     */
+#define H264_MVC_ENTRY_RECOVERY_FRAMES 250
+#define H264_MVC_ENTRY_REORDER_LOOKAHEAD 4
+    int mvc_entry_recovery;
+    int mvc_entry_recovery_successes;
 
     /**
      * Dependent-view "2D+delta" anchor completion (see h264_slice.c):
