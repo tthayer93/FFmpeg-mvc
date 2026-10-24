@@ -49,7 +49,8 @@
 #
 # usage: mvc-mkfix.pl [--dna=FILE] [--out=FILE] [--base=N] [--dep=N]
 #                     [--base2=N] [--dep2=N] [--base-frames=N] [--dep-frames=N]
-#                     [--view1-start=N] [--idr-every=N] [--copy] [--zero]
+#                     [--view1-start=N] [--idr-every=N]
+#                     [--gop-reissue=N] [--ssps-reissue=N] [--copy] [--zero]
 #                     [--ofmd] [--ofmd-frames=N] [--ofmd-seq=N] [--ofmd-pts=N] [--ofmd-rate=N]
 #                     [--ofmd-base=N] [--ofmd-lag-pattern=a,b,...]
 #   --base/--dep     signed Intra16x16 DC coefficient of view 0 / view 1
@@ -64,6 +65,29 @@
 #   --idr-every      mark the base view's first picture of every Nth access unit
 #                    as an IDR and restart frame_num/pic_order_cnt_lsb there;
 #                    0 keeps the single IDR at the stream front
+#   --gop-reissue    re-send the base view's sequence and picture parameter
+#                    sets at the start of this (refresh) access unit, after
+#                    its delimiter and ahead of the refresh picture - the
+#                    shape of a disc that re-announces the parameter sets at
+#                    every GOP head so a seek landing there can decode the
+#                    base view without the stream front. Needs --idr-every,
+#                    and the access unit has to be one the period refreshes.
+#   --ssps-reissue   re-send the subset SPS carrying the multiview extension
+#                    and the dependent view's picture parameter set at this
+#                    access unit (after its delimiter, ahead of its pictures)
+#                    and nowhere earlier. The point is the ORDER: the
+#                    dependent picture of the --gop-reissue refresh rides
+#                    BEFORE this access unit, so a session that starts at
+#                    that refresh - a flush-free fast-seek entry, or a fresh
+#                    open at a keyframe - meets the dependent slice ahead of
+#                    the registration that makes it decodable. Real discs
+#                    do exactly this: their subset SPS repetition is far
+#                    wider than the GOP (one shipped owner stream measures
+#                    ~293 NAL units between subset SPS re-issues against a
+#                    6-NAL GOP period), so which keyframe a fast seek lands
+#                    on decides whether the multiview registration is within
+#                    reach of the entry. Needs --gop-reissue and must name a
+#                    later access unit than it.
 #   --copy           re-emit the sibling stream verbatim (escaping self-check)
 #   --zero           author zero-residual payloads at the sibling's picture
 #                    counts and require the result to be the sibling exactly
@@ -165,6 +189,14 @@ my @ofmd_lags;
 my ($base2_lvl, $dep2_lvl) = (undef, undef);
 my $view1_start = 0;
 my $idr_every   = 0;
+# Seek-entry registration fixtures: --gop-reissue re-announces the base view's
+# parameter sets at a refresh access unit (the seekable-GOP shape), and
+# --ssps-reissue carries the multiview registration (subset SPS + dependent
+# view's PPS) of the stream's SECOND registration moment at a LATER access
+# unit than the refresh it serves. Together they author the stream shape a
+# fast seek into a wide-registration-period disc lands in: the refresh's own
+# dependent picture ahead of the registration that registers its view.
+my ($gop_reissue, $ssps_reissue) = (undef, undef);
 
 for my $a (@ARGV) {
     $dnafile     = $1 if $a =~ /^--dna=(.+)$/;
@@ -177,6 +209,8 @@ for my $a (@ARGV) {
     $dep_frames  = $1 if $a =~ /^--dep-frames=(\d+)$/;
     $view1_start = $1 if $a =~ /^--view1-start=(\d+)$/;
     $idr_every   = $1 if $a =~ /^--idr-every=(\d+)$/;
+    $gop_reissue = $1 if $a =~ /^--gop-reissue=(\d+)$/;
+    $ssps_reissue = $1 if $a =~ /^--ssps-reissue=(\d+)$/;
     $ofmd_frames = $1 if $a =~ /^--ofmd-frames=(\d+)$/;
     $ofmd_seq    = $1 if $a =~ /^--ofmd-seq=(\d+)$/;
     $ofmd_pts    = $1 if $a =~ /^--ofmd-pts=(\d+)$/;
@@ -215,6 +249,21 @@ die "--view1-start has nothing to do with --copy/--zero\n"
     if ($copy_only || $zero_check) && $view1_start;
 die "--base2/--dep2 have nothing to do with --copy/--zero\n"
     if ($copy_only || $zero_check) && (defined($base2_lvl) || defined($dep2_lvl));
+
+die "--gop-reissue has nothing to do with --copy/--zero\n"
+    if ($copy_only || $zero_check) && (defined($gop_reissue) || defined($ssps_reissue));
+die "--gop-reissue needs --idr-every (only refresh access units can land a seek)\n"
+    if defined($gop_reissue) && !$idr_every;
+die "--gop-reissue=$gop_reissue is not a refresh access unit of --idr-every=$idr_every\n"
+    if defined($gop_reissue) && ($gop_reissue == 0 || $gop_reissue % $idr_every);
+die "--gop-reissue=$gop_reissue needs a base view picture in that access unit (--base-frames)\n"
+    if defined($gop_reissue) && $gop_reissue >= $base_frames;
+die "--ssps-reissue needs --gop-reissue (the re-issued registration lags a landing refresh)\n"
+    if defined($ssps_reissue) && !defined($gop_reissue);
+die "--ssps-reissue must name a later access unit than --gop-reissue\n"
+    if defined($ssps_reissue) && defined($gop_reissue) && $ssps_reissue <= $gop_reissue;
+die "--ssps-reissue=$ssps_reissue needs a dependent view picture in that access unit (--dep-frames)\n"
+    if defined($ssps_reissue) && $ssps_reissue - $view1_start >= $dep_frames;
 
 die "--ofmd-lag-pattern needs an explicit --ofmd-frames (the block size it tiles)\n"
     if $ofmd && @ofmd_lags && $ofmd_frames < 0;
@@ -315,6 +364,15 @@ my ($mvcslice) = @mvcslice;
 # Dependency-annotated slice header of view 1 (priority / view id / anchor
 # signalling), reused verbatim for every dependent picture.
 my $mvhdr = substr($mvcslice->{raw}, 0, 4);
+
+# The four parameter sets the seek-entry modes re-announce, taken by their
+# proven slot in the sibling order the role check above pinned: the base
+# view's SPS and PPS (GOP-head re-announcement, --gop-reissue) and the
+# multiview registration pair, subset SPS and the dependent view's PPS
+# (registration re-announcement, --ssps-reissue). Verbatim copies - a
+# re-issue says the same thing the stream front said, only later.
+my ($gop_sps, $gop_pps, $ssps, $ssps_pps) =
+    ($nal[0]{raw}, $nal[1]{raw}, $nal[4]{raw}, $nal[5]{raw});
 
 # --copy has nothing to author, so it can only be the sibling stream itself
 die "--copy only re-emits the sibling stream (2 pictures per view)\n"
@@ -579,6 +637,21 @@ for my $au (1 .. $max_au) {
     my $dep_idx = $au - $view1_start;
 
     $body .= $sc . $aud->{raw};
+    # The GOP-head parameter re-issue rides after the delimiter and ahead of
+    # the refresh picture it re-announces for (--gop-reissue): the seekable
+    # disc shape where every group head carries the parameter sets its entry
+    # needs.
+    if (defined($gop_reissue) && $au == $gop_reissue) {
+        $body .= $sc . $gop_sps;
+        $body .= $sc . $gop_pps;
+    }
+    # The registration re-issue takes the same slot one or more access units
+    # after the landing refresh it serves (--ssps-reissue), so the landing
+    # access unit's dependent picture precedes it by construction.
+    if (defined($ssps_reissue) && $au == $ssps_reissue) {
+        $body .= $sc . $ssps;
+        $body .= $sc . $ssps_pps;
+    }
     $body .= $sc . base_picture($au, au_is_idr($au)) if $au < $base_frames;
     $body .= $ofmd_sei_at[$au] if $ofmd && @ofmd_lags && defined $ofmd_sei_at[$au];
     $body .= $sc . dep_picture($dep_idx, $au)
@@ -588,19 +661,21 @@ for my $au (1 .. $max_au) {
 open(my $of, '>:raw', $out) or die "open $out: $!";
 print $of $body;
 close $of;
-printf "wrote %s: %d bytes (%d base + %d dependent pictures, view0 DC %d%s, view1 DC %d%s, view1 starts at AU %d%s%s)\n",
+printf "wrote %s: %d bytes (%d base + %d dependent pictures, view0 DC %d%s, view1 DC %d%s, view1 starts at AU %d%s%s%s%s)\n",
        $out, length($body), $base_frames, $dep_frames, $base_lvl,
        defined($base2_lvl) ? "/$base2_lvl" : "",
        $dep_lvl,
        defined($dep2_lvl) ? "/$dep2_lvl" : "",
        $view1_start,
        $idr_every ? ", base IDR every $idr_every" : "",
+       defined($gop_reissue)  ? ", base parameter sets re-issued at AU $gop_reissue" : "",
+       defined($ssps_reissue) ? ", registration re-issued at AU $ssps_reissue" : "",
        $ofmd ? (@ofmd_lags
-                ? sprintf(', subtitle depth: %d blocks x %d sequences x %d pictures from pts %d, rate code %d, SEI lags %s',
-                          scalar(@ofmd_lags), $ofmd_seq, $ofmd_frames,
-                          $ofmd_wire_pts, $ofmd_rate, join(',', @ofmd_lags))
-                : sprintf(', subtitle depth: %d sequences x %d pictures at pts %d, rate code %d',
-                          $ofmd_seq, $ofmd_frames, $ofmd_pts, $ofmd_rate))
+                 ? sprintf(', subtitle depth: %d blocks x %d sequences x %d pictures from pts %d, rate code %d, SEI lags %s',
+                           scalar(@ofmd_lags), $ofmd_seq, $ofmd_frames,
+                           $ofmd_wire_pts, $ofmd_rate, join(',', @ofmd_lags))
+                 : sprintf(', subtitle depth: %d sequences x %d pictures at pts %d, rate code %d',
+                           $ofmd_seq, $ofmd_frames, $ofmd_pts, $ofmd_rate))
              : '';
 
 if ($copy_only || $zero_check) {
