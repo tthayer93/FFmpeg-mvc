@@ -172,13 +172,31 @@ static H264Picture *h264_find_inter_view_ref(H264Context *h, int view_id, int po
      * there is no clock to score by and the first answer wins; with one,
      * the smallest forward frame_num distance wins - the co-located
      * anchor scores 0 - and an equal distance keeps the incumbent, which
-     * preserves the legacy source priority short_ref > delayed_pic > DPB. */
+     * preserves the legacy source priority short_ref > delayed_pic > DPB.
+     *
+     * One kind of tie is not legacy business: with the access-unit latch
+     * alive, a candidate from a foreign access unit may never beat one
+     * from the current access unit. Annex E inter-view prediction is
+     * co-located by construction, and at a POC epoch collision the frame
+     * counters wrap, so a stale picture from the previous epoch scores
+     * exactly like the co-located one. The composed route keeps consumed
+     * base halves pinned longer than an isolated decode parks its
+     * predecessor, so under the old first-incumbent tie-break the
+     * reference resolved into the previous epoch - the dependent picture
+     * decoded to pixels no single-eye route ever produces (the T169
+     * epoch/entry phantoms). Foreign-access-unit candidates fall behind
+     * every same-access-unit candidate; within each class the existing
+     * distance and source-order rules stand untouched. */
 #define IVIEW_CAND(cand)                                                       \
     do {                                                                       \
         const H264Picture *c_ = (const H264Picture *)(cand);                   \
-        const int d_ = scored                                                  \
-            ? (h->cur_pic_ptr->frame_num - c_->frame_num) &                    \
-              (max_pic_num - 1) : 0;                                           \
+        int d_ = 0;                                                            \
+        if (scored) {                                                          \
+            d_ = (h->cur_pic_ptr->frame_num - c_->frame_num) &                 \
+                 (max_pic_num - 1);                                            \
+            if (h->au_base_valid && c_->f->pts != h->au_base_pts)              \
+                d_ += max_pic_num;                                             \
+        }                                                                      \
         if (!res || d_ < best_dist) {                                          \
             res       = (H264Picture *)c_;                                     \
             best_dist = d_;                                                    \
