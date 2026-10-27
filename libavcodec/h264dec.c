@@ -503,9 +503,15 @@ static void h264_mvc_entry_clear(H264Context *h)
 {
     for (int i = 0; i < H264_MVC_ENTRY_HOLD_DEPTH; i++) {
         av_freep(&h->mvc_entry_hold_buf[i]);
-        h->mvc_entry_hold_size[i] = 0;
-        h->mvc_entry_hold_pts[i]  = AV_NOPTS_VALUE;
-        h->mvc_entry_hold_dts[i]  = AV_NOPTS_VALUE;
+        h->mvc_entry_hold_size[i]        = 0;
+        h->mvc_entry_hold_pts[i]         = AV_NOPTS_VALUE;
+        h->mvc_entry_hold_dts[i]         = AV_NOPTS_VALUE;
+        h->mvc_entry_hold_base_poc[i]    = 0;
+        h->mvc_entry_hold_base_field_poc[i][0] = 0;
+        h->mvc_entry_hold_base_field_poc[i][1] = 0;
+        h->mvc_entry_hold_base_pts[i]    = AV_NOPTS_VALUE;
+        h->mvc_entry_hold_base_dts[i]    = AV_NOPTS_VALUE;
+        h->mvc_entry_hold_base_valid[i]  = 0;
     }
     h->mvc_entry_hold_count   = 0;
     h->mvc_entry_hold_bytes   = 0;
@@ -550,8 +556,28 @@ static int h264_mvc_entry_reserve(H264Context *h, int size, int64_t pts,
         return AVERROR(ENOMEM);
     }
     h->mvc_entry_hold_size[idx] = size;
-    h->mvc_entry_hold_pts[idx]  = pts;
-    h->mvc_entry_hold_dts[idx]  = dts;
+    /* The dependent half of a split access unit arrives without a timestamp.
+     * Keep the access unit's own time for replay when the base half has
+     * already latched it, rather than replaying into an untimed packet slot,
+     * and carry the latched base-view identity of that access unit with the
+     * bytes: at replay the context latch names a later access unit, and the
+     * held slice must be put back on the timeline it was taken from. */
+    h->mvc_entry_hold_pts[idx] = pts != AV_NOPTS_VALUE ? pts :
+                                 (h->au_base_valid ? h->au_base_pts :
+                                                      AV_NOPTS_VALUE);
+    h->mvc_entry_hold_dts[idx] = dts != AV_NOPTS_VALUE ? dts :
+                                 (h->au_base_valid ? h->au_base_pkt_dts :
+                                                      AV_NOPTS_VALUE);
+    h->mvc_entry_hold_base_poc[idx] = h->au_base_valid ? h->au_base_poc : 0;
+    h->mvc_entry_hold_base_field_poc[idx][0] = h->au_base_valid ?
+                                               h->au_base_field_poc[0] : 0;
+    h->mvc_entry_hold_base_field_poc[idx][1] = h->au_base_valid ?
+                                               h->au_base_field_poc[1] : 0;
+    h->mvc_entry_hold_base_pts[idx] = h->au_base_valid ? h->au_base_pts :
+                                                         AV_NOPTS_VALUE;
+    h->mvc_entry_hold_base_dts[idx] = h->au_base_valid ? h->au_base_pkt_dts :
+                                                         AV_NOPTS_VALUE;
+    h->mvc_entry_hold_base_valid[idx] = h->au_base_valid;
     h->mvc_entry_hold_bytes    += size;
     *dst = h->mvc_entry_hold_buf[idx];
     return idx + 1;
@@ -568,12 +594,26 @@ static void h264_mvc_entry_pop(H264Context *h)
         h->mvc_entry_hold_size[i] = h->mvc_entry_hold_size[i + 1];
         h->mvc_entry_hold_pts[i]  = h->mvc_entry_hold_pts[i + 1];
         h->mvc_entry_hold_dts[i]  = h->mvc_entry_hold_dts[i + 1];
+        h->mvc_entry_hold_base_poc[i] = h->mvc_entry_hold_base_poc[i + 1];
+        h->mvc_entry_hold_base_field_poc[i][0] =
+            h->mvc_entry_hold_base_field_poc[i + 1][0];
+        h->mvc_entry_hold_base_field_poc[i][1] =
+            h->mvc_entry_hold_base_field_poc[i + 1][1];
+        h->mvc_entry_hold_base_pts[i] = h->mvc_entry_hold_base_pts[i + 1];
+        h->mvc_entry_hold_base_dts[i] = h->mvc_entry_hold_base_dts[i + 1];
+        h->mvc_entry_hold_base_valid[i] = h->mvc_entry_hold_base_valid[i + 1];
     }
     h->mvc_entry_hold_count--;
     h->mvc_entry_hold_buf[h->mvc_entry_hold_count]  = NULL;
     h->mvc_entry_hold_size[h->mvc_entry_hold_count] = 0;
     h->mvc_entry_hold_pts[h->mvc_entry_hold_count]  = AV_NOPTS_VALUE;
     h->mvc_entry_hold_dts[h->mvc_entry_hold_count]  = AV_NOPTS_VALUE;
+    h->mvc_entry_hold_base_poc[h->mvc_entry_hold_count] = 0;
+    h->mvc_entry_hold_base_field_poc[h->mvc_entry_hold_count][0] = 0;
+    h->mvc_entry_hold_base_field_poc[h->mvc_entry_hold_count][1] = 0;
+    h->mvc_entry_hold_base_pts[h->mvc_entry_hold_count] = AV_NOPTS_VALUE;
+    h->mvc_entry_hold_base_dts[h->mvc_entry_hold_count] = AV_NOPTS_VALUE;
+    h->mvc_entry_hold_base_valid[h->mvc_entry_hold_count] = 0;
     av_free(buf);
 }
 
@@ -659,6 +699,52 @@ static int h264_mvc_entry_hold_scan_packet(H264Context *h,
     return 0;
 }
 
+static void h264_sbs_q_push(H264Context *h, H264Picture *p, int role);
+
+/* Close one picture produced by replayed entry slices. A packet can hold
+ * several access units of the same dependent view; without this the second
+ * held fragment would be queued as another slice of the first held picture. */
+static int h264_mvc_replay_close_picture(H264Context *h)
+{
+    H264Picture *p = h->cur_pic_ptr;
+    int ret;
+
+    if (!h->current_slice || !p)
+        return 0;
+
+    ret = ff_h264_field_end(h, h->slice_ctx, 1);
+    if (ret < 0) {
+        if (h->avctx->err_recognition & AV_EF_EXPLODE)
+            return ret;
+        ret = 0;
+    }
+    ff_thread_report_progress(&p->tf, INT_MAX, 0);
+    ff_thread_report_progress(&p->tf, INT_MAX, 1);
+
+    /* Several held fragments of the same view close before this packet's
+     * normal output block runs. Only one view output slot can name the last
+     * committed picture, so send each committed dependent half straight into
+     * the compose queue instead of letting the next held fragment overwrite
+     * it. */
+    if (h->view_count > 1 && p->view_idx > 0 &&
+        ff_h264_allviews_composition(h->avctx) &&
+        h->views[p->view_idx].next_output_pic == p &&
+        !ff_h264_pic_held_for_compose(h, p) &&
+        h->sbs_pair_count[p->view_idx] < H264_SBS_PAIR_Q_SIZE) {
+        p->reference |= DELAYED_PIC_REF;
+        h264_sbs_q_push(h, p, p->view_idx);
+        h->sbs_pair_pending = h->sbs_pair_count[0] && h->sbs_pair_count[1];
+        h->views[p->view_idx].next_output_pic = NULL;
+    }
+
+    h->cur_pic_ptr   = NULL;
+    h->current_slice = 0;
+    h->first_field   = 0;
+    h->droppable     = 0;
+
+    return ret;
+}
+
 /* Replay the held dependent fragments now that their view has been registered.
  * The current packet's parameter sets have already been parsed (the replay is
  * called at the first slice), so the held slice can address the PPS it needs.
@@ -672,8 +758,45 @@ static int h264_mvc_replay_entry_packets(H264Context *h,
 {
     int replayed = 0;
     int ret = 0;
+    int saved_au_base_valid = h->au_base_valid;
+    int saved_au_base_poc = h->au_base_poc;
+    int saved_au_base_field_poc[2];
+    int64_t saved_au_base_pts = h->au_base_pts;
+    int64_t saved_au_base_dts = h->au_base_pkt_dts;
+
+    memcpy(saved_au_base_field_poc, h->au_base_field_poc,
+           sizeof(saved_au_base_field_poc));
 
     while (limit-- > 0 && h->mvc_entry_hold_count > 0) {
+        int hold_base_valid = h->mvc_entry_hold_base_valid[0];
+        int hold_base_poc = h->mvc_entry_hold_base_poc[0];
+        int hold_base_field_poc[2];
+        int64_t hold_base_pts = h->mvc_entry_hold_base_pts[0];
+        int64_t hold_base_dts = h->mvc_entry_hold_base_dts[0];
+
+        memcpy(hold_base_field_poc, h->mvc_entry_hold_base_field_poc[0],
+               sizeof(hold_base_field_poc));
+
+        /* Replay uses the base identity that was current when this fragment
+         * was held, not the identity of the packet that eventually registered
+         * the view. Without it, a held older dependent half would adopt a
+         * later base POC and could be welded to the wrong access unit. */
+        if (hold_base_valid) {
+            h->au_base_valid          = 1;
+            h->au_base_poc            = hold_base_poc;
+            h->au_base_field_poc[0]   = hold_base_field_poc[0];
+            h->au_base_field_poc[1]   = hold_base_field_poc[1];
+            h->au_base_pts            = hold_base_pts;
+            h->au_base_pkt_dts        = hold_base_dts;
+        } else {
+            h->au_base_valid          = saved_au_base_valid;
+            h->au_base_poc            = saved_au_base_poc;
+            h->au_base_field_poc[0]   = saved_au_base_field_poc[0];
+            h->au_base_field_poc[1]   = saved_au_base_field_poc[1];
+            h->au_base_pts            = saved_au_base_pts;
+            h->au_base_pkt_dts        = saved_au_base_dts;
+        }
+
         H2645Packet pkt = { 0 };
         AVPacket *pkt_props = h->avctx && h->avctx->internal ?
                               h->avctx->internal->last_pkt_props : NULL;
@@ -731,7 +854,7 @@ static int h264_mvc_replay_entry_packets(H264Context *h,
                     ff_h2645_packet_uninit(&pkt);
                     h264_mvc_entry_pop(h);
                     h->pkt_dts = saved_dts;
-                    return ret;
+                    goto restore_au_base;
                 }
                 ret = 0;
             }
@@ -745,7 +868,7 @@ static int h264_mvc_replay_entry_packets(H264Context *h,
                 ff_h2645_packet_uninit(&pkt);
                 h264_mvc_entry_pop(h);
                 h->pkt_dts = saved_dts;
-                return ret;
+                goto restore_au_base;
             }
             replayed = 1;
             ret = 0;
@@ -757,15 +880,17 @@ static int h264_mvc_replay_entry_packets(H264Context *h,
         }
 
         /* The queued slices borrow GetBitContexts into the held copy. Execute
-         * them before the copy goes away; the following packet's first slice
-         * still performs the view switch and the picture's field_end(). */
+         * them before the copy goes away. Close the picture after each held
+         * fragment: a following held fragment of the same view is the next
+         * picture, not another slice of this one. The target packet's own
+         * first slice still starts its picture normally. */
         if (h->nb_slice_ctx_queued) {
             ret = ff_h264_execute_decode_slices(h);
             if (ret < 0 && (h->avctx->err_recognition & AV_EF_EXPLODE)) {
                 ff_h2645_packet_uninit(&pkt);
                 h264_mvc_entry_pop(h);
                 h->pkt_dts = saved_dts;
-                return ret;
+                goto restore_au_base;
             }
             ret = 0;
         }
@@ -773,7 +898,21 @@ static int h264_mvc_replay_entry_packets(H264Context *h,
         ff_h2645_packet_uninit(&pkt);
         h->pkt_dts = saved_dts;
         h264_mvc_entry_pop(h);
+        ret = h264_mvc_replay_close_picture(h);
+        if (ret < 0)
+            goto restore_au_base;
     }
+
+restore_au_base:
+    h->au_base_valid     = saved_au_base_valid;
+    h->au_base_poc       = saved_au_base_poc;
+    h->au_base_field_poc[0] = saved_au_base_field_poc[0];
+    h->au_base_field_poc[1] = saved_au_base_field_poc[1];
+    h->au_base_pts       = saved_au_base_pts;
+    h->au_base_pkt_dts   = saved_au_base_dts;
+
+    if (ret < 0)
+        return ret;
 
     if (replayed && h->current_slice && h->cur_pic_ptr) {
         int target_slot = 0;

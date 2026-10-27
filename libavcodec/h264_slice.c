@@ -31,6 +31,7 @@
 #include "libavutil/mem.h"
 #include "libavutil/pixdesc.h"
 #include "libavutil/timecode.h"
+#include "avcodec_internal.h"
 #include "decode.h"
 #include "cabac.h"
 #include "cabac_functions.h"
@@ -2264,7 +2265,8 @@ static int h264_field_start(H264Context *h, const H264SliceContext *sl,
      * slot 0; its slice references the compatibility SPS (mvc.present ==
      * 0), so the latch must not be conditioned on the active SPS's mvc
      * extension. */
-    if (h->cur_pic_ptr && h->view_count > 1 && h->cur_view == 0) {
+    if (h->cur_pic_ptr && h->cur_view == 0 &&
+        (h->view_count > 1 || ff_h264_allviews_composition(h->avctx))) {
         h->au_base_poc          = h->cur_pic_ptr->poc;
         h->au_base_field_poc[0] = h->cur_pic_ptr->field_poc[0];
         h->au_base_field_poc[1] = h->cur_pic_ptr->field_poc[1];
