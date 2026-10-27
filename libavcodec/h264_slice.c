@@ -2019,6 +2019,38 @@ static int h264_field_start(H264Context *h, const H264SliceContext *sl,
     else if (h->picture_intra_only)
         h->poc_offset = 0;
 
+    /* An IDR picture opens a new coded sequence for its view: the frame_num it
+     * carries has no earlier picture of that view to be measured against, and
+     * no picture of that view coded before it may serve as a reference.
+     * Upstream keeps both invariants by refreshing the decoder when the IDR's
+     * slice header is parsed, which drops every reference and resets the
+     * frame_num bookkeeping. Here that refresh is tied to the plain type-5 IDR
+     * of the base view (see idr() in h264dec.c), so a dependent-view IDR - a
+     * slice extension NAL with non_idr_flag 0 - that reaches the decoder on its
+     * own, as it does whenever the views' access units arrive split or
+     * reordered (a fast-seek entry is the usual case), finds the previous
+     * sequence still standing:
+     *   - prev_frame_num still names that sequence, so the gap handling below
+     *     walks it up to the IDR's frame_num, fabricating a reference picture
+     *     per step and error-concealing each one (a grey frame when there is
+     *     nothing to copy from), which the new sequence then motion-compensates
+     *     from although it was never coded;
+     *   - the previous sequence's pictures stay in this view's reference lists,
+     *     so the IDR's own list names one and every picture behind the IDR
+     *     picks it up too, until a base-view IDR happens to refresh the view.
+     * Both surface as composed halves whose content exists nowhere in the
+     * stream. Refresh this view the way that IDR refresh would have. Only this
+     * view, and only reference duty: a picture still owed to the composed
+     * output keeps its DELAYED_PIC_REF pin through ff_h264_remove_view_refs()
+     * and goes out on its own turn. */
+    if (nal->type == H264_NAL_IDR_SLICE ||
+        (nal->type == H264_NAL_EXTEN_SLICE && nal->mv_ext_parsed &&
+         !nal->mv_non_idr)) {
+        if (v->short_ref_count || v->long_ref_count)
+            ff_h264_remove_view_refs(h, h->cur_view);
+        v->poc.prev_frame_num = v->poc.frame_num;
+    }
+
     /* Shorten frame num gaps so we don't have to allocate reference
      * frames just to throw them away */
     if (v->poc.frame_num != v->poc.prev_frame_num) {
