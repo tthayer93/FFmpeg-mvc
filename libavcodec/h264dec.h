@@ -846,7 +846,6 @@ typedef struct H264Context {
      * produced enough correctly paired access units to trust it.
      */
 #define H264_MVC_ENTRY_RECOVERY_FRAMES 250
-#define H264_MVC_ENTRY_REORDER_LOOKAHEAD 4
     int mvc_entry_recovery;
     int mvc_entry_recovery_successes;
 

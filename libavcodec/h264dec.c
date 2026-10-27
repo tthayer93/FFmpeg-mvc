@@ -725,6 +725,9 @@ static int h264_mvc_replay_close_picture(H264Context *h)
      * committed picture, so send each committed dependent half straight into
      * the compose queue instead of letting the next held fragment overwrite
      * it. */
+    /* The capacity bound is deliberate: at a full queue this park is skipped
+     * and the half is left to the delayed-list fallback (documented follow-up,
+     * T169g review nit 3; teaching that path is a behavior change). */
     if (h->view_count > 1 && p->view_idx > 0 &&
         ff_h264_allviews_composition(h->avctx) &&
         h->views[p->view_idx].next_output_pic == p &&
@@ -3190,6 +3193,13 @@ static int h264_sbs_process_entry_recovery(H264Context *h, AVFrame *pict,
             if (ret < 0)
                 return ret;
             if (!got) {
+                /* Park only while the queue has room, like every other hold:
+                 * at capacity a push would clobber the ring head and leak the
+                 * clobbered picture's DELAYED_PIC_REF pin.  Return 0 instead:
+                 * the caller's normal path re-walks this same-key weld, fails
+                 * finalize again, and lands at its count-preserving hold. */
+                if (h->sbs_pair_count[role] >= H264_SBS_PAIR_Q_SIZE)
+                    return 0;
                 out->reference |= DELAYED_PIC_REF;
                 h264_sbs_q_push(h, out, role);
                 *got_frame = 0;
@@ -3204,6 +3214,10 @@ static int h264_sbs_process_entry_recovery(H264Context *h, AVFrame *pict,
             if (ret < 0)
                 return ret;
             if (!got) {
+                /* Capacity-guarded exactly as in the base-arrival arm above:
+                 * return 0 at a full queue rather than clobber the ring. */
+                if (h->sbs_pair_count[role] >= H264_SBS_PAIR_Q_SIZE)
+                    return 0;
                 out->reference |= DELAYED_PIC_REF;
                 h264_sbs_q_push(h, out, role);
                 *got_frame = 0;
@@ -3252,7 +3266,7 @@ static int h264_sbs_service_queued(H264Context *h, AVFrame *pict,
                                    H264Picture *out, int role, int *got_frame)
 {
     H264Picture *base, *dep, *older, *waiting, *own;
-    int64_t k_arrival, k_base, k_dep, k_old, k_max, bound;
+    int64_t k_arrival, k_base, k_dep, k_old, k_max;
     int svc_role, arrival_past, got = 0, composed, ret;
 
     if (!h->sbs_pair_count[0] || !h->sbs_pair_count[1]) {
@@ -3334,7 +3348,6 @@ static int h264_sbs_service_queued(H264Context *h, AVFrame *pict,
         k_max = k_arrival;
     arrival_past = (k_arrival != AV_NOPTS_VALUE && k_arrival > k_old);
 
-    bound = h264_sbs_pts_wait_bound(h);
     if (!h264_sbs_merge_lag_bounded(h, k_old, k_max, arrival_past)) {
         out->reference |= DELAYED_PIC_REF;
         h264_sbs_q_push(h, out, role);
