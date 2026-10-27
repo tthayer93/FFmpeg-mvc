@@ -394,13 +394,26 @@ fail:
 static int video_frame_process(DecoderPriv *dp, AVFrame *frame,
                                unsigned *outputs_mask)
 {
+    const FrameData *fd;
+
     if (frame->format == dp->hwaccel_pix_fmt) {
         int err = hwaccel_retrieve_data(dp->dec_ctx, frame);
         if (err < 0)
             return err;
     }
 
-    frame->pts = frame->best_effort_timestamp;
+    /* Multiview frames carry a decoder-corrected view pts.  A POC epoch
+     * collision can make that corrected pts arrive out of order; the generic
+     * best_effort_timestamp guess then replaces it with the packet dts and
+     * permutes the container stamp.  Keep the decoder's own pts for frames
+     * tagged with view_id, so the per-view content-time map keeps the AU's
+     * raw container stamp. */
+    fd = frame_data_c(frame);
+    if (fd && fd->dec.pts != AV_NOPTS_VALUE &&
+        av_dict_get(frame->metadata, "view_id", NULL, 0))
+        frame->pts = fd->dec.pts;
+    else
+        frame->pts = frame->best_effort_timestamp;
 
     // forced fixed framerate
     if (dp->flags & DECODER_FLAG_FRAMERATE_FORCED) {

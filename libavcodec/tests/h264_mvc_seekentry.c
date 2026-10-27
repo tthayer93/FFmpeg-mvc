@@ -486,9 +486,8 @@ static int feed(Run *run, AVCodecContext *avctx, const uint8_t *buf,
     return drain(run, avctx, frame);
 }
 
-int main(int argc, char **argv)
+static int run_stream(const char *path)
 {
-    const char    *path        = NULL;
     uint8_t       *buf         = NULL;
     size_t         cut[MAX_AU];
     size_t         size        = 0;
@@ -505,12 +504,6 @@ int main(int argc, char **argv)
     AVFrame       *frame       = NULL;
     AVPacket      *pkt         = NULL;
     const AVCodec *codec;
-
-    if (argc < 2) {
-        fprintf(stderr, "usage: %s <annex-b two-view stream>\n", argv[0]);
-        return 1;
-    }
-    path = argv[1];
 
     if ((ret = av_file_map(path, &buf, &size, 0, NULL)) < 0) {
         fprintf(stderr, "seek: %s: %s\n", path, av_err2str(ret));
@@ -648,4 +641,22 @@ fail:
     av_file_unmap(buf, size);
 
     return 1;
+}
+
+int main(int argc, char **argv)
+{
+    int fails = 0;
+
+    if (argc < 2) {
+        fprintf(stderr, "usage: %s <annex-b two-view stream> [...]\n", argv[0]);
+        return 1;
+    }
+
+    for (int i = 1; i < argc; i++) {
+        if (i > 1)
+            printf("\n");
+        fails |= run_stream(argv[i]);
+    }
+
+    return fails ? 1 : 0;
 }

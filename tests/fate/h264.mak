@@ -950,11 +950,23 @@ fate-h264-mvc-subdepth-shift:                       CMD = framecrc -threads 1 \
 #        --base=100 --dep=-100 \
 #        --out=tests/fate/h264-mvc/2view-ssps-lag.h264
 #
+# The second fixture repeats the same landing shape with a two-access-unit
+# registration lag, so two dependent halves are held before the subset SPS
+# arrives.  The alternate picture levels make a replay across POC boundaries
+# legible in the composed halves; this is the regression pin for the entry
+# hold's access-unit identity.
+#
+#   perl tests/fate/h264-mvc/mvc-mkfix.pl --idr-every=2 --gop-reissue=2 \
+#        --ssps-reissue=4 --base-frames=6 --dep-frames=6 \
+#        --base=100 --base2=70 --dep=-100 --dep2=-70 \
+#        --out=tests/fate/h264-mvc/2view-ssps-lag-crosspoc.h264
+#
 # and, like the fixtures above, staged into $(TARGET_SAMPLES)/h264-mvc/ by
 # the gate rather than fetched from the sample server.
 fate-h264-mvc-seekentry:                          libavcodec/tests/h264_mvc_seekentry$(EXESUF)
 fate-h264-mvc-seekentry:                          CMD = run libavcodec/tests/h264_mvc_seekentry$(EXESUF) \
-                                                          $(TARGET_SAMPLES)/h264-mvc/2view-ssps-lag.h264
+                                                           $(TARGET_SAMPLES)/h264-mvc/2view-ssps-lag.h264 \
+                                                           $(TARGET_SAMPLES)/h264-mvc/2view-ssps-lag-crosspoc.h264
 
 fate-h264-reinit-%:                               CMD = framecrc -i $(TARGET_SAMPLES)/h264/$(@:fate-h264-%=%).h264 -vf scale,format=yuv444p10le,scale=w=352:h=288
 

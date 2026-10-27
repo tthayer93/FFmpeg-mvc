@@ -821,6 +821,18 @@ typedef struct H264Context {
     int      mvc_entry_hold_size[H264_MVC_ENTRY_HOLD_DEPTH];
     int64_t  mvc_entry_hold_pts[H264_MVC_ENTRY_HOLD_DEPTH];
     int64_t  mvc_entry_hold_dts[H264_MVC_ENTRY_HOLD_DEPTH];
+    /* The base-view identity of the access unit whose dependent half was held.
+     * The replayed slice can only be put back on its own timeline if the AU
+     * identity it was held behind travels with the byte copy: several held
+     * halves may be replayed after later base pictures have moved the
+     * context-level au_base_* latch, and a held fragment replayed against the
+     * moved latch adopts another access unit's POC and delivery time (the
+     * cross-POC entry collision). */
+    int      mvc_entry_hold_base_poc[H264_MVC_ENTRY_HOLD_DEPTH];
+    int      mvc_entry_hold_base_field_poc[H264_MVC_ENTRY_HOLD_DEPTH][2];
+    int64_t  mvc_entry_hold_base_pts[H264_MVC_ENTRY_HOLD_DEPTH];
+    int64_t  mvc_entry_hold_base_dts[H264_MVC_ENTRY_HOLD_DEPTH];
+    int      mvc_entry_hold_base_valid[H264_MVC_ENTRY_HOLD_DEPTH];
     int      mvc_entry_hold_count;
     int64_t  mvc_entry_hold_bytes;
     /** Per-packet latch: the packet was held as a registration-lag fragment. */
@@ -843,7 +855,6 @@ typedef struct H264Context {
      * produced enough correctly paired access units to trust it.
      */
 #define H264_MVC_ENTRY_RECOVERY_FRAMES 250
-#define H264_MVC_ENTRY_REORDER_LOOKAHEAD 4
     int mvc_entry_recovery;
     int mvc_entry_recovery_successes;
 
