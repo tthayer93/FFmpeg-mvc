@@ -1,0 +1,26 @@
+seek: threads=1 units=6 landing=2 step=3600
+cold: pts=0 32x16 view=none arrangement=yes halves=158,47
+cold: pts=3600 32x16 view=none arrangement=yes halves=158,47
+cold: pts=7200 32x16 view=none arrangement=yes halves=158,47
+cold: pts=10800 32x16 view=none arrangement=yes halves=158,47
+cold: pts=14400 32x16 view=none arrangement=yes halves=158,47
+cold: pts=18000 32x16 view=none arrangement=yes halves=158,47
+cold: delivered=6 composed=6 rejected=0 result=ok
+flush: pts=7200 32x16 view=none arrangement=yes halves=158,47
+flush:   ^ the frame the front delivered, identical
+flush: pts=10800 32x16 view=none arrangement=yes halves=158,47
+flush:   ^ the frame the front delivered, identical
+flush: pts=14400 32x16 view=none arrangement=yes halves=158,47
+flush:   ^ the frame the front delivered, identical
+flush: pts=18000 32x16 view=none arrangement=yes halves=158,47
+flush:   ^ the frame the front delivered, identical
+flush: delivered=4 composed=4 rejected=0 result=ok
+seekentry: pts=7200 32x16 view=none arrangement=yes halves=158,47
+seekentry:   ^ the frame the front delivered, identical
+seekentry: pts=10800 32x16 view=none arrangement=yes halves=158,47
+seekentry:   ^ the frame the front delivered, identical
+seekentry: pts=14400 32x16 view=none arrangement=yes halves=158,47
+seekentry:   ^ the frame the front delivered, identical
+seekentry: pts=18000 32x16 view=none arrangement=yes halves=158,47
+seekentry:   ^ the frame the front delivered, identical
+seekentry: delivered=4 composed=4 rejected=0 result=ok

@@ -316,6 +316,12 @@ static int h264_init_context(AVCodecContext *avctx, H264Context *h)
     /* base view (slot 0) is always registered */
     h->view_count = 1;
     h->cur_view   = 0;
+    h->mvc_entry_hold_count   = 0;
+    h->mvc_entry_hold_bytes   = 0;
+    h->mvc_entry_hold_skipped = 0;
+    h->mvc_deferred_pic       = NULL;
+    h->mvc_entry_recovery            = 0;
+    h->mvc_entry_recovery_successes  = 0;
     for (i = 0; i < H264_MAX_MVC_VIEWS; i++)
         h->views[i].view_id = -1;
     h->views[0].view_id       = 0;
@@ -412,6 +418,7 @@ static void h264_sbs_q_clear(H264Context *h)
         h->sbs_pair_head[r]  = 0;
         h->sbs_pair_count[r] = 0;
     }
+    h->mvc_deferred_pic = NULL;
     h->sbs_pair_pending = 0;
 }
 
@@ -487,6 +494,311 @@ static void h264_iv_anchor_retain(H264Context *h, H264Picture *p)
     tail = (h->iv_anchor_head + h->iv_anchor_count) % H264_MVC_ANCHOR_Q_DEPTH;
     h->iv_anchor_q[tail] = p;
     h->iv_anchor_count++;
+}
+
+/* Forget the fast-seek entry hold: the copied fragments and any base picture
+ * deferred behind them are session state, not references that survive a seek
+ * or a close. */
+static void h264_mvc_entry_clear(H264Context *h)
+{
+    for (int i = 0; i < H264_MVC_ENTRY_HOLD_DEPTH; i++) {
+        av_freep(&h->mvc_entry_hold_buf[i]);
+        h->mvc_entry_hold_size[i] = 0;
+        h->mvc_entry_hold_pts[i]  = AV_NOPTS_VALUE;
+        h->mvc_entry_hold_dts[i]  = AV_NOPTS_VALUE;
+    }
+    h->mvc_entry_hold_count   = 0;
+    h->mvc_entry_hold_bytes   = 0;
+    h->mvc_entry_hold_skipped = 0;
+}
+
+static void h264_mvc_defer_clear(H264Context *h)
+{
+    if (h->mvc_deferred_pic) {
+        h->mvc_deferred_pic->reference &= ~DELAYED_PIC_REF;
+        h->mvc_deferred_pic = NULL;
+    }
+}
+
+static int h264_mvc_entry_slot(const H264Context *h, int view_id)
+{
+    for (int i = 0; i < h->view_count; i++)
+        if (h->views[i].view_id == view_id)
+            return i;
+    return -1;
+}
+
+/* Reserve a padded buffer for the next held registration-lag fragment. Returns
+ * a positive tag when the fragment was accepted, 0 when the bounded hold is
+ * full, or a negative error when the allocation failed. The caller owns the
+ * returned pointer until it has filled the bytes or explicitly dropped the
+ * slot. */
+static int h264_mvc_entry_reserve(H264Context *h, int size, int64_t pts,
+                                  int64_t dts, uint8_t **dst)
+{
+    int idx;
+
+    if (size <= 0 || h->mvc_entry_hold_count >= H264_MVC_ENTRY_HOLD_DEPTH ||
+        h->mvc_entry_hold_bytes + size > H264_MVC_ENTRY_HOLD_MAX_BYTES)
+        return 0;
+
+    idx = h->mvc_entry_hold_count++;
+    h->mvc_entry_hold_buf[idx] = av_malloc((size_t)size +
+                                           AV_INPUT_BUFFER_PADDING_SIZE);
+    if (!h->mvc_entry_hold_buf[idx]) {
+        h->mvc_entry_hold_count--;
+        return AVERROR(ENOMEM);
+    }
+    h->mvc_entry_hold_size[idx] = size;
+    h->mvc_entry_hold_pts[idx]  = pts;
+    h->mvc_entry_hold_dts[idx]  = dts;
+    h->mvc_entry_hold_bytes    += size;
+    *dst = h->mvc_entry_hold_buf[idx];
+    return idx + 1;
+}
+
+static void h264_mvc_entry_pop(H264Context *h)
+{
+    uint8_t *buf = h->mvc_entry_hold_buf[0];
+
+    av_assert0(h->mvc_entry_hold_count > 0);
+    h->mvc_entry_hold_bytes -= h->mvc_entry_hold_size[0];
+    for (int i = 0; i + 1 < h->mvc_entry_hold_count; i++) {
+        h->mvc_entry_hold_buf[i]  = h->mvc_entry_hold_buf[i + 1];
+        h->mvc_entry_hold_size[i] = h->mvc_entry_hold_size[i + 1];
+        h->mvc_entry_hold_pts[i]  = h->mvc_entry_hold_pts[i + 1];
+        h->mvc_entry_hold_dts[i]  = h->mvc_entry_hold_dts[i + 1];
+    }
+    h->mvc_entry_hold_count--;
+    h->mvc_entry_hold_buf[h->mvc_entry_hold_count]  = NULL;
+    h->mvc_entry_hold_size[h->mvc_entry_hold_count] = 0;
+    h->mvc_entry_hold_pts[h->mvc_entry_hold_count]  = AV_NOPTS_VALUE;
+    h->mvc_entry_hold_dts[h->mvc_entry_hold_count]  = AV_NOPTS_VALUE;
+    av_free(buf);
+}
+
+static int h264_mvc_entry_hold_nal_candidate(const H264Context *h,
+                                             const H2645NAL *nal)
+{
+    if (!h->avctx || !ff_h264_allviews_composition(h->avctx) ||
+        h->view_count > 1 ||
+        nal->type < H264_NAL_AUXILIARY_SLICE ||
+        nal->type > H264_NAL_RESERVED23 ||
+        !nal->mv_ext_parsed)
+        return 0;
+
+    return h264_mvc_entry_slot(h, nal->mv_view_id) < 0;
+}
+
+/* Park the MVC slice payload of one packet whose view registration has not
+ * arrived yet. The fragment is rebuilt as a standalone packet (one length
+ * prefix per NAL for NALFF, one start code per NAL for Annex-B) so that it can
+ * be replayed once the subset SPS registers the view. A packet that carries a
+ * subset SPS itself is allowed to register its own slices in place; holding it
+ * would duplicate the dependent pictures when the registration packet reaches
+ * the first slice. */
+static int h264_mvc_entry_hold_scan_packet(H264Context *h,
+                                           const H2645Packet *pkt,
+                                           int64_t pts)
+{
+    const int prefix = h->is_avc ? h->nal_length_size : 4;
+    int candidates = 0, registration = 0, ret;
+    int64_t total = 0;
+    uint8_t *buf, *dst;
+
+    if (!h->avctx || !ff_h264_allviews_composition(h->avctx) ||
+        h->view_count > 1 || prefix <= 0 ||
+        h->mvc_entry_hold_count >= H264_MVC_ENTRY_HOLD_DEPTH)
+        return 0;
+
+    for (int i = 0; i < pkt->nb_nals; i++) {
+        const H2645NAL *nal = &pkt->nals[i];
+
+        if (nal->type == H264_NAL_SUB_SPS)
+            registration = 1;
+        if (!h264_mvc_entry_hold_nal_candidate(h, nal))
+            continue;
+        if (!nal->raw_data || nal->raw_size <= 0 ||
+            nal->raw_size > H264_MVC_ENTRY_HOLD_MAX_BYTES - prefix)
+            return 0;
+        candidates++;
+        total += prefix + (int64_t)nal->raw_size;
+        if (total > H264_MVC_ENTRY_HOLD_MAX_BYTES ||
+            total > INT_MAX - AV_INPUT_BUFFER_PADDING_SIZE)
+            return 0;
+    }
+
+    if (!candidates || registration)
+        return 0;
+
+    ret = h264_mvc_entry_reserve(h, (int)total, pts, h->pkt_dts, &buf);
+    if (ret <= 0)
+        return ret;
+
+    dst = buf;
+    for (int i = 0; i < pkt->nb_nals; i++) {
+        const H2645NAL *nal = &pkt->nals[i];
+
+        if (!h264_mvc_entry_hold_nal_candidate(h, nal))
+            continue;
+
+        if (h->is_avc) {
+            for (int b = prefix - 1; b >= 0; b--)
+                *dst++ = (nal->raw_size >> (8 * b)) & 0xff;
+        } else {
+            memcpy(dst, "\x00\x00\x00\x01", 4);
+            dst += 4;
+        }
+        memcpy(dst, nal->raw_data, nal->raw_size);
+        dst += nal->raw_size;
+    }
+    memset(dst, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+    h->mvc_entry_recovery           = 1;
+    h->mvc_entry_recovery_successes = 0;
+
+    return 0;
+}
+
+/* Replay the held dependent fragments now that their view has been registered.
+ * The current packet's parameter sets have already been parsed (the replay is
+ * called at the first slice), so the held slice can address the PPS it needs.
+ * Its slices are executed before the held copy goes away. If the packet that
+ * brought the registration starts a different view than the replayed fragment,
+ * close the replayed picture here as well: the current packet's first slice is
+ * often an IDR, and that IDR would otherwise clear the picture's reference and
+ * view state before its output turn. */
+static int h264_mvc_replay_entry_packets(H264Context *h,
+                                         const H2645NAL *target, int limit)
+{
+    int replayed = 0;
+    int ret = 0;
+
+    while (limit-- > 0 && h->mvc_entry_hold_count > 0) {
+        H2645Packet pkt = { 0 };
+        AVPacket *pkt_props = h->avctx && h->avctx->internal ?
+                              h->avctx->internal->last_pkt_props : NULL;
+        int64_t saved_dts = h->pkt_dts;
+        int64_t saved_props_pts = pkt_props ? pkt_props->pts : AV_NOPTS_VALUE;
+        int64_t saved_props_dts = pkt_props ? pkt_props->dts : AV_NOPTS_VALUE;
+        int max_slice_ctx;
+
+        h->pkt_dts = h->mvc_entry_hold_dts[0];
+        if (pkt_props) {
+            pkt_props->pts = h->mvc_entry_hold_pts[0];
+            pkt_props->dts = h->mvc_entry_hold_dts[0];
+        }
+        ret = ff_h2645_packet_split(&pkt, h->mvc_entry_hold_buf[0],
+                                    h->mvc_entry_hold_size[0], h->avctx,
+                                    h->nal_length_size, AV_CODEC_ID_H264,
+                                    !!h->is_avc * H2645_FLAG_IS_NALFF);
+        if (ret < 0) {
+            av_log(h->avctx, AV_LOG_WARNING,
+                   "multiview: a held registration-lag fragment could not be "
+                   "replayed (%s)\n", av_err2str(ret));
+            ret = 0;
+            if (pkt_props) {
+                pkt_props->pts = saved_props_pts;
+                pkt_props->dts = saved_props_dts;
+            }
+            h264_mvc_entry_pop(h);
+            h->pkt_dts = saved_dts;
+            continue;
+        }
+
+        max_slice_ctx = h->avctx->hwaccel ? 1 : h->nb_slice_ctx;
+        for (int i = 0; i < pkt.nb_nals; i++) {
+            H2645NAL *nal = &pkt.nals[i];
+            H264SliceContext *queued;
+
+            if (nal->type < H264_NAL_AUXILIARY_SLICE ||
+                nal->type > H264_NAL_RESERVED23)
+                continue;
+            if (!nal->mv_ext_parsed ||
+                h264_mvc_entry_slot(h, nal->mv_view_id) < 0)
+                continue;
+
+            h->nal_ref_idc   = nal->ref_idc;
+            h->nal_unit_type = nal->type;
+            h->has_slice     = 1;
+
+            if (h->nb_slice_ctx_queued >= max_slice_ctx) {
+                ret = ff_h264_execute_decode_slices(h);
+                if (ret < 0 && (h->avctx->err_recognition & AV_EF_EXPLODE)) {
+                    if (pkt_props) {
+                        pkt_props->pts = saved_props_pts;
+                        pkt_props->dts = saved_props_dts;
+                    }
+                    ff_h2645_packet_uninit(&pkt);
+                    h264_mvc_entry_pop(h);
+                    h->pkt_dts = saved_dts;
+                    return ret;
+                }
+                ret = 0;
+            }
+
+            ret = ff_h264_queue_decode_slice(h, nal, &queued);
+            if (ret < 0 && (h->avctx->err_recognition & AV_EF_EXPLODE)) {
+                if (pkt_props) {
+                    pkt_props->pts = saved_props_pts;
+                    pkt_props->dts = saved_props_dts;
+                }
+                ff_h2645_packet_uninit(&pkt);
+                h264_mvc_entry_pop(h);
+                h->pkt_dts = saved_dts;
+                return ret;
+            }
+            replayed = 1;
+            ret = 0;
+        }
+
+        if (pkt_props) {
+            pkt_props->pts = saved_props_pts;
+            pkt_props->dts = saved_props_dts;
+        }
+
+        /* The queued slices borrow GetBitContexts into the held copy. Execute
+         * them before the copy goes away; the following packet's first slice
+         * still performs the view switch and the picture's field_end(). */
+        if (h->nb_slice_ctx_queued) {
+            ret = ff_h264_execute_decode_slices(h);
+            if (ret < 0 && (h->avctx->err_recognition & AV_EF_EXPLODE)) {
+                ff_h2645_packet_uninit(&pkt);
+                h264_mvc_entry_pop(h);
+                h->pkt_dts = saved_dts;
+                return ret;
+            }
+            ret = 0;
+        }
+
+        ff_h2645_packet_uninit(&pkt);
+        h->pkt_dts = saved_dts;
+        h264_mvc_entry_pop(h);
+    }
+
+    if (replayed && h->current_slice && h->cur_pic_ptr) {
+        int target_slot = 0;
+
+        if (target &&
+            target->type >= H264_NAL_AUXILIARY_SLICE &&
+            target->type <= H264_NAL_RESERVED23 &&
+            target->mv_ext_parsed)
+            target_slot = h264_mvc_entry_slot(h, target->mv_view_id);
+
+        if (target_slot >= 0 && h->cur_view != target_slot) {
+            ret = ff_h264_field_end(h, h->slice_ctx, 1);
+            if (ret < 0 && (h->avctx->err_recognition & AV_EF_EXPLODE))
+                return ret;
+            ff_thread_report_progress(&h->cur_pic_ptr->tf, INT_MAX, 0);
+            ff_thread_report_progress(&h->cur_pic_ptr->tf, INT_MAX, 1);
+            h->cur_pic_ptr = NULL;
+            h->current_slice = 0;
+            h->first_field   = 0;
+            h->droppable     = 0;
+            ret = 0;
+        }
+    }
+
+    return 0;
 }
 
 /**
@@ -637,6 +949,9 @@ static av_cold int h264_decode_end(AVCodecContext *avctx)
     H264Context *h = avctx->priv_data;
     int i;
 
+    h264_mvc_defer_clear(h);
+    h264_mvc_entry_clear(h);
+
     ff_h264_remove_all_refs(h);
     ff_h264_free_tables(h);
 
@@ -779,6 +1094,14 @@ void ff_h264_flush_change(H264Context *h)
      * outlive a seek. */
     h264_sbs_q_clear(h);
     h264_iv_anchor_clear(h);
+    /* The fast-seek entry hold is also decode-session state: the copied
+     * registration-lag fragments, the base picture waiting behind them, and
+     * any recovery latch derived from that pre-seek skew belong to the session
+     * before the flush, not to the one being seeked into. */
+    h264_mvc_entry_clear(h);
+    h264_mvc_defer_clear(h);
+    h->mvc_entry_recovery           = 0;
+    h->mvc_entry_recovery_successes = 0;
 
     h->prev_interlaced_frame = 1;
     idr(h);
@@ -786,6 +1109,14 @@ void ff_h264_flush_change(H264Context *h)
     for (i = 0; i < h->view_count; i++) {
         h->views[i].next_outputed_poc = INT_MIN;
         h->views[i].poc.prev_frame_num = -1;
+        /* next_output_pic is the committed picture of the previous session.
+         * If a flush left it pointing at an already delivered or retired
+         * picture, the first output turn after the seek could reach it and
+         * deliver whatever the frame pool now held in that DPB slot. */
+        if (h->views[i].next_output_pic) {
+            h->views[i].next_output_pic->reference &= ~DELAYED_PIC_REF;
+            h->views[i].next_output_pic = NULL;
+        }
         h->views[i].parked_pic = NULL;
     }
     if (h->cur_pic_ptr) {
@@ -1091,11 +1422,13 @@ static int decode_nal_units(H264Context *h, AVBufferRef *buf_ref,
     int nals_needed = 0; ///< number of NALs that need decoding before the next frame thread starts
     int idr_cleared=0;
     int dp_attached_to = -1; ///< index of the last partition B/C claimed
+    int entry_hold_old_count, held_from_this_packet = 0;
     int i, ret = 0;
 
     h->has_slice = 0;
     h->drop_view_slices = 0;
     h->view_sel_skipped = 0;
+    h->mvc_entry_hold_skipped = 0;
     h->nal_unit_type= 0;
 
     if (!(avctx->flags2 & AV_CODEC_FLAG2_CHUNKS)) {
@@ -1121,6 +1454,19 @@ static int decode_nal_units(H264Context *h, AVBufferRef *buf_ref,
         return ret;
     }
 
+    /* A fast-seek entry can meet the dependent half of an access unit before
+     * the stream has re-registered its view. Park a bounded copy of just those
+     * unregistered MVC slices and let it through at the first slice after that
+     * subset SPS has arrived, instead of refusing and losing the picture. */
+    entry_hold_old_count = h->mvc_entry_hold_count;
+    ret = h264_mvc_entry_hold_scan_packet(
+              h, &h->pkt,
+              avctx->internal && avctx->internal->last_pkt_props ?
+              avctx->internal->last_pkt_props->pts : AV_NOPTS_VALUE);
+    if (ret < 0)
+        goto end;
+    held_from_this_packet = h->mvc_entry_hold_count > entry_hold_old_count;
+
     if (avctx->active_thread_type & FF_THREAD_FRAME)
         nals_needed = get_last_needed_nal(h);
     if (nals_needed < 0)
@@ -1138,6 +1484,30 @@ static int decode_nal_units(H264Context *h, AVBufferRef *buf_ref,
         // FIXME these should stop being context-global variables
         h->nal_ref_idc   = nal->ref_idc;
         h->nal_unit_type = nal->type;
+
+        /* The first slice after a held fragment is decoded is also the first
+         * point where the packet's parameter sets are known to be complete;
+         * replay the entry fragment now, so it is queued together with (or
+         * ahead of) the packet that brought the registration it needed.
+         *
+         * Do it only at a clean picture boundary: replaying in the middle of
+         * another view's picture would mix slice payloads from the held copy
+         * with payloads owned by the current packet, and the held copy has to
+         * be executed before it is released. Only the fragments that were held
+         * before this packet are replayed here: a packet that parked its own
+         * unregistered slices must not replay (and so duplicate) them. */
+        if (entry_hold_old_count && h->view_count > 1 &&
+            !h->current_slice && !h->nb_slice_ctx_queued &&
+            (nal->type == H264_NAL_IDR_SLICE ||
+             nal->type == H264_NAL_SLICE ||
+             nal->type == H264_NAL_DPA ||
+             (nal->type >= H264_NAL_AUXILIARY_SLICE &&
+              nal->type <= H264_NAL_RESERVED23))) {
+            ret = h264_mvc_replay_entry_packets(h, nal, entry_hold_old_count);
+            if (ret < 0)
+                goto end;
+            entry_hold_old_count = 0;
+        }
 
         err = 0;
         switch (nal->type) {
@@ -1165,6 +1535,15 @@ static int decode_nal_units(H264Context *h, AVBufferRef *buf_ref,
              * (e.g. SVC) is unsupported; skip its payload */
             if (nal->type >= H264_NAL_AUXILIARY_SLICE &&
                 nal->type <= H264_NAL_RESERVED23 && !nal->mv_ext_parsed) {
+                break;
+            }
+
+            /* The scan above copied this unregistered MVC slice into the
+             * entry hold. Do not let the queue gate refuse it now; the
+             * replay turn owns it once the registration arrives. */
+            if (held_from_this_packet &&
+                h264_mvc_entry_hold_nal_candidate(h, nal)) {
+                h->mvc_entry_hold_skipped = 1;
                 break;
             }
 
@@ -2007,6 +2386,8 @@ static H264Picture *h264_sbs_q_pop(H264Context *h, int role)
     h->sbs_pair_head[role] = (h->sbs_pair_head[role] + 1) %
                              H264_SBS_PAIR_Q_SIZE;
     h->sbs_pair_count[role]--;
+    if (h->mvc_deferred_pic == p)
+        h->mvc_deferred_pic = NULL;
     return p;
 }
 
@@ -2016,6 +2397,21 @@ static H264Picture *h264_sbs_q_head(const H264Context *h, int role)
     if (!h->sbs_pair_count[role])
         return NULL;
     return h->sbs_pair_q[role][h->sbs_pair_head[role]];
+}
+
+/* A successfully welded composed pair is the evidence that the entry recovery
+ * has settled. Keep the recovery latch alive long enough to bridge the first
+ * few GOP boundaries after a fast seek, then retire it so ordinary decode-order
+ * degradation resumes. */
+static void h264_mvc_recovery_note_success(H264Context *h)
+{
+    if (!h->mvc_entry_recovery)
+        return;
+
+    if (++h->mvc_entry_recovery_successes >= H264_MVC_ENTRY_RECOVERY_FRAMES) {
+        h->mvc_entry_recovery           = 0;
+        h->mvc_entry_recovery_successes = 0;
+    }
 }
 
 /* The access-unit identity of a composed half: the delivery pts of its pinned
@@ -2060,6 +2456,10 @@ static int h264_sbs_copy_ss_offsets(AVFrame *dst, const AVFrame *dep)
 
     return 0;
 }
+
+static void h264_sbs_fill_plane(uint8_t *plane, ptrdiff_t linesize,
+                                int width, int height, int bps,
+                                unsigned value);
 
 /* Assemble the base half `base` with the dependent half `dep` into one
  * side-by-side frame in `pict`, which carries the delivered dependent half
@@ -2146,6 +2546,23 @@ static int h264_sbs_assemble(H264Context *h, AVFrame *pict,
         const int xshift = desc->log2_chroma_w;
         const int yshift = desc->log2_chroma_h;
         const int planes = desc->nb_components == 1 ? 1 : 3;
+
+        /* A composed frame owns every sample in its geometry. Start from the
+         * neutral canvas, so a half that has not painted a row (a truncated
+         * or concealed slice at a fast-seek landing) can never leak a frame
+         * from the buffer pool into the delivery. */
+        for (int p = 0; p < planes; p++) {
+            const int    shx      = p ? xshift : 0;
+            const int    shy      = p ? yshift : 0;
+            const int    depth    = desc->comp[p].depth;
+            const int    w_p      = (depf->width * 2) >> shx;
+            const int    h_p      = depf->height >> shy;
+            const unsigned black  = p ? 1u << (depth - 1)
+                                      : 16u << (depth > 8 ? depth - 8 : 0);
+
+            h264_sbs_fill_plane(sbs->data[p], sbs->linesize[p], w_p, h_p, bps,
+                                black);
+        }
 
         for (int p = 0; p < planes; p++) {
             const int    shx      = p ? xshift : 0;
@@ -2520,6 +2937,125 @@ out:
     return ret;
 }
 
+/* Fast-seek entry recovery for the composed pairing.
+ *
+ * A landing can decode one eye's next access unit while the other eye is still
+ * emitting the previous access unit. The queues can hold both halves safely,
+ * but output order must not run ahead of an older access unit whose partner is
+ * still behind. This short lookahead parks the newer arrival while the older
+ * partner catches up, without ever welding two different access units.
+ *
+ * Returns 0 to let the ordinary pairing/service path handle this turn, or
+ * 1/2/3 exactly as h264_sbs_process() would. */
+static int h264_sbs_process_entry_recovery(H264Context *h, AVFrame *pict,
+                                           H264Picture *out, int role,
+                                           int *got_frame)
+{
+    H264Picture *qbase = h264_sbs_q_head(h, 0);
+    H264Picture *qdep  = h264_sbs_q_head(h, 1);
+    H264Picture *own   = h264_sbs_q_head(h, role);
+    H264Picture *other = h264_sbs_q_head(h, 1 - role);
+    int64_t k_arr = h264_sbs_pair_key(out);
+    int64_t k_own = own ? h264_sbs_pair_key(own) : AV_NOPTS_VALUE;
+    int64_t k_other = other ? h264_sbs_pair_key(other) : AV_NOPTS_VALUE;
+    int lookahead;
+
+    if (!h->mvc_entry_recovery || k_arr == AV_NOPTS_VALUE)
+        return 0;
+
+    lookahead = h->sbs_pair_count[role] < H264_MVC_ENTRY_REORDER_LOOKAHEAD;
+
+    /* If both queues already hold a complete pair, let the normal service path
+     * weld it ahead of this arrival. */
+    if (h->sbs_pair_pending && qbase && qdep) {
+        int64_t kb = h264_sbs_pair_key(qbase);
+        int64_t kd = h264_sbs_pair_key(qdep);
+
+        if (kb == kd || kb == AV_NOPTS_VALUE || kd == AV_NOPTS_VALUE)
+            return 0;
+    }
+
+    /* This arrival is newer than its own role's queued head: park it behind the
+     * older turn instead of letting it jump the output order. */
+    if (own && k_own != AV_NOPTS_VALUE && lookahead && k_own < k_arr) {
+        out->reference |= DELAYED_PIC_REF;
+        h264_sbs_q_push(h, out, role);
+        *got_frame = 0;
+        h->sbs_pair_pending = h->sbs_pair_count[0] &&
+                              h->sbs_pair_count[1];
+        return 1;
+    }
+
+    /* The other role is behind its head while this role has nothing queued:
+     * park the newer arrival here until the older partner's own head turns up. */
+    if (!own && other && k_other != AV_NOPTS_VALUE && lookahead &&
+        k_other < k_arr) {
+        out->reference |= DELAYED_PIC_REF;
+        h264_sbs_q_push(h, out, role);
+        *got_frame = 0;
+        h->sbs_pair_pending = h->sbs_pair_count[0] &&
+                              h->sbs_pair_count[1];
+        return 1;
+    }
+
+    /* The arrival is older than its own queued head and completes the opposite
+     * queue's head. Weld just that pair and leave the newer own-role head for
+     * its own partner. */
+    if (own && other && k_own != AV_NOPTS_VALUE && k_arr < k_own &&
+        k_other == k_arr) {
+        H264Picture *base = role == 0 ? out : other;
+        H264Picture *dep  = role == 1 ? out : other;
+        int got = 0, composed = 0, ret;
+
+        if (role == 0) {
+            av_frame_unref(pict);
+            ret = finalize_frame(h, pict, dep, &got);
+            if (ret < 0)
+                return ret;
+            if (!got) {
+                out->reference |= DELAYED_PIC_REF;
+                h264_sbs_q_push(h, out, role);
+                *got_frame = 0;
+                h->sbs_pair_pending = h->sbs_pair_count[0] &&
+                                      h->sbs_pair_count[1];
+                return 1;
+            }
+            h264_sbs_q_pop(h, 1);
+            *got_frame = 1;
+        } else {
+            ret = finalize_frame(h, pict, out, &got);
+            if (ret < 0)
+                return ret;
+            if (!got) {
+                out->reference |= DELAYED_PIC_REF;
+                h264_sbs_q_push(h, out, role);
+                *got_frame = 0;
+                h->sbs_pair_pending = h->sbs_pair_count[0] &&
+                                      h->sbs_pair_count[1];
+                return 1;
+            }
+            h264_sbs_q_pop(h, 0);
+            *got_frame = 1;
+        }
+
+        ret = h264_sbs_assemble(h, pict, base, dep);
+        if (ret < 0)
+            return ret;
+        if (ret > 0) {
+            h264_sbs_pair_audit(h, base, dep);
+            h264_mvc_recovery_note_success(h);
+        } else {
+            composed = h264_sbs_compose_half_black(h, pict, 1);
+            h264_note_standalone_delivery(h, composed);
+        }
+        h->sbs_pair_pending = h->sbs_pair_count[0] &&
+                              h->sbs_pair_count[1];
+        return ret > 0 ? 2 : 3;
+    }
+
+    return 0;
+}
+
 /* A key-mismatch shipment can uncover a pair that is already sitting in the
  * queues: when the older half of an orphaned meeting goes out on its own, the
  * newer arrival joins the queue while a same-role half of the arrival's own
@@ -2639,6 +3175,7 @@ static int h264_sbs_service_queued(H264Context *h, AVFrame *pict,
         return ret;
     if (ret > 0) {
         h264_sbs_pair_audit(h, base, dep);
+        h264_mvc_recovery_note_success(h);
     } else {
         /* Not assemblable: the popped dependent half went out composed with a
          * black base side (*got_frame set below), so this turn delivered as
@@ -2650,6 +3187,41 @@ static int h264_sbs_service_queued(H264Context *h, AVFrame *pict,
     *got_frame = 1;
     h->sbs_pair_pending = h->sbs_pair_count[0] && h->sbs_pair_count[1];
     return ret > 0 ? 2 : 3;
+}
+
+/* A key mismatch is the composed pairing's own signal that a session-start
+ * skew has become visible: two half-frames just met while carrying different
+ * access-unit times, and the default policy is to degrade one of them with a
+ * black opposite half. For an MVC landing that registered in-band, the first
+ * such disagreement is exactly the point at which a bounded entry recovery can
+ * still do better than a phantom half: park the newer arrival until the older
+ * access unit can weld. Arm only for this attempt and only when the recovery
+ * can actually take the turn, so an ordinary decode without a visible skew
+ * keeps its old delivery path untouched. */
+static int h264_sbs_process_key_mismatch_recovery(H264Context *h, AVFrame *pict,
+                                                  H264Picture *out, int role,
+                                                  int *got_frame)
+{
+    int ret;
+
+    if (h->view_count != 2 || !ff_h264_allviews_composition(h->avctx))
+        return 0;
+
+    h->mvc_entry_recovery           = 1;
+    h->mvc_entry_recovery_successes = 0;
+
+    ret = h264_sbs_process_entry_recovery(h, pict, out, role, got_frame);
+    if (ret < 0) {
+        h->mvc_entry_recovery           = 0;
+        h->mvc_entry_recovery_successes = 0;
+        return ret;
+    }
+    if (ret == 0) {
+        h->mvc_entry_recovery           = 0;
+        h->mvc_entry_recovery_successes = 0;
+    }
+
+    return ret;
 }
 
 /* Post-process a just-finalized multiview frame for the native SBS composed
@@ -2677,6 +3249,14 @@ static int h264_sbs_process(H264Context *h, AVFrame *pict,
      * the dependent half (view_idx 1). */
     role = out->view_idx;
 
+    /* A fast-seek entry can emit one access unit late in one eye while the
+     * other eye is already a turn ahead. Park the newer turn for a few access
+     * units so the older pair can weld in display order, instead of shipping
+     * a black-fill half the moment the heads disagree. */
+    ret = h264_sbs_process_entry_recovery(h, pict, out, role, got_frame);
+    if (ret)
+        return ret;
+
     /* A previous key mismatch may have left a complete pair queued behind the
      * half it just shipped. Give that queued half this turn before the arrival
      * joins the queues; otherwise the arrival would be compared against the
@@ -2702,6 +3282,13 @@ static int h264_sbs_process(H264Context *h, AVFrame *pict,
 
         if (k_arr != AV_NOPTS_VALUE && k_oth != AV_NOPTS_VALUE &&
             k_arr != k_oth) {
+            if (!h->mvc_entry_recovery) {
+                ret = h264_sbs_process_key_mismatch_recovery(h, pict, out,
+                                                             role, got_frame);
+                if (ret)
+                    return ret;
+            }
+
             if (k_oth < k_arr) {
                 /* The queued half is from an earlier access unit than this
                  * arrival, so this role already delivered that access unit and
@@ -2794,6 +3381,7 @@ static int h264_sbs_process(H264Context *h, AVFrame *pict,
             return 0;
         }
         h264_sbs_pair_audit(h, base, dep);
+        h264_mvc_recovery_note_success(h);
         return 2;
     }
 
@@ -2873,6 +3461,28 @@ hold:
     av_frame_unref(pict);
     *got_frame = 0;
     return 1;
+}
+
+/* Park base-view pictures for the composed pairing without showing them. A
+ * fast-seek entry can decode several base halves of the landing access units
+ * before the subset SPS that registers the dependent view has arrived; the
+ * dependent halves of those access units are held instead of refused, so the
+ * base halves must wait too. Putting them directly into the compose queue
+ * keeps them held by the same machinery as any normal base half, and lets the
+ * end-of-stream drain ship any leftovers if no partner ever arrives. */
+static void h264_mvc_hold_base_for_compose(H264Context *h, H264Picture *p)
+{
+    if (!p || h->sbs_pair_count[0] >= H264_SBS_PAIR_Q_SIZE ||
+        ff_h264_pic_held_for_compose(h, p) ||
+        p->view_idx != 0 || p->output_delivered)
+        return;
+
+    p->reference |= DELAYED_PIC_REF;
+    if (!h->mvc_deferred_pic)
+        h->mvc_deferred_pic = p;
+    h264_sbs_q_push(h, p, 0);
+    h->mvc_entry_recovery           = 1;
+    h->mvc_entry_recovery_successes = 0;
 }
 
 /* End-of-stream compose drain: ship one pending pair (or one leftover
@@ -3106,6 +3716,9 @@ static int h264_decode_frame(AVCodecContext *avctx, AVFrame *pict,
             (h->drop_view_slices && !h->cur_pic_ptr) ||
             /* all VCL belonged to unselected views (view_ids); consume silently */
             (h->view_sel_skipped && !h->cur_pic_ptr) ||
+            /* the fragment was parked until its view registration arrives;
+             * consuming it is what holding, rather than refusing, looks like */
+            (h->mvc_entry_hold_skipped && !h->cur_pic_ptr) ||
             buf_size >= 4 && !memcmp("Q264", buf, 4))
             return buf_size;
         av_log(avctx, AV_LOG_ERROR, "no frame!\n");
@@ -3150,6 +3763,25 @@ static int h264_decode_frame(AVCodecContext *avctx, AVFrame *pict,
                     out = cand;
             }
             if (out) {
+                /* A fast-seek entry can meet the base half of the landing
+                 * access unit while its dependent half's view is not yet
+                 * registered. In a composed output that picture cannot be
+                 * shipped bare: hold it exactly like the normal composed base
+                 * half would be held, and let the held dependent half (or the
+                 * end-of-stream drain) resolve it. */
+                if (out->view_idx == 0 &&
+                    h->view_count <= 1 &&
+                    ff_h264_allviews_composition(h->avctx) &&
+                    !ff_h264_pic_held_for_compose(h, out)) {
+                    H264Picture *held = out;
+
+                    h->views[out->view_idx].next_output_pic = NULL;
+                    h264_mvc_hold_base_for_compose(h, out);
+                    if (ff_h264_pic_held_for_compose(h, held))
+                        return buf_size;
+                    h->views[out->view_idx].next_output_pic = out;
+                }
+
                 /* Output-band fix: emit one duplicate of the predecessor
                  * (captured at `out`'s commit) ahead of the output-band
                  * dependent picture: the duplicate goes out this packet,
@@ -3280,6 +3912,22 @@ static int h264_decode_frame(AVCodecContext *avctx, AVFrame *pict,
                              * orphaned with its DELAYED_PIC_REF pin still set. */
                             v->next_output_pic->reference &= ~DELAYED_PIC_REF;
                             v->next_output_pic = NULL;
+                            continue;
+                        }
+                        /* When the emission just made was not this view's
+                         * base half (the fast-seek replay can deliver an older
+                         * dependent half first), the base half committed by
+                         * this packet must not wait in the per-view parking
+                         * slot: it belongs to the compose queue, where its
+                         * dependent half can meet it. */
+                        if (h264_compose_active(h) &&
+                            v->next_output_pic->view_idx == 0 &&
+                            !h->mvc_deferred_pic &&
+                            !h264_sbs_q_head(h, 0)) {
+                            H264Picture *base = v->next_output_pic;
+
+                            v->next_output_pic = NULL;
+                            h264_mvc_hold_base_for_compose(h, base);
                             continue;
                         }
                         if (v->parked_pic) {
