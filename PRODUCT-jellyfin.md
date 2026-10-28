@@ -1088,3 +1088,16 @@ verbatim - one attribution and one test inconsistency - on the record.
   establish is the claim of this entry alone: that the `VERSION` file, the
   `ffmpeg` banner and the `ffprobe` banner all print the one string named above.
 
+- **The mvc10 content in the jellyfin line (2026-10-28).** This branch now
+  merges the certified `n8.1.3-mvc10` build of the 8.1 line. The carried delta
+  is the composed pairing fidelity work and the fast-seek entry registration
+  cure: a landing can hold the dependent fragments whose multiview registration
+  arrives one access unit later, and the composed merge orders by display time
+  rather than arrival, so an older half is not jumped over and a newer one is
+  not welded to the wrong access unit. The two-view result over the feature is
+  clean.
+- **Compatibility and queue posture (2026-10-28).** This build is compatible with
+  **`jellyfin-ffmpeg v8.1.3-1`**. The queue pointer is unchanged this wave, entry
+  `0054` stays refused on licence for the reason already recorded, and this build
+  supersedes **`n8.1.3-mvc9-jf1`**.
+
