@@ -132,72 +132,102 @@ static int mismatches_ref(const H264Context *h, const H264Picture *pic)
 
 /**
  * Find the inter-view reference for a picture: the anchor picture of
- * another view carrying the same POC (H.264 Annex E). Scans the short
- * term reference lists and delayed output lists of all views, then falls
- * back to the shared DPB.
+ * another view carrying the same POC (H.264 Annex E).
+ *
+ * POC epochs restart at 65536 while frame_num wraps at
+ * 2^log2_max_frame_num, so a stale-epoch picture can carry the same
+ * (view, POC) key as the fresh one. Annex E resolves the key inside the
+ * access unit: the anchor is the co-located picture of the other view,
+ * which shares the current picture's frame_num (forward distance 0).
+ * Every candidate is therefore scored by that forward frame_num
+ * distance from the current picture and the best score wins, instead of
+ * the first list that happens to answer.
+ *
+ * Which list a picture waits in - a view's short-term list, its delayed
+ * output list, or only the DPB (a base half committed and held/parked
+ * for the native SBS assembly is in no scanned list) - is a property of
+ * the output harness, not of the bitstream, and it changes with the
+ * view filter: the composed route parks the co-located base half for the
+ * SBS weld while an isolated single-view decode leaves its predecessor
+ * in the delayed list. A first-match scan resolves the collision
+ * differently in the two harnesses, so the same access unit decodes to
+ * different pixels depending on which views the caller asked to see
+ * (T169c2.cd deliverable C). Scoring every source with the same
+ * clock - the DPB is fully synced across frame-thread workers, and every
+ * listed picture is also a DPB occupant - makes the choice identical in
+ * every view-filter configuration; where it changes the answer is
+ * exactly at a POC collision, and it moves the answer to the co-located
+ * picture, which is the Annex E one. Ties keep the earlier source
+ * order, as the DPB tie-break always has.
  */
 static H264Picture *h264_find_inter_view_ref(H264Context *h, int view_id, int poc)
 {
-    H264Picture *res = NULL;
+    H264Picture *res      = NULL;
+    int best_dist         = INT_MAX;
+    /* Whether a forward frame_num distance can be computed at all. */
+    const int scored      = h->cur_pic_ptr && h->ps.sps;
+    const int max_pic_num = scored ? (1 << h->ps.sps->log2_max_frame_num) : 0;
+
+    /* One candidate of the (view, POC) key. Without a current picture
+     * there is no clock to score by and the first answer wins; with one,
+     * the smallest forward frame_num distance wins - the co-located
+     * anchor scores 0 - and an equal distance keeps the incumbent, which
+     * preserves the legacy source priority short_ref > delayed_pic > DPB.
+     *
+     * One kind of tie is not legacy business: with the access-unit latch
+     * alive, a candidate from a foreign access unit may never beat one
+     * from the current access unit. Annex E inter-view prediction is
+     * co-located by construction, and at a POC epoch collision the frame
+     * counters wrap, so a stale picture from the previous epoch scores
+     * exactly like the co-located one. The composed route keeps consumed
+     * base halves pinned longer than an isolated decode parks its
+     * predecessor, so under the old first-incumbent tie-break the
+     * reference resolved into the previous epoch - the dependent picture
+     * decoded to pixels no single-eye route ever produces (the T169
+     * epoch/entry phantoms). Foreign-access-unit candidates fall behind
+     * every same-access-unit candidate; within each class the existing
+     * distance and source-order rules stand untouched. */
+#define IVIEW_CAND(cand)                                                       \
+    do {                                                                       \
+        const H264Picture *c_ = (const H264Picture *)(cand);                   \
+        int d_ = 0;                                                            \
+        if (scored) {                                                          \
+            d_ = (h->cur_pic_ptr->frame_num - c_->frame_num) &                 \
+                 (max_pic_num - 1);                                            \
+            if (h->au_base_valid && c_->f->pts != h->au_base_pts)              \
+                d_ += max_pic_num;                                             \
+        }                                                                      \
+        if (!res || d_ < best_dist) {                                          \
+            res       = (H264Picture *)c_;                                     \
+            best_dist = d_;                                                    \
+        }                                                                      \
+    } while (0)
 
     for (int vs = 0; vs < h->view_count; vs++) {
         const H264ViewState *sv = &h->views[vs];
         for (int i = 0; i < sv->short_ref_count; i++) {
             const H264Picture *p = sv->short_ref[i];
-            if (p && p->view_id == view_id && p->poc == poc && p->f->data[0]) {
-                res = (H264Picture *)p;
-                break;
-            }
+            if (p && p->view_id == view_id && p->poc == poc && p->f->data[0])
+                IVIEW_CAND(p);
         }
-        if (!res)
-            for (int i = 0; sv->delayed_pic[i]; i++) {
-                const H264Picture *p = sv->delayed_pic[i];
-                if (p && p->view_id == view_id && p->poc == poc && p->f->data[0]) {
-                    res = (H264Picture *)p;
-                    break;
-                }
-            }
-        if (res)
-            break;
-    }
-
-    if (!res) {
-        /* DPB fallback: in all-views output the base half of an access
-         * unit is committed and held/parked for the native SBS assembly
-         * (next_output_pic / parked_pic - not scanned above), so a
-         * co-located anchor with no reference marking of its own is lost
-         * to the scans; Annex E resolves inter-view references from the
-         * DPB regardless of output state, and the DPB is fully synced
-         * across frame-thread workers (the native SBS compose stage holds
-         * its pending halves pinned here the same way; its pairing in
-         * h264_sbs_process() is FIFO-order, not a DPB scan).
-         *
-         * POC epochs restart at 65536 while frame_num wraps at
-         * 2^log2_max_frame_num, so a stale-epoch picture can carry the
-         * same POC: prefer the match with the smallest forward frame_num
-         * distance from the CURRENT picture - the co-located anchor
-         * shares its frame_num (distance 0) - which also keeps the
-         * choice independent of lagging worker views[] counters. */
-        if (h->cur_pic_ptr) {
-            const int max_pic_num = 1 << h->ps.sps->log2_max_frame_num;
-            const int cur_fn = h->cur_pic_ptr->frame_num;
-            int best_dist    = INT_MAX;
-
-            for (int i = 0; i < H264_MAX_PICTURE_COUNT; i++) {
-                const H264Picture *p = &h->DPB[i];
-
-                if (p->f && p->f->data[0] && p->view_id == view_id &&
-                    p->poc == poc) {
-                    const int dist = (cur_fn - p->frame_num) & (max_pic_num - 1);
-
-                    if (dist < best_dist) {
-                        best_dist = dist;
-                        res = (H264Picture *)p;
-                    }
-                }
-            }
+        for (int i = 0; sv->delayed_pic[i]; i++) {
+            const H264Picture *p = sv->delayed_pic[i];
+            if (p && p->view_id == view_id && p->poc == poc && p->f->data[0])
+                IVIEW_CAND(p);
         }
     }
+
+    /* The DPB is scanned as a candidate source, not as a fallback: it
+     * holds every picture the lists name plus the ones no list scans
+     * (the held/parked halves above), and it is the source that is
+     * identical in every view-filter configuration. */
+    for (int i = 0; i < H264_MAX_PICTURE_COUNT; i++) {
+        const H264Picture *p = &h->DPB[i];
+
+        if (p->f && p->f->data[0] && p->view_id == view_id && p->poc == poc)
+            IVIEW_CAND(p);
+    }
+#undef IVIEW_CAND
 
     return res;
 }

@@ -31,6 +31,7 @@
 #include "libavutil/mem.h"
 #include "libavutil/pixdesc.h"
 #include "libavutil/timecode.h"
+#include "avcodec_internal.h"
 #include "decode.h"
 #include "cabac.h"
 #include "cabac_functions.h"
@@ -135,7 +136,12 @@ static int h264_pic_held_for_output(const H264Context *h, const H264Picture *pic
         return 1;
     /* A composed base half already delivered into an SBS frame remains held as
      * an inter-view anchor until its small hold-queue retires it. */
-    return ff_h264_pic_held_for_iv_anchor(h, pic);
+    if (ff_h264_pic_held_for_iv_anchor(h, pic))
+        return 1;
+    /* A base picture deferred at a fast-seek entry is held for output until
+     * the registration arrives to pair it, or until the session proves that
+     * there is nothing to pair and releases it as a plain view. */
+    return h->mvc_deferred_pic == pic;
 }
 
 /**
@@ -2013,6 +2019,38 @@ static int h264_field_start(H264Context *h, const H264SliceContext *sl,
     else if (h->picture_intra_only)
         h->poc_offset = 0;
 
+    /* An IDR picture opens a new coded sequence for its view: the frame_num it
+     * carries has no earlier picture of that view to be measured against, and
+     * no picture of that view coded before it may serve as a reference.
+     * Upstream keeps both invariants by refreshing the decoder when the IDR's
+     * slice header is parsed, which drops every reference and resets the
+     * frame_num bookkeeping. Here that refresh is tied to the plain type-5 IDR
+     * of the base view (see idr() in h264dec.c), so a dependent-view IDR - a
+     * slice extension NAL with non_idr_flag 0 - that reaches the decoder on its
+     * own, as it does whenever the views' access units arrive split or
+     * reordered (a fast-seek entry is the usual case), finds the previous
+     * sequence still standing:
+     *   - prev_frame_num still names that sequence, so the gap handling below
+     *     walks it up to the IDR's frame_num, fabricating a reference picture
+     *     per step and error-concealing each one (a grey frame when there is
+     *     nothing to copy from), which the new sequence then motion-compensates
+     *     from although it was never coded;
+     *   - the previous sequence's pictures stay in this view's reference lists,
+     *     so the IDR's own list names one and every picture behind the IDR
+     *     picks it up too, until a base-view IDR happens to refresh the view.
+     * Both surface as composed halves whose content exists nowhere in the
+     * stream. Refresh this view the way that IDR refresh would have. Only this
+     * view, and only reference duty: a picture still owed to the composed
+     * output keeps its DELAYED_PIC_REF pin through ff_h264_remove_view_refs()
+     * and goes out on its own turn. */
+    if (nal->type == H264_NAL_IDR_SLICE ||
+        (nal->type == H264_NAL_EXTEN_SLICE && nal->mv_ext_parsed &&
+         !nal->mv_non_idr)) {
+        if (v->short_ref_count || v->long_ref_count)
+            ff_h264_remove_view_refs(h, h->cur_view);
+        v->poc.prev_frame_num = v->poc.frame_num;
+    }
+
     /* Shorten frame num gaps so we don't have to allocate reference
      * frames just to throw them away */
     if (v->poc.frame_num != v->poc.prev_frame_num) {
@@ -2231,7 +2269,8 @@ static int h264_field_start(H264Context *h, const H264SliceContext *sl,
      * slot 0; its slice references the compatibility SPS (mvc.present ==
      * 0), so the latch must not be conditioned on the active SPS's mvc
      * extension. */
-    if (h->cur_pic_ptr && h->view_count > 1 && h->cur_view == 0) {
+    if (h->cur_pic_ptr && h->cur_view == 0 &&
+        (h->view_count > 1 || ff_h264_allviews_composition(h->avctx))) {
         h->au_base_poc          = h->cur_pic_ptr->poc;
         h->au_base_field_poc[0] = h->cur_pic_ptr->field_poc[0];
         h->au_base_field_poc[1] = h->cur_pic_ptr->field_poc[1];
@@ -2361,6 +2400,7 @@ static int h264_field_start(H264Context *h, const H264SliceContext *sl,
         h264_view_selected(h, h->cur_view)) {
         const H264MVCSPS *mvc = &h->ps.sps->mvc;
         const int base_view_id = mvc->view_id[0];
+        int found_base = 0;
 
         for (int vs = 0; vs < h->view_count; vs++) {
             const H264ViewState *bv = &h->views[vs];
@@ -2373,11 +2413,21 @@ static int h264_field_start(H264Context *h, const H264SliceContext *sl,
 
                 if (bp->view_idx == vs && bp->poc == h->cur_pic_ptr->poc) {
                     h->cur_pic_ptr->recovered |= bp->recovered;
+                    found_base = 1;
                     break;
                 }
             }
             break;
         }
+
+        /* A fast-seek entry can hold the base half in the compose pairing
+         * instead of the base view's delayed output list. Recovery still
+         * travels with the co-located base picture, not with the queue that
+         * happens to own it at this instant. */
+        if (!found_base && h->mvc_deferred_pic &&
+            h->mvc_deferred_pic->view_idx == 0 &&
+            h->mvc_deferred_pic->poc == h->cur_pic_ptr->poc)
+            h->cur_pic_ptr->recovered |= h->mvc_deferred_pic->recovered;
     }
 
     /* Set the frame properties/side data. Only done for the second field in

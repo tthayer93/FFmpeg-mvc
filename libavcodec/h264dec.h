@@ -791,6 +791,65 @@ typedef struct H264Context {
     int view_sel_skipped;
 
     /**
+     * Fast-seek MVC registration lag: dependent access-unit fragments that
+     * arrive before the subset SPS which registers their view are copied into
+     * this small FIFO instead of being refused and lost.  They are replayed
+     * once the registration has arrived.  The hold is bounded so a stream that
+     * never registers cannot turn the decoder into an input buffer.
+     *
+     * The byte bound is the measured one.  On a shipped two-view disc whose
+     * subset SPS returns only every ~293 NAL units, the deepest hold any seek
+     * entry reached was 206769 bytes -- two packets, twelve dependent NALs --
+     * and fragments at a landing measure some 17 kB per NAL, so even an entry
+     * that had to wait out that whole period would hold just under 5 MB.
+     * 16 MB is three times that widest lag and eighty times what the entries
+     * actually paid; nothing was ever refused at it, and the FIFO depth below
+     * is the looser bound (a full period of that shape is fifty fragments).
+     */
+#define H264_MVC_ENTRY_HOLD_DEPTH 1024
+#define H264_MVC_ENTRY_HOLD_MAX_BYTES (16 * 1024 * 1024)
+    uint8_t *mvc_entry_hold_buf[H264_MVC_ENTRY_HOLD_DEPTH];
+    int      mvc_entry_hold_size[H264_MVC_ENTRY_HOLD_DEPTH];
+    int64_t  mvc_entry_hold_pts[H264_MVC_ENTRY_HOLD_DEPTH];
+    int64_t  mvc_entry_hold_dts[H264_MVC_ENTRY_HOLD_DEPTH];
+    /* The base-view identity of the access unit whose dependent half was held.
+     * The replayed slice can only be put back on its own timeline if the AU
+     * identity it was held behind travels with the byte copy: several held
+     * halves may be replayed after later base pictures have moved the
+     * context-level au_base_* latch, and a held fragment replayed against the
+     * moved latch adopts another access unit's POC and delivery time (the
+     * cross-POC entry collision). */
+    int      mvc_entry_hold_base_poc[H264_MVC_ENTRY_HOLD_DEPTH];
+    int      mvc_entry_hold_base_field_poc[H264_MVC_ENTRY_HOLD_DEPTH][2];
+    int64_t  mvc_entry_hold_base_pts[H264_MVC_ENTRY_HOLD_DEPTH];
+    int64_t  mvc_entry_hold_base_dts[H264_MVC_ENTRY_HOLD_DEPTH];
+    int      mvc_entry_hold_base_valid[H264_MVC_ENTRY_HOLD_DEPTH];
+    int      mvc_entry_hold_count;
+    int64_t  mvc_entry_hold_bytes;
+    /** Per-packet latch: the packet was held as a registration-lag fragment. */
+    int      mvc_entry_hold_skipped;
+
+    /**
+     * A committed base picture that allviews composition would have emitted
+     * as a bare view while the multiview registration was still missing.  It
+     * is parked here rather than shipped, so that the dependent half which
+     * arrives behind the registration can still be paired with it.  A session
+     * that is in fact single-view releases this picture on its next turn.
+     */
+    H264Picture *mvc_deferred_pic;
+
+    /**
+     * Fast-seek entry recovery: the composed pairing queues may see a short
+     * output-order skew while the views register and the first access units
+     * after a landing settle. Latched when registration-lag fragments or base
+     * halves are held at entry, and retired after the composed output has
+     * produced enough correctly paired access units to trust it.
+     */
+#define H264_MVC_ENTRY_RECOVERY_FRAMES 250
+    int mvc_entry_recovery;
+    int mvc_entry_recovery_successes;
+
+    /**
      * Dependent-view "2D+delta" anchor completion (see h264_slice.c):
      * first macroblock address of the region completed as skipped
      * macroblocks, so error resilience accounts for it once per picture;
