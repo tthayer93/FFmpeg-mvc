@@ -833,7 +833,6 @@ static int h264_mvc_replay_entry_packets(H264Context *h,
         max_slice_ctx = h->avctx->hwaccel ? 1 : h->nb_slice_ctx;
         for (int i = 0; i < pkt.nb_nals; i++) {
             H2645NAL *nal = &pkt.nals[i];
-            H264SliceContext *queued;
 
             if (nal->type < H264_NAL_AUXILIARY_SLICE ||
                 nal->type > H264_NAL_RESERVED23)
@@ -861,7 +860,7 @@ static int h264_mvc_replay_entry_packets(H264Context *h,
                 ret = 0;
             }
 
-            ret = ff_h264_queue_decode_slice(h, nal, &queued);
+            ret = ff_h264_queue_decode_slice(h, nal);
             if (ret < 0 && (h->avctx->err_recognition & AV_EF_EXPLODE)) {
                 if (pkt_props) {
                     pkt_props->pts = saved_props_pts;
