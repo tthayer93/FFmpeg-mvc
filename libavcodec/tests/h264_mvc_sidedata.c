@@ -28,6 +28,15 @@
  *   view0/1   one view delivered on its own: a MONO picture. It owes no
  *             arrangement tag at all, and it does owe the per-view id that
  *             says which eye it is.
+ *   base-plain the same stream arriving as nothing but its base view: only the
+ *             base view's fragments of each access unit are fed, so the
+ *             dependent sequence header is never parsed and no second view is
+ *             ever registered. What delivers is the plain H.264 decoder, the
+ *             arrangement is the stream's own claim, and it owes that claim
+ *             back field for field with no per-view id. This is the guard on
+ *             the far side of the fix: a delivery rule aimed at multiview
+ *             frames has no business touching a one-view stream, and no FATE
+ *             reference covers the arrangement of a plain stream's frames.
  *
  * The arrangement a container states for the stream (a Matroska StereoMode
  * tag, an MP4 st3d box) is cloned onto every picture the decoder allocates, by
@@ -67,6 +76,8 @@
  * Status: the allviews legs and the single-view legs were red by design until
  * the composed tag was authored to state the eye it puts first and the
  * inherited arrangement stopped being delivered on a frame that is one eye.
+ * The base-plain legs are green before the change and green after it: they are
+ * the price the other three must not exceed, not the target.
  * The reference here is the truth about the frame, not whatever the container
  * happened to claim.
  */
@@ -152,15 +163,24 @@ static const Inherited inherited_claims[] = {
 /* One delivery a consumer can ask for, and what it owes back. */
 typedef struct Mode {
     const char *name;
-    const char *view_ids;    /* the decoder's view_ids option */
+    const char *view_ids;    /* the decoder's view_ids option; NULL = unset */
     int         composed;    /* the frames are pairs, not single views */
     int         view_id;     /* the per-view id owed back; -1 = none owed */
+    /* Deliver only the base view's fragments of each access unit, the way a
+     * stream that never carried a second view arrives: the dependent sequence
+     * header is never parsed, so no second view is ever registered and what
+     * runs is the plain H.264 decoder. Such a delivery owes the container's
+     * claim back UNTOUCHED - what a one-view stream states about its own
+     * arrangement is its own business, and a fix aimed at the multiview
+     * delivery must not reach that far. */
+    int         plain;
 } Mode;
 
 static const Mode delivery_modes[] = {
-    { "allviews", "-1", 1, -1 },
-    { "view0",     "0", 0,  0 },
-    { "view1",     "1", 0,  1 },
+    { "allviews",   "-1", 1, -1, 0 },
+    { "view0",       "0", 0,  0, 0 },
+    { "view1",       "1", 0,  1, 0 },
+    { "base-plain", NULL, 0, -1, 1 },
 };
 #define MODE_ALLVIEWS 0
 
@@ -298,11 +318,72 @@ static int keep_frame(Run *run, const AVFrame *frame)
 /* What this frame owes, against the delivery it came from. Returns 1 with the
  * reason in detail, or 0 when the frame is what it claims to be. */
 static int frame_defect(Run *run, const KeptFrame *kf, const Mode *mode,
-                        char *detail, size_t detail_size)
+                        const Inherited *inh, char *detail, size_t detail_size)
 {
     const AVStereo3D *s3d = &kf->stereo3d;
 
-    if (mode->composed) {
+    if (mode->plain) {
+        /* The claim under test is the stream's own here, not an inherited
+         * one: with only the base view ever fed, no second view is ever
+         * registered and the decoder delivering this frame is the plain
+         * H.264 decoder, which owes the announcement back verbatim. */
+        if (kf->width != VIEW_W || kf->height != VIEW_H) {
+            snprintf(detail, detail_size,
+                     "a one-view stream went out at %dx%d, not %dx%d",
+                     kf->width, kf->height, VIEW_W, VIEW_H);
+            run->bad_geometry++;
+            return 1;
+        }
+        if (!!kf->nb_stereo3d != !!inh->present) {
+            snprintf(detail, detail_size,
+                     "a one-view stream carries %d arrangement tag%s where "
+                     "the stream states %d: with no second view registered "
+                     "this is a plain H.264 delivery, and the arrangement is "
+                     "the stream's own claim, not this decoder's business",
+                     kf->nb_stereo3d, kf->nb_stereo3d > 1 ? "s" : "",
+                     inh->present);
+            run->bad_arrangement++;
+            return 1;
+        }
+        if (inh->present &&
+            (s3d->type        != inh->claim.type ||
+             s3d->flags       != inh->claim.flags ||
+             s3d->view        != inh->claim.view ||
+             s3d->primary_eye != inh->claim.primary_eye ||
+             s3d->baseline    != inh->claim.baseline ||
+             s3d->horizontal_disparity_adjustment.num !=
+                 inh->claim.horizontal_disparity_adjustment.num ||
+             s3d->horizontal_disparity_adjustment.den !=
+                 inh->claim.horizontal_disparity_adjustment.den ||
+             s3d->horizontal_field_of_view.num !=
+                 inh->claim.horizontal_field_of_view.num ||
+             s3d->horizontal_field_of_view.den !=
+                 inh->claim.horizontal_field_of_view.den)) {
+            snprintf(detail, detail_size,
+                     "a one-view stream rewrote the stream's own claim into "
+                     "'%s'/%s/%s inv=%d baseline=%u (the stream said '%s'/%s/"
+                     "%s inv=%d baseline=%u)",
+                     av_stereo3d_type_name(s3d->type),
+                     av_stereo3d_view_name(s3d->view),
+                     av_stereo3d_primary_eye_name(s3d->primary_eye),
+                     !!(s3d->flags & AV_STEREO3D_FLAG_INVERT), s3d->baseline,
+                     av_stereo3d_type_name(inh->claim.type),
+                     av_stereo3d_view_name(inh->claim.view),
+                     av_stereo3d_primary_eye_name(inh->claim.primary_eye),
+                     !!(inh->claim.flags & AV_STEREO3D_FLAG_INVERT),
+                     inh->claim.baseline);
+            run->bad_arrangement++;
+            return 1;
+        }
+        if (kf->nb_view_id) {
+            snprintf(detail, detail_size,
+                     "a one-view stream carries %d per-view ids; no second "
+                     "view was ever registered, so there is nothing to tell "
+                     "apart", kf->nb_view_id);
+            run->bad_view_id++;
+            return 1;
+        }
+    } else if (mode->composed) {
         if (kf->width != COMPOSED_W || kf->height != VIEW_H) {
             snprintf(detail, detail_size,
                      "a composed delivery went out at %dx%d, not %dx%d",
@@ -445,7 +526,8 @@ static AVCodecContext *open_session(const char *who, const AVCodec *codec,
     avctx->color_trc       = COLOR_TRC;
     avctx->colorspace      = COLOR_SPC;
 
-    if ((ret = av_opt_set(avctx, "view_ids", mode->view_ids,
+    if (mode->view_ids &&
+        (ret = av_opt_set(avctx, "view_ids", mode->view_ids,
                           AV_OPT_SEARCH_CHILDREN)) < 0) {
         fprintf(stderr, "%s: view_ids=%s: %s\n", who, mode->view_ids,
                 av_err2str(ret));
@@ -524,17 +606,22 @@ static int drain(Run *run, AVCodecContext *avctx, AVFrame *frame)
 }
 
 /* Feed every access unit of the stream, split the way the demuxers of these
- * files split it, each part carrying the time the stream's own clock gives it. */
+ * files split it, each part carrying the time the stream's own clock gives it.
+ * A plain delivery feeds only the first part: what a stream with nothing but a
+ * base view hands over. */
 static int feed(Run *run, AVCodecContext *avctx, const uint8_t *buf,
                 size_t size, const size_t *cut, unsigned units,
-                const Inherited *inh, AVPacket *pkt, AVFrame *frame)
+                const Inherited *inh, const Mode *mode,
+                AVPacket *pkt, AVFrame *frame)
 {
+    const int parts = mode->plain ? 1 : 2;
+
     for (unsigned n = 0; n < units; n++) {
         const size_t from = n ? cut[n] : 0;
         const size_t to   = n + 1 < units ? cut[n + 1] : size;
         const size_t dep  = dependent_part(buf, from, to);
 
-        for (int part = 0; part < 2; part++) {
+        for (int part = 0; part < parts; part++) {
             const size_t begin = part ? dep : from;
             const size_t end   = part ? to  : dep;
             int ret;
@@ -602,7 +689,7 @@ static void print_run(const Run *run, int ok)
                kf->nb_stereo3d ? av_stereo3d_type_name(kf->stereo3d.type) : "-",
                kf->nb_stereo3d ? av_stereo3d_view_name(kf->stereo3d.view) : "-",
                kf->nb_stereo3d ? av_stereo3d_primary_eye_name(kf->stereo3d.primary_eye) : "-",
-               kf->nb_stereo3d !!(kf->stereo3d.flags & AV_STEREO3D_FLAG_INVERT),
+               kf->nb_stereo3d ? !!(kf->stereo3d.flags & AV_STEREO3D_FLAG_INVERT) : 0,
                kf->nb_stereo3d ? kf->stereo3d.baseline : 0u,
                kf->nb_view_id, kf->view_id,
                av_color_range_name(kf->color_range),
@@ -725,7 +812,8 @@ static int run_stream(const char *path)
                 continue;
             }
 
-            if (feed(run, avctx, buf, size, cut, units, inh, pkt, frame) < 0) {
+            if (feed(run, avctx, buf, size, cut, units, inh, mode,
+                     pkt, frame) < 0) {
                 avcodec_free_context(&avctx);
                 print_run(run, 0);
                 fprintf(stderr, "ASSERT-FAIL: %s: the stream could not be "
@@ -745,7 +833,7 @@ static int run_stream(const char *path)
 
             for (unsigned i = 0; i < run->delivered && ok; i++) {
                 reason[0] = 0;
-                if (frame_defect(run, &run->frames[i], mode, reason,
+                if (frame_defect(run, &run->frames[i], mode, inh, reason,
                                  sizeof(reason))) {
                     fprintf(stderr, "ASSERT-FAIL: %s: pts %lld: %s\n",
                             run->name, (long long)run->frames[i].pts, reason);
