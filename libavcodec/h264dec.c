@@ -2275,6 +2275,7 @@ static int finalize_frame(H264Context *h, AVFrame *dst, H264Picture *out, int *g
 
 static int h264_sbs_process(H264Context *h, AVFrame *pict,
                             H264Picture *out, int *got_frame);
+static void h264_mvc_delivered_side_data(H264Context *h, AVFrame *pict);
 
 static int send_next_delayed_frame(H264Context *h, AVFrame *dst_frame,
                                    int *got_frame, int buf_index)
@@ -2373,8 +2374,10 @@ static int send_next_delayed_frame(H264Context *h, AVFrame *dst_frame,
             if (sbs < 0)
                 return sbs;
             out->output_delivered = 1;
-            if (*got_frame)
+            if (*got_frame) {
+                h264_mvc_delivered_side_data(h, dst_frame);
                 break;
+            }
             /* a half held by the SBS compose stage: got_frame was cleared,
              * so keep draining this view's queue; the held half is paired
              * with the other role's LATER output (or shipped standalone by
@@ -2846,9 +2849,18 @@ static int h264_sbs_assemble(H264Context *h, AVFrame *pict,
         AVStereo3D *s3d = av_stereo3d_create_side_data(sbs);
         if (!s3d)
             goto fail;
-        s3d->type  = AV_STEREO3D_SIDEBYSIDE;
-        s3d->flags = 0;
-        s3d->view  = AV_STEREO3D_VIEW_PACKED;
+        /* The frame is the pair, packed left eye first: that is what the
+         * halves above were placed to say, and the tag has to say it too,
+         * because a consumer reads the tag and not the pixels. Nothing in the
+         * bitstream states a camera baseline, a disparity adjustment or a
+         * field of view for this frame, so all three stay at the zero the
+         * constructor left them at rather than inheriting a container's
+         * guess about a stream this frame is not. */
+        s3d->type        = AV_STEREO3D_SIDEBYSIDE;
+        s3d->flags       = 0;
+        s3d->view        = AV_STEREO3D_VIEW_PACKED;
+        s3d->primary_eye = AV_PRIMARY_EYE_LEFT;
+        s3d->baseline    = 0;
     }
     av_dict_set(&sbs->metadata, "view_id", NULL, 0);
     av_dict_set(&sbs->metadata, "stereo_mode", NULL, 0);
@@ -3129,9 +3141,16 @@ static int h264_sbs_compose_half_black(H264Context *h, AVFrame *pict, int role)
             ret = AVERROR(ENOMEM);
             goto out;
         }
-        s3d->type  = AV_STEREO3D_SIDEBYSIDE;
-        s3d->flags = 0;
-        s3d->view  = AV_STEREO3D_VIEW_PACKED;
+        /* as in h264_sbs_assemble(): the frame says what it is, not what the
+         * container said about the stream - the eye the arrangement gives the
+         * left side is the left eye, that is what half_is_left was for, and no
+         * bitstream here states a baseline, a disparity adjustment or a field
+         * of view for this frame */
+        s3d->type        = AV_STEREO3D_SIDEBYSIDE;
+        s3d->flags       = 0;
+        s3d->view        = AV_STEREO3D_VIEW_PACKED;
+        s3d->primary_eye = AV_PRIMARY_EYE_LEFT;
+        s3d->baseline    = 0;
     }
     av_dict_set(&sbs->metadata, "view_id", NULL, 0);
     av_dict_set(&sbs->metadata, "stereo_mode", NULL, 0);
@@ -3166,6 +3185,45 @@ out:
     av_frame_free(&keep);
     av_frame_free(&sbs);
     return ret;
+}
+
+/* What a frame leaving this decoder owes its caller about its arrangement.
+ *
+ * A frame that came out of one view is a mono picture. It is not an
+ * arrangement, and it does not become one because the container of the stream
+ * it was demuxed from stated an arrangement for the whole stream: that claim
+ * reaches the frame the way every other stream-level property does -
+ * ff_decode_frame_props() maps the decoder context's coded side data, and the
+ * packet's, onto every picture the decoder allocates - and nothing about the
+ * decode wrote it. Left in place, a player unpacks a second eye out of a
+ * picture that holds one, and a live H.264 encode reads the same entry and
+ * re-issues the container's claim to the bitstream as a frame-packing SEI. So
+ * the claim is evidence about the stream, not about this frame, and it is
+ * taken off here, at the boundary every delivered frame crosses.
+ *
+ * The composed frame is the other half of the question, and it is not this
+ * function's to answer: h264_sbs_assemble() and h264_sbs_compose_half_black()
+ * know what the frame they built is and author their own honest tag. Such a
+ * frame is recognised here only by the geometry it can alone have - the two
+ * views of a stream side by side, at twice the width every view of that stream
+ * is coded at (all views of a multiview stream share one frame size, and a
+ * delivered view is allocated at the coded size, so the test cannot be met by
+ * a single view of any size).
+ *
+ * A stream that never registered a second view is not this function's business
+ * at all: there the arrangement is the stream's own claim about its own coded
+ * pictures, mapped by the common code, and this decoder has nothing to
+ * correct. */
+static void h264_mvc_delivered_side_data(H264Context *h, AVFrame *pict)
+{
+    if (h->view_count <= 1)
+        return;
+
+    if (pict->width && h->avctx->coded_width &&
+        pict->width == 2 * h->avctx->coded_width)
+        return;
+
+    av_frame_remove_side_data(pict, AV_FRAME_DATA_STEREO3D);
 }
 
 /* Fast-seek entry recovery for the composed pairing.
@@ -3862,6 +3920,8 @@ static int h264_decode_frame(AVCodecContext *avctx, AVFrame *pict,
          * error like any other, so it travels out through this return. */
         if (ret >= 0 && !*got_frame)
             ret = h264_sbs_drain_eof(h, pict, got_frame);
+        if (ret >= 0 && *got_frame)
+            h264_mvc_delivered_side_data(h, pict);
         return ret;
     }
 
@@ -4128,6 +4188,12 @@ static int h264_decode_frame(AVCodecContext *avctx, AVFrame *pict,
                         v->parked_pic->reference |= DELAYED_PIC_REF;
                         v->next_output_pic = NULL;
                     }
+                    /* Every frame this turn hands over reaches the caller
+                     * through here - including one the compose machinery
+                     * filled in on the way - so this is where a frame that is
+                     * one eye stops wearing the container's claim about the
+                     * whole stream. */
+                    h264_mvc_delivered_side_data(h, pict);
                 }
             }
         }
