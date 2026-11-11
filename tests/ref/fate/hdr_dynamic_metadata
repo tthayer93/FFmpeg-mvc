@@ -54,12 +54,22 @@ decoded:
     maxscl: 20000/100000 30000/100000 40000/100000 average_maxrgb=25000/100000
     distribution_maxrgb: n=1 25%=12500/100000
     fraction_bright_pixels=100/1000
-    tone_mapping_flag=1 knee=501/4095,801/4095 anchors=3: 101/1023 501/1023 901/1023
+    tone_mapping_flag=0
     color_saturation_mapping_flag=1 weight=9/8
 
 Testing error paths
 to_t35 NULL s: ret==AVERROR(EINVAL)=yes
 to_t35 no data no size: ret==AVERROR(EINVAL)=yes
+to_t35 num_windows>3: ret==AVERROR(EINVAL)=yes
+to_t35 percentiles>15: ret==AVERROR(EINVAL)=yes
+to_t35 anchors>15: ret==AVERROR(EINVAL)=yes
+to_t35 targeted rows>25: ret==AVERROR(EINVAL)=yes
+to_t35 targeted cols>25: ret==AVERROR(EINVAL)=yes
+to_t35 mastering rows>25: ret==AVERROR(EINVAL)=yes
+to_t35 mastering cols>25: ret==AVERROR(EINVAL)=yes
+to_t35 rows>25 with flag clear: ret==0=yes
+to_t35 mastering rows>25 with flag clear: ret==0=yes
+to_t35 anchors>15 with flag clear: ret==0=yes
 from_t35 NULL s: ret==AVERROR(EINVAL)=yes
 from_t35 oversized: ret==AVERROR(EINVAL)=yes
 

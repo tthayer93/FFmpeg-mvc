@@ -37,7 +37,6 @@
 #include <stdint.h>
 
 #include "libavutil/attributes.h"
-#include "libavutil/emms.h"
 #include "libavutil/internal.h"
 #include "libavutil/intmath.h"
 #include "libavutil/mathematics.h"
@@ -858,6 +857,10 @@ av_cold int ff_mpv_encode_init(AVCodecContext *avctx)
         m->intra_only = 1; /* force intra only for jpeg */
         avctx->delay = 0;
         s->c.low_delay = 1;
+        if (avctx->codec_id == AV_CODEC_ID_MJPEG) {
+            s->c.y_dc_scale_table =
+            s->c.c_dc_scale_table = ff_mpeg12_dc_scale_table[s->c.intra_dc_precision];
+        }
         break;
 #endif
     case AV_CODEC_ID_SPEEDHQ:
@@ -1369,7 +1372,6 @@ static int load_input_picture(MPVMainEncContext *const m, const AVFrame *pic_arg
                 int w = AV_CEIL_RSHIFT(s->c.width , h_shift);
                 int h = AV_CEIL_RSHIFT(s->c.height, v_shift);
                 const uint8_t *src = pic_arg->data[i];
-                uint8_t *dst = pic->f->data[i];
                 int vpad = 16;
 
                 if (   s->c.codec_id == AV_CODEC_ID_MPEG2VIDEO
@@ -1378,7 +1380,8 @@ static int load_input_picture(MPVMainEncContext *const m, const AVFrame *pic_arg
                     vpad = 32;
 
                 if (!s->c.avctx->rc_buffer_size)
-                    dst += INPLACE_OFFSET;
+                    pic->f->data[i] += INPLACE_OFFSET;
+                uint8_t *dst = pic->f->data[i];
 
                 if (src_stride == dst_stride)
                     memcpy(dst, src, src_stride * h - src_stride + w);
@@ -1442,8 +1445,7 @@ static int skip_check(MPVMainEncContext *const m,
         const int bw = plane ? 1 : 2;
         for (int y = 0; y < s->c.mb_height * bw; y++) {
             for (int x = 0; x < s->c.mb_width * bw; x++) {
-                int off = p->shared ? 0 : 16;
-                const uint8_t *dptr = p->f->data[plane] + 8 * (x + y * stride) + off;
+                const uint8_t *dptr = p->f->data[plane] + 8 * (x + y * stride);
                 const uint8_t *rptr = ref->f->data[plane] + 8 * (x + y * stride);
                 int v = m->frame_skip_cmp_fn(s, dptr, rptr, stride, 8);
 
@@ -1457,7 +1459,6 @@ static int skip_check(MPVMainEncContext *const m,
             }
         }
     }
-    emms_c();
 
     if (score)
         score64 = score;
@@ -1524,29 +1525,22 @@ static int estimate_best_b_count(MPVMainEncContext *const m)
                                            s->c.next_pic.ptr;
 
         if (pre_input_ptr) {
-            const uint8_t *data[4];
-            memcpy(data, pre_input_ptr->f->data, sizeof(data));
-
-            if (!pre_input_ptr->shared && i) {
-                data[0] += INPLACE_OFFSET;
-                data[1] += INPLACE_OFFSET;
-                data[2] += INPLACE_OFFSET;
-            }
+            const AVFrame *const pre_input = pre_input_ptr->f;
 
             s->mpvencdsp.shrink[scale](m->tmp_frames[i]->data[0],
                                        m->tmp_frames[i]->linesize[0],
-                                       data[0],
-                                       pre_input_ptr->f->linesize[0],
+                                       pre_input->data[0],
+                                       pre_input->linesize[0],
                                        width, height);
             s->mpvencdsp.shrink[scale](m->tmp_frames[i]->data[1],
                                        m->tmp_frames[i]->linesize[1],
-                                       data[1],
-                                       pre_input_ptr->f->linesize[1],
+                                       pre_input->data[1],
+                                       pre_input->linesize[1],
                                        width >> 1, height >> 1);
             s->mpvencdsp.shrink[scale](m->tmp_frames[i]->data[2],
                                        m->tmp_frames[i]->linesize[2],
-                                       data[2],
-                                       pre_input_ptr->f->linesize[2],
+                                       pre_input->data[2],
+                                       pre_input->linesize[2],
                                        width >> 1, height >> 1);
         }
     }
@@ -1815,8 +1809,11 @@ static int select_input_picture(MPVMainEncContext *const m)
             ret = av_frame_ref(s->new_pic, m->reordered_input_picture[0]->f);
             if (ret < 0)
                 goto fail;
+            // The input was stored INPLACE_OFFSET into the buffer, which
+            // new_pic now points at. Point the frame back at the start of
+            // the buffer for the reconstruction.
             for (int i = 0; i < MPV_MAX_PLANES; i++)
-                s->new_pic->data[i] += INPLACE_OFFSET;
+                m->reordered_input_picture[0]->f->data[i] -= INPLACE_OFFSET;
         }
         s->c.cur_pic.ptr = m->reordered_input_picture[0];
         m->reordered_input_picture[0] = NULL;
@@ -1944,6 +1941,9 @@ int ff_mpv_encode_picture(AVCodecContext *avctx, AVPacket *pkt,
             ret = ff_mjpeg_add_icc_profile_size(avctx, s->new_pic, &pkt_size);
             if (ret < 0)
                 return ret;
+            ret = ff_mjpeg_add_gain_map_size(avctx, s->mjpeg_ctx, s->new_pic, &pkt_size);
+            if (ret < 0)
+                return ret;
         }
         if ((ret = ff_alloc_packet(avctx, pkt, pkt_size)) < 0)
             return ret;
@@ -1967,7 +1967,7 @@ vbv_retry:
             pkt->size = avctx->internal->byte_buffer_size;
         }
         if (ret < 0)
-            return -1;
+            return ret;
 
         frame_end(m);
 
@@ -2934,8 +2934,6 @@ int ff_mpv_reallocate_putbitbuffer(MPVEncContext *const s, size_t threshold, siz
             return AVERROR(ENOMEM);
         }
 
-        emms_c();
-
         av_fast_padded_malloc(&new_buffer, &new_buffer_size,
                               s->c.avctx->internal->byte_buffer_size + size_increase);
         if (!new_buffer)
@@ -3708,7 +3706,9 @@ static int encode_picture(MPVMainEncContext *const m, const AVPacket *pkt)
         ret = estimate_qp(m, 1);
         if (ret < 0)
             return ret;
-        ff_get_2pass_fcode(m);
+        ret = ff_get_2pass_fcode(m);
+        if (ret < 0)
+            return ret;
     } else if (!(s->c.avctx->flags & AV_CODEC_FLAG_QSCALE)) {
         if (s->c.pict_type == AV_PICTURE_TYPE_B)
             s->lambda = m->last_lambda_for[s->c.pict_type];
@@ -3767,7 +3767,6 @@ static int encode_picture(MPVMainEncContext *const m, const AVPacket *pkt)
         merge_context_after_me(s, s->c.enc_contexts[i]);
     m->mc_mb_var_sum = s->me.mc_mb_var_sum_temp;
     m->mb_var_sum    = s->me.   mb_var_sum_temp;
-    emms_c();
 
     if (s->me.scene_change_score > m->scenechange_threshold &&
         s->c.pict_type == AV_PICTURE_TYPE_P) {
@@ -3865,9 +3864,7 @@ static int encode_picture(MPVMainEncContext *const m, const AVPacket *pkt)
                 s->c.chroma_intra_matrix[j] = av_clip_uint8((chroma_matrix[i] * s->c.qscale) >> 3);
                 s->c.       intra_matrix[j] = av_clip_uint8((  luma_matrix[i] * s->c.qscale) >> 3);
             }
-            s->c.y_dc_scale_table =
-            s->c.c_dc_scale_table = ff_mpeg12_dc_scale_table[0];
-            s->c.chroma_intra_matrix[0] = s->c.intra_matrix[0] = 8;
+            s->c.chroma_intra_matrix[0] = s->c.intra_matrix[0] = 8 >> s->c.intra_dc_precision;
         } else {
             static const uint8_t y[32] = {13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13,13};
             static const uint8_t c[32] = {14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14,14};
@@ -3916,7 +3913,6 @@ static int encode_picture(MPVMainEncContext *const m, const AVPacket *pkt)
             set_put_bits_buffer_size(&s->pb, FFMIN(s->c.enc_contexts[i]->pb.buf_end - s->pb.buf, INT_MAX/8-BUF_BITS));
         merge_context_after_encode(s, s->c.enc_contexts[i]);
     }
-    emms_c();
     return 0;
 }
 
@@ -4246,7 +4242,6 @@ static DECLARE_ALIGNED(16, int16_t, basis)[64][64];
 
 static void build_basis(uint8_t *perm){
     int i, j, x, y;
-    emms_c();
     for(i=0; i<8; i++){
         for(j=0; j<8; j++){
             for(y=0; y<8; y++){

@@ -36,6 +36,7 @@ AVCODECOBJS-$(CONFIG_AAC_DECODER)       += aacpsdsp.o \
 AVCODECOBJS-$(CONFIG_AAC_ENCODER)       += aacencdsp.o
 AVCODECOBJS-$(CONFIG_ALAC_DECODER)      += alacdsp.o
 AVCODECOBJS-$(CONFIG_APV_DECODER)       += apv_dsp.o
+AVCODECOBJS-$(CONFIG_BITPACKED_DECODER) += bitpackeddec.o
 AVCODECOBJS-$(CONFIG_CAVS_DECODER)      += cavsdsp.o
 AVCODECOBJS-$(CONFIG_DCA_DECODER)       += dcadsp.o synth_filter.o
 AVCODECOBJS-$(CONFIG_DIRAC_DECODER)     += diracdsp.o
@@ -48,6 +49,7 @@ AVCODECOBJS-$(CONFIG_PIXBLOCKDSP)       += pixblockdsp.o
 AVCODECOBJS-$(CONFIG_HEVC_DECODER)      += hevc_add_res.o hevc_deblock.o hevc_dequant.o \
 					   hevc_idct.o hevc_pel.o hevc_pred.o hevc_sao.o
 AVCODECOBJS-$(CONFIG_PNG_DECODER)       += png.o
+AVCODECOBJS-$(CONFIG_PRORES_DECODER)    += proresdsp.o
 AVCODECOBJS-$(CONFIG_RV34DSP)           += rv34dsp.o
 AVCODECOBJS-$(CONFIG_RV40_DECODER)      += rv40dsp.o
 AVCODECOBJS-$(CONFIG_SBC_ENCODER)       += sbcdsp.o
@@ -62,7 +64,7 @@ AVCODECOBJS-$(CONFIG_V210_ENCODER)      += v210enc.o
 AVCODECOBJS-$(CONFIG_VORBIS_DECODER)    += vorbisdsp.o
 AVCODECOBJS-$(CONFIG_VP6_DECODER)       += vp6dsp.o
 AVCODECOBJS-$(CONFIG_VP9_DECODER)       += vp9dsp.o
-AVCODECOBJS-$(CONFIG_VVC_DECODER)       += vvc_alf.o vvc_mc.o vvc_sao.o
+AVCODECOBJS-$(CONFIG_VVC_DECODER)       += vvc_alf.o vvc_mc.o vvc_pred.o vvc_sao.o
 
 CHECKASMOBJS-$(CONFIG_AVCODEC)          += $(AVCODECOBJS-yes)
 
@@ -79,6 +81,7 @@ AVFILTEROBJS-$(CONFIG_FSPP_FILTER)       += vf_fspp.o
 AVFILTEROBJS-$(CONFIG_GBLUR_FILTER)      += vf_gblur.o
 AVFILTEROBJS-$(CONFIG_HFLIP_FILTER)      += vf_hflip.o
 AVFILTEROBJS-$(CONFIG_IDET_FILTER)       += vf_idet.o
+AVFILTEROBJS-$(CONFIG_LIMITER_FILTER)    += vf_limiter.o
 AVFILTEROBJS-$(CONFIG_PP7_FILTER)        += vf_pp7.o
 AVFILTEROBJS-$(CONFIG_THRESHOLD_FILTER)  += vf_threshold.o
 AVFILTEROBJS-$(CONFIG_NLMEANS_FILTER)    += vf_nlmeans.o
@@ -164,7 +167,7 @@ tests/checkasm/checkasm.o: CFLAGS += -Umain
 CHECKASM := tests/checkasm/checkasm$(EXESUF)
 
 $(CHECKASM): $(CHECKASMOBJS) $(FF_STATIC_DEP_LIBS)
-	$(call LINK,$(LDFLAGS) $(LDEXEFLAGS) $(LD_O) $(CHECKASMOBJS) $(FF_STATIC_DEP_LIBS) $(EXTRALIBS-avcodec) $(EXTRALIBS-avfilter) $(EXTRALIBS-avformat) $(EXTRALIBS-avutil) $(EXTRALIBS-swresample) $(EXTRALIBS) $(EXTRALIBS-checkasm))
+	$(call LINK,$(LDFLAGS) $(LDEXEFLAGS) $(LD_O) $(CHECKASMOBJS) $(FF_STATIC_DEP_LIBS) $(EXTRALIBS-avcodec) $(EXTRALIBS-avfilter) $(EXTRALIBS-avformat) $(EXTRALIBS-avutil) $(EXTRALIBS-swresample) $(EXTRALIBS-swscale) $(EXTRALIBS) $(EXTRALIBS-checkasm))
 
 run-checkasm: $(CHECKASM)
 run-checkasm:

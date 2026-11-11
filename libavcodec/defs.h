@@ -106,6 +106,11 @@
 
 #define AV_PROFILE_TRUEHD_ATMOS           30
 
+#define AV_PROFILE_MPEGH_3DA_MAIN      0
+#define AV_PROFILE_MPEGH_3DA_HIGH      1
+#define AV_PROFILE_MPEGH_3DA_LC        2
+#define AV_PROFILE_MPEGH_3DA_BL        3
+
 #define AV_PROFILE_MPEG2_422           0
 #define AV_PROFILE_MPEG2_HIGH          1
 #define AV_PROFILE_MPEG2_SS            2
@@ -214,6 +219,8 @@
 #define AV_PROFILE_APV_4444_12 88
 #define AV_PROFILE_APV_400_10  99
 
+#define AV_PROFILE_CAVS_JIZHUN              0x20
+#define AV_PROFILE_CAVS_BROADCASTING        0x48
 
 #define AV_LEVEL_UNKNOWN                  -99
 
