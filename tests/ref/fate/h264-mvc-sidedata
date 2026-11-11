@@ -1,0 +1,191 @@
+sidedata: 2view-ssps-lag.h264 units=6 step=3600 view=16x16 composed=32x16
+2view-ssps-lag.h264|allviews|no-claim: pts=0 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,47
+2view-ssps-lag.h264|allviews|no-claim: pts=3600 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,47
+2view-ssps-lag.h264|allviews|no-claim: pts=7200 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,47
+2view-ssps-lag.h264|allviews|no-claim: pts=10800 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,47
+2view-ssps-lag.h264|allviews|no-claim: pts=14400 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,47
+2view-ssps-lag.h264|allviews|no-claim: pts=18000 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,47
+2view-ssps-lag.h264|allviews|no-claim: delivered=6 composed=6 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=0 result=ok
+2view-ssps-lag.h264|view0|no-claim: pts=0 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|view0|no-claim: pts=3600 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|view0|no-claim: pts=7200 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|view0|no-claim: pts=10800 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|view0|no-claim: pts=14400 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|view0|no-claim: pts=18000 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|view0|no-claim: delivered=6 composed=0 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=1 result=ok
+2view-ssps-lag.h264|view1|no-claim: pts=0 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|view1|no-claim: pts=0 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag.h264|view1|no-claim: pts=3600 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag.h264|view1|no-claim: pts=7200 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag.h264|view1|no-claim: pts=10800 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag.h264|view1|no-claim: pts=14400 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag.h264|view1|no-claim: pts=18000 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag.h264|view1|no-claim: delivered=7 composed=0 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=1 result=ok
+2view-ssps-lag.h264|base-only|no-claim: pts=0 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|base-only|no-claim: pts=3600 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|base-only|no-claim: pts=7200 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|base-only|no-claim: pts=10800 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|base-only|no-claim: pts=14400 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|base-only|no-claim: pts=18000 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|base-only|no-claim: delivered=6 composed=0 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=1 result=ok
+2view-ssps-lag.h264|base-first|no-claim: pts=0 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|base-first|no-claim: delivered=1 composed=0 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=0 result=ok
+2view-ssps-lag.h264|allviews|frame-alternate: pts=0 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,47
+2view-ssps-lag.h264|allviews|frame-alternate: pts=3600 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,47
+2view-ssps-lag.h264|allviews|frame-alternate: pts=7200 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,47
+2view-ssps-lag.h264|allviews|frame-alternate: pts=10800 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,47
+2view-ssps-lag.h264|allviews|frame-alternate: pts=14400 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,47
+2view-ssps-lag.h264|allviews|frame-alternate: pts=18000 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,47
+2view-ssps-lag.h264|allviews|frame-alternate: delivered=6 composed=6 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=0 result=ok
+2view-ssps-lag.h264|view0|frame-alternate: pts=0 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|view0|frame-alternate: pts=3600 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|view0|frame-alternate: pts=7200 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|view0|frame-alternate: pts=10800 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|view0|frame-alternate: pts=14400 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|view0|frame-alternate: pts=18000 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|view0|frame-alternate: delivered=6 composed=0 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=1 result=ok
+2view-ssps-lag.h264|view1|frame-alternate: pts=0 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|view1|frame-alternate: pts=0 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag.h264|view1|frame-alternate: pts=3600 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag.h264|view1|frame-alternate: pts=7200 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag.h264|view1|frame-alternate: pts=10800 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag.h264|view1|frame-alternate: pts=14400 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag.h264|view1|frame-alternate: pts=18000 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag.h264|view1|frame-alternate: delivered=7 composed=0 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=1 result=ok
+2view-ssps-lag.h264|base-only|frame-alternate: pts=0 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|base-only|frame-alternate: pts=3600 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|base-only|frame-alternate: pts=7200 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|base-only|frame-alternate: pts=10800 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|base-only|frame-alternate: pts=14400 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|base-only|frame-alternate: pts=18000 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|base-only|frame-alternate: delivered=6 composed=0 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=1 result=ok
+2view-ssps-lag.h264|base-first|frame-alternate: pts=0 16x16 arrangement=1(frame alternate/packed/none inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|base-first|frame-alternate: delivered=1 composed=0 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=0 result=ok
+2view-ssps-lag.h264|allviews|side-by-side-inverted-baseline: pts=0 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=47,158
+2view-ssps-lag.h264|allviews|side-by-side-inverted-baseline: pts=3600 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=47,158
+2view-ssps-lag.h264|allviews|side-by-side-inverted-baseline: pts=7200 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=47,158
+2view-ssps-lag.h264|allviews|side-by-side-inverted-baseline: pts=10800 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=47,158
+2view-ssps-lag.h264|allviews|side-by-side-inverted-baseline: pts=14400 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=47,158
+2view-ssps-lag.h264|allviews|side-by-side-inverted-baseline: pts=18000 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=47,158
+2view-ssps-lag.h264|allviews|side-by-side-inverted-baseline: delivered=6 composed=6 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=0 result=ok
+2view-ssps-lag.h264|view0|side-by-side-inverted-baseline: pts=0 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|view0|side-by-side-inverted-baseline: pts=3600 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|view0|side-by-side-inverted-baseline: pts=7200 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|view0|side-by-side-inverted-baseline: pts=10800 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|view0|side-by-side-inverted-baseline: pts=14400 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|view0|side-by-side-inverted-baseline: pts=18000 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|view0|side-by-side-inverted-baseline: delivered=6 composed=0 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=1 result=ok
+2view-ssps-lag.h264|view1|side-by-side-inverted-baseline: pts=0 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|view1|side-by-side-inverted-baseline: pts=0 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag.h264|view1|side-by-side-inverted-baseline: pts=3600 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag.h264|view1|side-by-side-inverted-baseline: pts=7200 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag.h264|view1|side-by-side-inverted-baseline: pts=10800 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag.h264|view1|side-by-side-inverted-baseline: pts=14400 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag.h264|view1|side-by-side-inverted-baseline: pts=18000 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag.h264|view1|side-by-side-inverted-baseline: delivered=7 composed=0 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=1 result=ok
+2view-ssps-lag.h264|base-only|side-by-side-inverted-baseline: pts=0 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|base-only|side-by-side-inverted-baseline: pts=3600 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|base-only|side-by-side-inverted-baseline: pts=7200 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|base-only|side-by-side-inverted-baseline: pts=10800 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|base-only|side-by-side-inverted-baseline: pts=14400 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|base-only|side-by-side-inverted-baseline: pts=18000 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|base-only|side-by-side-inverted-baseline: delivered=6 composed=0 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=1 result=ok
+2view-ssps-lag.h264|base-first|side-by-side-inverted-baseline: pts=0 16x16 arrangement=1(side by side/packed/right inv=1 baseline=60000) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag.h264|base-first|side-by-side-inverted-baseline: delivered=1 composed=0 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=0 result=ok
+2view-ssps-lag.h264|allviews|side-by-side-inverted-baseline: injection witnessed - the inverted claim swapped the composed halves, so the claim did reach the frames
+
+sidedata: 2view-ssps-lag-crosspoc.h264 units=6 step=3600 view=16x16 composed=32x16
+2view-ssps-lag-crosspoc.h264|allviews|no-claim: pts=0 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,47
+2view-ssps-lag-crosspoc.h264|allviews|no-claim: pts=3600 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=149,71
+2view-ssps-lag-crosspoc.h264|allviews|no-claim: pts=7200 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,47
+2view-ssps-lag-crosspoc.h264|allviews|no-claim: pts=10800 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=149,71
+2view-ssps-lag-crosspoc.h264|allviews|no-claim: pts=14400 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,47
+2view-ssps-lag-crosspoc.h264|allviews|no-claim: pts=18000 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=149,71
+2view-ssps-lag-crosspoc.h264|allviews|no-claim: delivered=6 composed=6 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=0 result=ok
+2view-ssps-lag-crosspoc.h264|view0|no-claim: pts=0 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag-crosspoc.h264|view0|no-claim: pts=3600 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=149,-1
+2view-ssps-lag-crosspoc.h264|view0|no-claim: pts=7200 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag-crosspoc.h264|view0|no-claim: pts=10800 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=149,-1
+2view-ssps-lag-crosspoc.h264|view0|no-claim: pts=14400 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag-crosspoc.h264|view0|no-claim: pts=18000 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=149,-1
+2view-ssps-lag-crosspoc.h264|view0|no-claim: delivered=6 composed=0 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=1 result=ok
+2view-ssps-lag-crosspoc.h264|view1|no-claim: pts=0 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag-crosspoc.h264|view1|no-claim: pts=0 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag-crosspoc.h264|view1|no-claim: pts=3600 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=71,-1
+2view-ssps-lag-crosspoc.h264|view1|no-claim: pts=7200 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag-crosspoc.h264|view1|no-claim: pts=10800 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=71,-1
+2view-ssps-lag-crosspoc.h264|view1|no-claim: pts=14400 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag-crosspoc.h264|view1|no-claim: pts=18000 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=71,-1
+2view-ssps-lag-crosspoc.h264|view1|no-claim: delivered=7 composed=0 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=1 result=ok
+2view-ssps-lag-crosspoc.h264|base-only|no-claim: pts=0 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag-crosspoc.h264|base-only|no-claim: pts=3600 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=149,-1
+2view-ssps-lag-crosspoc.h264|base-only|no-claim: pts=7200 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag-crosspoc.h264|base-only|no-claim: pts=10800 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=149,-1
+2view-ssps-lag-crosspoc.h264|base-only|no-claim: pts=14400 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag-crosspoc.h264|base-only|no-claim: pts=18000 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=149,-1
+2view-ssps-lag-crosspoc.h264|base-only|no-claim: delivered=6 composed=0 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=1 result=ok
+2view-ssps-lag-crosspoc.h264|base-first|no-claim: pts=0 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag-crosspoc.h264|base-first|no-claim: delivered=1 composed=0 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=0 result=ok
+2view-ssps-lag-crosspoc.h264|allviews|frame-alternate: pts=0 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,47
+2view-ssps-lag-crosspoc.h264|allviews|frame-alternate: pts=3600 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=149,71
+2view-ssps-lag-crosspoc.h264|allviews|frame-alternate: pts=7200 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,47
+2view-ssps-lag-crosspoc.h264|allviews|frame-alternate: pts=10800 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=149,71
+2view-ssps-lag-crosspoc.h264|allviews|frame-alternate: pts=14400 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,47
+2view-ssps-lag-crosspoc.h264|allviews|frame-alternate: pts=18000 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=149,71
+2view-ssps-lag-crosspoc.h264|allviews|frame-alternate: delivered=6 composed=6 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=0 result=ok
+2view-ssps-lag-crosspoc.h264|view0|frame-alternate: pts=0 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag-crosspoc.h264|view0|frame-alternate: pts=3600 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=149,-1
+2view-ssps-lag-crosspoc.h264|view0|frame-alternate: pts=7200 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag-crosspoc.h264|view0|frame-alternate: pts=10800 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=149,-1
+2view-ssps-lag-crosspoc.h264|view0|frame-alternate: pts=14400 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag-crosspoc.h264|view0|frame-alternate: pts=18000 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=149,-1
+2view-ssps-lag-crosspoc.h264|view0|frame-alternate: delivered=6 composed=0 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=1 result=ok
+2view-ssps-lag-crosspoc.h264|view1|frame-alternate: pts=0 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag-crosspoc.h264|view1|frame-alternate: pts=0 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag-crosspoc.h264|view1|frame-alternate: pts=3600 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=71,-1
+2view-ssps-lag-crosspoc.h264|view1|frame-alternate: pts=7200 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag-crosspoc.h264|view1|frame-alternate: pts=10800 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=71,-1
+2view-ssps-lag-crosspoc.h264|view1|frame-alternate: pts=14400 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag-crosspoc.h264|view1|frame-alternate: pts=18000 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=71,-1
+2view-ssps-lag-crosspoc.h264|view1|frame-alternate: delivered=7 composed=0 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=1 result=ok
+2view-ssps-lag-crosspoc.h264|base-only|frame-alternate: pts=0 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag-crosspoc.h264|base-only|frame-alternate: pts=3600 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=149,-1
+2view-ssps-lag-crosspoc.h264|base-only|frame-alternate: pts=7200 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag-crosspoc.h264|base-only|frame-alternate: pts=10800 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=149,-1
+2view-ssps-lag-crosspoc.h264|base-only|frame-alternate: pts=14400 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag-crosspoc.h264|base-only|frame-alternate: pts=18000 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=149,-1
+2view-ssps-lag-crosspoc.h264|base-only|frame-alternate: delivered=6 composed=0 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=1 result=ok
+2view-ssps-lag-crosspoc.h264|base-first|frame-alternate: pts=0 16x16 arrangement=1(frame alternate/packed/none inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag-crosspoc.h264|base-first|frame-alternate: delivered=1 composed=0 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=0 result=ok
+2view-ssps-lag-crosspoc.h264|allviews|side-by-side-inverted-baseline: pts=0 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=47,158
+2view-ssps-lag-crosspoc.h264|allviews|side-by-side-inverted-baseline: pts=3600 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=71,149
+2view-ssps-lag-crosspoc.h264|allviews|side-by-side-inverted-baseline: pts=7200 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=47,158
+2view-ssps-lag-crosspoc.h264|allviews|side-by-side-inverted-baseline: pts=10800 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=71,149
+2view-ssps-lag-crosspoc.h264|allviews|side-by-side-inverted-baseline: pts=14400 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=47,158
+2view-ssps-lag-crosspoc.h264|allviews|side-by-side-inverted-baseline: pts=18000 32x16 arrangement=1(side by side/packed/left inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=71,149
+2view-ssps-lag-crosspoc.h264|allviews|side-by-side-inverted-baseline: delivered=6 composed=6 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=0 result=ok
+2view-ssps-lag-crosspoc.h264|view0|side-by-side-inverted-baseline: pts=0 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag-crosspoc.h264|view0|side-by-side-inverted-baseline: pts=3600 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=149,-1
+2view-ssps-lag-crosspoc.h264|view0|side-by-side-inverted-baseline: pts=7200 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag-crosspoc.h264|view0|side-by-side-inverted-baseline: pts=10800 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=149,-1
+2view-ssps-lag-crosspoc.h264|view0|side-by-side-inverted-baseline: pts=14400 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag-crosspoc.h264|view0|side-by-side-inverted-baseline: pts=18000 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=149,-1
+2view-ssps-lag-crosspoc.h264|view0|side-by-side-inverted-baseline: delivered=6 composed=0 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=1 result=ok
+2view-ssps-lag-crosspoc.h264|view1|side-by-side-inverted-baseline: pts=0 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag-crosspoc.h264|view1|side-by-side-inverted-baseline: pts=0 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag-crosspoc.h264|view1|side-by-side-inverted-baseline: pts=3600 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=71,-1
+2view-ssps-lag-crosspoc.h264|view1|side-by-side-inverted-baseline: pts=7200 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag-crosspoc.h264|view1|side-by-side-inverted-baseline: pts=10800 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=71,-1
+2view-ssps-lag-crosspoc.h264|view1|side-by-side-inverted-baseline: pts=14400 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=47,-1
+2view-ssps-lag-crosspoc.h264|view1|side-by-side-inverted-baseline: pts=18000 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(1) colour=tv/bt709/bt709/bt709 halves=71,-1
+2view-ssps-lag-crosspoc.h264|view1|side-by-side-inverted-baseline: delivered=7 composed=0 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=1 result=ok
+2view-ssps-lag-crosspoc.h264|base-only|side-by-side-inverted-baseline: pts=0 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag-crosspoc.h264|base-only|side-by-side-inverted-baseline: pts=3600 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=149,-1
+2view-ssps-lag-crosspoc.h264|base-only|side-by-side-inverted-baseline: pts=7200 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag-crosspoc.h264|base-only|side-by-side-inverted-baseline: pts=10800 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=149,-1
+2view-ssps-lag-crosspoc.h264|base-only|side-by-side-inverted-baseline: pts=14400 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag-crosspoc.h264|base-only|side-by-side-inverted-baseline: pts=18000 16x16 arrangement=0(-/-/- inv=0 baseline=0) view_id=1(0) colour=tv/bt709/bt709/bt709 halves=149,-1
+2view-ssps-lag-crosspoc.h264|base-only|side-by-side-inverted-baseline: delivered=6 composed=0 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=1 result=ok
+2view-ssps-lag-crosspoc.h264|base-first|side-by-side-inverted-baseline: pts=0 16x16 arrangement=1(side by side/packed/right inv=1 baseline=60000) view_id=0(-1) colour=tv/bt709/bt709/bt709 halves=158,-1
+2view-ssps-lag-crosspoc.h264|base-first|side-by-side-inverted-baseline: delivered=1 composed=0 rejected=0 bad_arrangement=0 bad_view_id=0 bad_color=0 bad_geometry=0 pre_registration=0 result=ok
+2view-ssps-lag-crosspoc.h264|allviews|side-by-side-inverted-baseline: injection witnessed - the inverted claim swapped the composed halves, so the claim did reach the frames
