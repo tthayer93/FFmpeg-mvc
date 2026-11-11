@@ -868,20 +868,11 @@ static int run_stream(const char *path)
                 ok = ok && run->composed == run->delivered;
             else
                 ok = ok && run->composed == 0;
-            if (!mode->composed && !mode->base_only) {
-                /* The rule under test says a single view keeps its per-view
-                 * id. That is only witnessed if the id was ever stamped: a run
-                 * in which no frame ever carried one would grade it against
-                 * nothing, so at least one frame owes it. A composed frame
-                 * owes no id at all, so this witness is not for it. */
-                ok = ok && run->view_id_seen;
-            }
             if (!ok) {
                 fprintf(stderr, "ASSERT-FAIL: %s: not the '%s' delivery the "
                                 "mode names: %u delivered, %u composed, %u "
-                                "refused, %u stamped with a per-view id\n",
-                        run->name, mode->name, run->delivered, run->composed,
-                        run->rejected, run->view_id_seen);
+                                "refused\n", run->name, mode->name,
+                        run->delivered, run->composed, run->rejected);
             }
 
             for (unsigned i = 0; i < run->delivered && ok; i++) {
@@ -892,6 +883,18 @@ static int run_stream(const char *path)
                             run->name, (long long)run->frames[i].pts, reason);
                     ok = 0;
                 }
+            }
+
+            if (ok && !mode->composed && !mode->base_only &&
+                !run->view_id_seen) {
+                /* The rule under test says a single view keeps the per-view id
+                 * that says which eye it is. That is only witnessed if the id
+                 * was ever stamped: a run in which no frame ever carried one
+                 * would grade the rule against nothing. */
+                fprintf(stderr, "ASSERT-FAIL: %s: no frame of this single-view "
+                                "delivery ever carried the per-view id that "
+                                "says which eye it is\n", run->name);
+                ok = 0;
             }
 
             if (!ok) {
