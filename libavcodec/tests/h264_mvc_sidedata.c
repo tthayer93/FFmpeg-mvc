@@ -31,15 +31,19 @@
  *             fixture's lagged secondary sequence header registers the second
  *             view, which are started as plain pictures and carry none. Those
  *             are counted and reported, not fixed here.
- *   base-first only the base view's fragments of the leading access unit
- *             arrive, and these fixtures lag their secondary sequence header
- *             past it, so no second view is ever registered. What delivers is
- *             the plain H.264 decoder: the arrangement is the stream's own
- *             claim and it owes that claim back field for field, with no
- *             per-view id. This is the guard on the far side of the fix: a
- *             delivery rule aimed at multiview frames has no business touching
- *             a plain frame, and no FATE reference covers the arrangement of a
- *             plain stream's frames.
+ *   base-only  only the base view's fragments of each access unit arrive, so
+ *             the dependent view's slices never do. The stream still announces
+ *             both views, so this is a single-view delivery like view0 and owes
+ *             the same: no arrangement tag, and the per-view id once the stream
+ *             has said there are two.
+ *   base-first only the leading base-layer picture arrives, cut off before
+ *             anything that announces a second view, so no second view is ever
+ *             registered. What delivers is the plain H.264 decoder: the
+ *             arrangement is the stream's own claim and it owes that claim back
+ *             field for field, with no per-view id. This is the guard on the far
+ *             side of the fix: a delivery rule aimed at multiview frames has no
+ *             business touching a plain frame, and no FATE reference covers the
+ *             arrangement of a plain stream's frames.
  *
  * The arrangement a container states for the stream (a Matroska StereoMode
  * tag, an MP4 st3d box) is cloned onto every picture the decoder allocates, by
@@ -172,21 +176,21 @@ typedef struct Mode {
     /* Deliver only the base view's fragments of each access unit, the way a
      * stream that carried nothing but a base layer would arrive. */
     int         base_only;
-    /* Deliver only this many leading access units (0 = the whole stream).
-     * Together with base_only this is how the table reaches the decoder's
-     * plain-H.264 side: these fixtures lag their secondary sequence header to
-     * the second access unit, so the leading base picture is started while
-     * exactly one view has ever been registered - and a frame started that
-     * way is a plain H.264 frame, whose arrangement is the stream's own
-     * business. */
+    /* Deliver only this many leading access units (0 = the whole stream), and
+     * cut the leading one at the end of its base-layer picture rather than at
+     * the dependent view's first NAL. Together these reach the decoder at a
+     * moment when no second view has ever been announced: what delivers is the
+     * plain H.264 decoder, whose arrangement is the stream's own claim. */
     unsigned    head_units;
+    int         base_picture;
 } Mode;
 
 static const Mode delivery_modes[] = {
-    { "allviews",    "-1", 1, -1, 0, 0 },
-    { "view0",        "0", 0,  0, 0, 0 },
-    { "view1",        "1", 0,  1, 0, 0 },
-    { "base-first", NULL,   0, -1, 1, 1 },
+    { "allviews",    "-1", 1, -1, 0, 0, 0 },
+    { "view0",        "0", 0,  0, 0, 0, 0 },
+    { "view1",        "1", 0,  1, 0, 0, 0 },
+    { "base-only", NULL,   0, -1, 1, 0, 0 },
+    { "base-first", NULL,   0, -1, 1, 1, 1 },
 };
 #define MODE_ALLVIEWS 0
 
@@ -254,9 +258,36 @@ static size_t dependent_part(const uint8_t *buf, size_t from, size_t to)
     return to;
 }
 
+/* Where the leading base-layer picture of an access unit ends: the start of
+ * the first network abstraction layer after its last slice. Everything the
+ * base layer needs in order to start - the access unit delimiter, its sequence
+ * and picture parameters, its slices - lies before that point, and whatever
+ * the stream brings along afterwards (a second view's sequence header above
+ * all) does not. This is how the table reaches the decoder at a moment when it
+ * has never heard of a second view: an emulation-prevented payload can never
+ * imitate the start code, so the cut is exact. */
+static size_t base_picture_part(const uint8_t *buf, size_t from, size_t to)
+{
+    size_t vcl = 0;
+
+    for (size_t i = from; i + 3 < to; i++) {
+        const int type = buf[i + 3] & 0x1F;
+
+        if (buf[i] || buf[i + 1] || buf[i + 2] != 1)
+            continue;
+        if (!vcl) {
+            if (type >= 1 && type <= 5)
+                vcl = i;
+        } else if (i > vcl) {
+            return i;
+        }
+    }
+
+    return to;
+}
+
 /* Whether an access unit refreshes the base view, which is what makes a
- * container call it a keyframe. */
-static int au_refreshes(const uint8_t *buf, size_t from, size_t to)
+ * container call it a keyframe. */static int au_refreshes(const uint8_t *buf, size_t from, size_t to)
 {
     for (size_t i = from; i + 3 < to; i++) {
         if (buf[i] || buf[i + 1] || buf[i + 2] != 1)
@@ -332,14 +363,14 @@ static int frame_defect(Run *run, const KeptFrame *kf, const Mode *mode,
 {
     const AVStereo3D *s3d = &kf->stereo3d;
 
-    if (mode->base_only) {
-        /* Only the base view's fragments of the leading access unit were
-         * delivered, and these fixtures lag their secondary sequence header
-         * past it: this frame was started while one view had ever been
-         * registered, which makes it a plain H.264 delivery. Its arrangement
-         * is the stream's own claim and this decoder owes it back verbatim,
-         * with no per-view id - there is nothing to tell apart. The rule
-         * being written for multiview frames has no business here. */
+    if (mode->base_picture) {
+        /* Only the leading base-layer picture was delivered, cut off before
+         * anything that announces a second view: this frame was started,
+         * judged and handed over while one view had ever been registered,
+         * which makes it a plain H.264 frame. Its arrangement is the stream's
+         * own claim and this decoder owes it back verbatim, with no per-view
+         * id - there is nothing to tell apart. The rule being written for
+         * multiview frames has no business here. */
         if (kf->width != VIEW_W || kf->height != VIEW_H) {
             snprintf(detail, detail_size,
                      "a one-view delivery went out at %dx%d, not %dx%d",
@@ -650,7 +681,8 @@ static int feed(Run *run, AVCodecContext *avctx, const uint8_t *buf,
     for (unsigned n = 0; n < n_units; n++) {
         const size_t from = n ? cut[n] : 0;
         const size_t to   = n + 1 < units ? cut[n + 1] : size;
-        const size_t dep  = dependent_part(buf, from, to);
+        const size_t dep  = mode->base_picture ? base_picture_part(buf, from, to) :
+                                                dependent_part(buf, from, to);
 
         for (int part = 0; part < parts; part++) {
             const size_t begin = part ? dep : from;
