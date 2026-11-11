@@ -27,16 +27,19 @@
  *             is - and no per-view id, because it is not a view.
  *   view0/1   one view delivered on its own: a MONO picture. It owes no
  *             arrangement tag at all, and it does owe the per-view id that
- *             says which eye it is.
- *   base-plain the same stream arriving as nothing but its base view: only the
- *             base view's fragments of each access unit are fed, so the
- *             dependent sequence header is never parsed and no second view is
- *             ever registered. What delivers is the plain H.264 decoder, the
- *             arrangement is the stream's own claim, and it owes that claim
- *             back field for field with no per-view id. This is the guard on
- *             the far side of the fix: a delivery rule aimed at multiview
- *             frames has no business touching a one-view stream, and no FATE
- *             reference covers the arrangement of a plain stream's frames.
+ *             says which eye it is - except on the pictures started before the
+ *             fixture's lagged secondary sequence header registers the second
+ *             view, which are started as plain pictures and carry none. Those
+ *             are counted and reported, not fixed here.
+ *   base-first only the base view's fragments of the leading access unit
+ *             arrive, and these fixtures lag their secondary sequence header
+ *             past it, so no second view is ever registered. What delivers is
+ *             the plain H.264 decoder: the arrangement is the stream's own
+ *             claim and it owes that claim back field for field, with no
+ *             per-view id. This is the guard on the far side of the fix: a
+ *             delivery rule aimed at multiview frames has no business touching
+ *             a plain frame, and no FATE reference covers the arrangement of a
+ *             plain stream's frames.
  *
  * The arrangement a container states for the stream (a Matroska StereoMode
  * tag, an MP4 st3d box) is cloned onto every picture the decoder allocates, by
@@ -167,20 +170,23 @@ typedef struct Mode {
     int         composed;    /* the frames are pairs, not single views */
     int         view_id;     /* the per-view id owed back; -1 = none owed */
     /* Deliver only the base view's fragments of each access unit, the way a
-     * stream that never carried a second view arrives: the dependent sequence
-     * header is never parsed, so no second view is ever registered and what
-     * runs is the plain H.264 decoder. Such a delivery owes the container's
-     * claim back UNTOUCHED - what a one-view stream states about its own
-     * arrangement is its own business, and a fix aimed at the multiview
-     * delivery must not reach that far. */
-    int         plain;
+     * stream that carried nothing but a base layer would arrive. */
+    int         base_only;
+    /* Deliver only this many leading access units (0 = the whole stream).
+     * Together with base_only this is how the table reaches the decoder's
+     * plain-H.264 side: these fixtures lag their secondary sequence header to
+     * the second access unit, so the leading base picture is started while
+     * exactly one view has ever been registered - and a frame started that
+     * way is a plain H.264 frame, whose arrangement is the stream's own
+     * business. */
+    unsigned    head_units;
 } Mode;
 
 static const Mode delivery_modes[] = {
-    { "allviews",   "-1", 1, -1, 0 },
-    { "view0",       "0", 0,  0, 0 },
-    { "view1",       "1", 0,  1, 0 },
-    { "base-plain", NULL, 0, -1, 1 },
+    { "allviews",    "-1", 1, -1, 0, 0 },
+    { "view0",        "0", 0,  0, 0, 0 },
+    { "view1",        "1", 0,  1, 0, 0 },
+    { "base-first", NULL,   0, -1, 1, 1 },
 };
 #define MODE_ALLVIEWS 0
 
@@ -211,6 +217,10 @@ typedef struct Run {
     unsigned    bad_view_id;
     unsigned    bad_color;
     unsigned    bad_geometry;
+    unsigned    view_id_seen;      /* a single view arrived with its id */
+    unsigned    pre_registration;  /* single views started before the second
+                                    * view was ever registered, so carrying no
+                                    * per-view id; counted, see frame_defect */
 } Run;
 
 /* Offsets of the start codes of the access units of an Annex-B stream. */
@@ -322,24 +332,28 @@ static int frame_defect(Run *run, const KeptFrame *kf, const Mode *mode,
 {
     const AVStereo3D *s3d = &kf->stereo3d;
 
-    if (mode->plain) {
-        /* The claim under test is the stream's own here, not an inherited
-         * one: with only the base view ever fed, no second view is ever
-         * registered and the decoder delivering this frame is the plain
-         * H.264 decoder, which owes the announcement back verbatim. */
+    if (mode->base_only) {
+        /* Only the base view's fragments of the leading access unit were
+         * delivered, and these fixtures lag their secondary sequence header
+         * past it: this frame was started while one view had ever been
+         * registered, which makes it a plain H.264 delivery. Its arrangement
+         * is the stream's own claim and this decoder owes it back verbatim,
+         * with no per-view id - there is nothing to tell apart. The rule
+         * being written for multiview frames has no business here. */
         if (kf->width != VIEW_W || kf->height != VIEW_H) {
             snprintf(detail, detail_size,
-                     "a one-view stream went out at %dx%d, not %dx%d",
+                     "a one-view delivery went out at %dx%d, not %dx%d",
                      kf->width, kf->height, VIEW_W, VIEW_H);
             run->bad_geometry++;
             return 1;
         }
         if (!!kf->nb_stereo3d != !!inh->present) {
             snprintf(detail, detail_size,
-                     "a one-view stream carries %d arrangement tag%s where "
-                     "the stream states %d: with no second view registered "
-                     "this is a plain H.264 delivery, and the arrangement is "
-                     "the stream's own claim, not this decoder's business",
+                     "a one-view delivery carries %d arrangement tag%s where "
+                     "the stream states %d: nothing but a base view was ever "
+                     "registered, so this is a plain H.264 frame and the "
+                     "arrangement is the stream's own claim, not this "
+                     "decoder's business",
                      kf->nb_stereo3d, kf->nb_stereo3d > 1 ? "s" : "",
                      inh->present);
             run->bad_arrangement++;
@@ -360,7 +374,7 @@ static int frame_defect(Run *run, const KeptFrame *kf, const Mode *mode,
              s3d->horizontal_field_of_view.den !=
                  inh->claim.horizontal_field_of_view.den)) {
             snprintf(detail, detail_size,
-                     "a one-view stream rewrote the stream's own claim into "
+                     "a one-view delivery rewrote the stream's own claim into "
                      "'%s'/%s/%s inv=%d baseline=%u (the stream said '%s'/%s/"
                      "%s inv=%d baseline=%u)",
                      av_stereo3d_type_name(s3d->type),
@@ -377,7 +391,7 @@ static int frame_defect(Run *run, const KeptFrame *kf, const Mode *mode,
         }
         if (kf->nb_view_id) {
             snprintf(detail, detail_size,
-                     "a one-view stream carries %d per-view ids; no second "
+                     "a one-view delivery carries %d per-view ids; no second "
                      "view was ever registered, so there is nothing to tell "
                      "apart", kf->nb_view_id);
             run->bad_view_id++;
@@ -469,19 +483,33 @@ static int frame_defect(Run *run, const KeptFrame *kf, const Mode *mode,
             run->bad_arrangement++;
             return 1;
         }
-        if (kf->nb_view_id != 1) {
+        if (kf->nb_view_id == 1) {
+            run->view_id_seen = 1;
+            if (kf->view_id != mode->view_id) {
+                snprintf(detail, detail_size,
+                         "one eye delivered alone claims view id %d, not %d",
+                         kf->view_id, mode->view_id);
+                run->bad_view_id++;
+                return 1;
+            }
+        } else if (run->view_id_seen) {
             snprintf(detail, detail_size,
-                     "one eye delivered alone carries %d per-view ids, not "
-                     "the one that says which eye it is", kf->nb_view_id);
+                     "one eye delivered alone carries %d per-view ids after "
+                     "the stream had begun stamping them: the id is what says "
+                     "which eye this is, and a consumer cannot guess it",
+                     kf->nb_view_id);
             run->bad_view_id++;
             return 1;
-        }
-        if (kf->view_id != mode->view_id) {
-            snprintf(detail, detail_size,
-                     "one eye delivered alone claims view id %d, not %d",
-                     kf->view_id, mode->view_id);
-            run->bad_view_id++;
-            return 1;
+        } else {
+            /* The fixture lags its secondary sequence header, and the per-view
+             * id is stamped where the picture is started (h264_frame_start):
+             * a picture started before that header arrives is started as a
+             * plain one and carries no id at all. That is a property of when
+             * the stream says how many views there are, not of the delivery
+             * rule under test, so it is counted here and reported rather than
+             * passed off as correct. The reference pins the count, so it
+             * cannot quietly grow. */
+            run->pre_registration++;
         }
     }
 
@@ -607,16 +635,19 @@ static int drain(Run *run, AVCodecContext *avctx, AVFrame *frame)
 
 /* Feed every access unit of the stream, split the way the demuxers of these
  * files split it, each part carrying the time the stream's own clock gives it.
- * A plain delivery feeds only the first part: what a stream with nothing but a
- * base view hands over. */
+ * A base-only delivery feeds only the first part of each unit - what a stream
+ * with nothing but a base layer hands over - and a mode that names a head
+ * count stops after that many units. */
 static int feed(Run *run, AVCodecContext *avctx, const uint8_t *buf,
                 size_t size, const size_t *cut, unsigned units,
                 const Inherited *inh, const Mode *mode,
                 AVPacket *pkt, AVFrame *frame)
 {
-    const int parts = mode->plain ? 1 : 2;
+    const int parts = mode->base_only ? 1 : 2;
+    const unsigned n_units = mode->head_units && mode->head_units < units ?
+                            mode->head_units : units;
 
-    for (unsigned n = 0; n < units; n++) {
+    for (unsigned n = 0; n < n_units; n++) {
         const size_t from = n ? cut[n] : 0;
         const size_t to   = n + 1 < units ? cut[n + 1] : size;
         const size_t dep  = dependent_part(buf, from, to);
@@ -699,10 +730,11 @@ static void print_run(const Run *run, int ok)
                kf->luma_left, kf->luma_right);
     }
     printf("%s: delivered=%u composed=%u rejected=%u bad_arrangement=%u "
-           "bad_view_id=%u bad_color=%u bad_geometry=%u result=%s\n",
+           "bad_view_id=%u bad_color=%u bad_geometry=%u pre_registration=%u "
+           "result=%s\n",
            run->name, run->delivered, run->composed, run->rejected,
            run->bad_arrangement, run->bad_view_id, run->bad_color,
-           run->bad_geometry, ok ? "ok" : "FAIL");
+           run->bad_geometry, run->pre_registration, ok ? "ok" : "FAIL");
 }
 
 /* Did the injected claim reach the frames at all? The compose stage reads the
@@ -764,6 +796,9 @@ static int run_stream(const char *path)
 {
     static Run runs[FF_ARRAY_ELEMS(inherited_claims)]
                           [FF_ARRAY_ELEMS(delivery_modes)];
+    const char    *tag;              /* the fixture's own name, so the table a
+                                      * reference is graded against does not
+                                      * spell the sample directory it came from */
     uint8_t       *buf   = NULL;
     size_t         cut[MAX_AU];
     size_t         size  = 0;
@@ -773,6 +808,9 @@ static int run_stream(const char *path)
     AVPacket      *pkt   = NULL;
     int            fails = 0;
     int            ret;
+
+    tag = strrchr(path, '/');
+    tag = tag ? tag + 1 : path;
 
     if ((ret = av_file_map(path, &buf, &size, 0, NULL)) < 0) {
         fprintf(stderr, "sidedata: %s: %s\n", path, av_err2str(ret));
@@ -789,7 +827,7 @@ static int run_stream(const char *path)
         return 1;
     }
 
-    printf("sidedata: %s units=%u step=%d view=%dx%d composed=%dx%d\n", path,
+    printf("sidedata: %s units=%u step=%d view=%dx%d composed=%dx%d\n", tag,
            units, PTS_STEP, VIEW_W, VIEW_H, COMPOSED_W, VIEW_H);
 
     for (unsigned c = 0; c < FF_ARRAY_ELEMS(inherited_claims); c++) {
@@ -802,7 +840,7 @@ static int run_stream(const char *path)
             char            reason[512];
             int             ok;
 
-            run_init(run, path, mode, inh);
+            run_init(run, tag, mode, inh);
 
             if (!(avctx = open_session(run->name, codec, mode, inh))) {
                 print_run(run, 0);
@@ -830,6 +868,13 @@ static int run_stream(const char *path)
                 ok = ok && run->composed == run->delivered;
             else
                 ok = ok && run->composed == 0;
+            if (!mode->base_only) {
+                /* The rule under test says a single view keeps its per-view
+                 * id. That is only witnessed if the id was ever stamped: a run
+                 * in which no frame ever carried one would grade it against
+                 * nothing, so at least one frame owes it. */
+                ok = ok && run->view_id_seen;
+            }
 
             for (unsigned i = 0; i < run->delivered && ok; i++) {
                 reason[0] = 0;
@@ -864,13 +909,13 @@ static int run_stream(const char *path)
                                       &runs[CLAIM_INVERTED][MODE_ALLVIEWS],
                                       detail, sizeof(detail))) {
             fprintf(stderr, "ASSERT-FAIL: %s|allviews|%s: the injected claim "
-                            "was never witnessed: %s\n", path,
+                            "was never witnessed: %s\n", tag,
                     inherited_claims[CLAIM_INVERTED].name, detail);
             fails++;
         } else {
             printf("%s|allviews|%s: injection witnessed - the inverted claim "
                    "swapped the composed halves, so the claim did reach the "
-                   "frames\n", path, inherited_claims[CLAIM_INVERTED].name);
+                   "frames\n", tag, inherited_claims[CLAIM_INVERTED].name);
         }
     }
 
