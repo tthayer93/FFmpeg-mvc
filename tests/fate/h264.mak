@@ -291,7 +291,15 @@ FATE_H264_MVC_OFMD-$(call PARSERDEMDEC, H264, H264, H264) +=              \
 # of these targets was red by design until the cure for the defect it
 # reproduces landed on this branch; the rule says what it was pinning.
 FATE_H264_MVC_ENTRY-$(call PARSERDEMDEC, H264, H264, H264) +=             \
-              fate-h264-mvc-seekentry
+               fate-h264-mvc-seekentry
+
+# What a delivered frame is allowed to claim about itself: the composed pair
+# and each single view of the same bytes, against the frame side data they owe,
+# with a container's claim about the stream injected so the inheritance is
+# actually exercised (see the rule below).
+FATE_H264_MVC_SIDEDATA-$(call PARSERDEMDEC, H264, H264, H264) +=           \
+               fate-h264-mvc-sidedata
+
 
 # The end-to-end rows above go through a hand-written schedule.  These need the
 # whole media stack (the fixture's video and subtitle tracks, the sub2video
@@ -307,8 +315,9 @@ FATE_SAMPLES_AVCONV += $(FATE_H264-yes)
 FATE_SAMPLES_FFPROBE += $(FATE_H264_FFPROBE-yes)
 FATE_SAMPLES_AVCONV += $(FATE_H264_MVC_OFMD-yes)
 FATE_SAMPLES_AVCONV += $(FATE_H264_MVC_ENTRY-yes)
+FATE_SAMPLES_AVCONV += $(FATE_H264_MVC_SIDEDATA-yes)
 fate-h264: $(FATE_H264-yes) $(FATE_H264_FFPROBE-yes) $(FATE_H264_MVC_OFMD-yes) \
-           $(FATE_H264_MVC_ENTRY-yes)
+           $(FATE_H264_MVC_ENTRY-yes) $(FATE_H264_MVC_SIDEDATA-yes)
 
 fate-h264-conformance-aud_mw_e:                   CMD = framecrc -i $(TARGET_SAMPLES)/h264-conformance/AUD_MW_E.264
 
@@ -950,6 +959,39 @@ fate-h264-mvc-subdepth-shift:                       CMD = framecrc -threads 1 \
 # the gate rather than fetched from the sample server.
 fate-h264-mvc-seekentry:                          libavcodec/tests/h264_mvc_seekentry$(EXESUF)
 fate-h264-mvc-seekentry:                          CMD = run libavcodec/tests/h264_mvc_seekentry$(EXESUF) \
+                                                           $(TARGET_SAMPLES)/h264-mvc/2view-ssps-lag.h264 \
+                                                           $(TARGET_SAMPLES)/h264-mvc/2view-ssps-lag-crosspoc.h264
+
+# What a delivered frame is allowed to say about itself.
+#
+# libavcodec/tests/h264_mvc_sidedata.c delivers these bytes three ways - as
+# the composed side-by-side pair (view_ids -1) and as each view alone
+# (view_ids 0, view_ids 1) - with a container's claim about the whole stream
+# injected along both routes such a claim travels (coded side data on the
+# decoder context, which is what a demuxer hands over, and side data on every
+# packet). The fixtures are elementary streams and so carry no claim of their
+# own, which is exactly why the injection is not optional: without it, "a
+# single view carries no arrangement tag" would be the trivial truth about
+# bytes that never had one, and it is not the truth the discs showed. The
+# injection is itself witnessed, by the eye order the compose stage takes from
+# the claim it is handed.
+#
+# What is pinned: a composed frame carries exactly one arrangement tag, naming
+# a packed side-by-side pair with the left eye first and no metric it does not
+# have, and carries no per-view id; a frame that is one view alone carries no
+# arrangement tag at all - a player would unpack a second eye from it and an
+# H.264 encoder would re-issue it downstream as a frame-packing SEI - and does
+# carry the per-view id that says which eye it is; and every frame reports the
+# source's colour description, the composed frame exactly as the single views
+# do, because it is built from them.
+#
+# Status of this target: the allviews legs and the single-view legs were red
+# by design, until the composed tag stated the eye it puts first and the
+# inherited arrangement stopped being delivered on a frame that is one eye.
+# Nothing else here moved for it, and the pixels are not what this target
+# grades.
+fate-h264-mvc-sidedata:                           libavcodec/tests/h264_mvc_sidedata$(EXESUF)
+fate-h264-mvc-sidedata:                           CMD = run libavcodec/tests/h264_mvc_sidedata$(EXESUF) \
                                                            $(TARGET_SAMPLES)/h264-mvc/2view-ssps-lag.h264 \
                                                            $(TARGET_SAMPLES)/h264-mvc/2view-ssps-lag-crosspoc.h264
 
