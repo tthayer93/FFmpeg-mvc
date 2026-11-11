@@ -1101,3 +1101,27 @@ verbatim - one attribution and one test inconsistency - on the record.
   `0054` stays refused on licence for the reason already recorded, and this build
   supersedes **`n8.1.3-mvc9-jf1`**.
 
+- **The mvc11 content in the jellyfin line (2026-11-11).** This branch now
+  merges the certified `n8.1.3-mvc11` build of the 8.1 line. The carried delta
+  is truthful Stereo-3D frame side data on a multiview delivery. A frame the
+  compose stage hands over as a side-by-side pair now states that arrangement
+  in its own words - packed side by side, the left eye first, and no metric it
+  does not possess - instead of repeating the claim the container made about the
+  stream, and a frame that is one eye alone carries no such claim at all while
+  keeping the view id it does owe. A player therefore no longer unpacks a
+  second eye from a picture that holds one, and an encoder downstream no longer
+  re-issues a claim the decoded picture never had. A stream that never
+  registered a second view is left entirely alone, because there the
+  arrangement is the stream's own claim about its own pictures.
+- **Compatibility and queue posture (2026-11-11).** Compatible-with:
+  **`jellyfin-ffmpeg v8.1.3-1`**. Their line has since tagged `v8.1.3-2`, and
+  this build does not follow it: the queue pointer stays where it is, by the
+  owner's ruling for this wave, which promotes content and does not re-sync the
+  queue. The re-sync onto `v8.1.3-2` stands as a future wave's work, and the
+  suffix of this name mirrors their release suffix verbatim, so this ship is
+  `-jf1` while the build it is the drop-in for is at `-1`.
+- **Refusals and supersession (2026-11-11).** The standing licence refusals are
+  unchanged: entry `0054` stays refused on licence for the reason already
+  recorded, and the entries carried elsewhere stay carried elsewhere. This
+  build supersedes **`n8.1.3-mvc10-jf1`**.
+
