@@ -189,7 +189,7 @@ static const Mode delivery_modes[] = {
     { "allviews",    "-1", 1, -1, 0, 0, 0 },
     { "view0",        "0", 0,  0, 0, 0, 0 },
     { "view1",        "1", 0,  1, 0, 0, 0 },
-    { "base-only", NULL,   0, -1, 1, 0, 0 },
+    { "base-only", NULL,   0,  0, 1, 0, 0 },
     { "base-first", NULL,   0, -1, 1, 1, 1 },
 };
 #define MODE_ALLVIEWS 0
