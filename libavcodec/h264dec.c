@@ -31,7 +31,6 @@
 
 #include "libavutil/attributes.h"
 #include "libavutil/avassert.h"
-#include "libavutil/emms.h"
 #include "libavutil/imgutils.h"
 #include "libavutil/intreadwrite.h"
 #include "libavutil/mem.h"
@@ -136,8 +135,6 @@ void ff_h264_draw_horiz_band(const H264Context *h, H264SliceContext *sl,
     offset[2] = (y >> vshift) * src->linesize[1];
     for (int i = 3; i < AV_NUM_DATA_POINTERS; i++)
         offset[i] = 0;
-
-    emms_c();
 
     avctx->draw_horiz_band(avctx, src, offset,
                            y, h->picture_structure, height);
@@ -1557,6 +1554,49 @@ static int h264_attach_partitions(const H264Context *h, H264SliceContext *sl,
     return idx;
 }
 
+static int h264_decode_sei(H264Context *h, H2645NAL *nal)
+{
+    AVCodecContext *const avctx = h->avctx;
+    int ret;
+
+    /* Only a multiview context collects the subtitle-depth metadata:
+     * the message is authored in the dependent view of a multiview
+     * stream, and the block it yields is only ever read back for a
+     * picture of that view. A single-view stream passes NULL and is
+     * not touched by the scan at all. The anchor travels with it: this
+     * packet's access-unit display time, which is what the block's own
+     * disc timestamp gets calibrated against (0-sized and untimestamped
+     * packets leave the last anchor in place, see h264_decode_frame). */
+    ret = ff_h264_sei_decode(&h->sei, &nal->gb, &h->ps,
+                             h->view_count > 1 ? &h->ofmd : NULL,
+                             h->ofmd_anchor_pts90k, avctx);
+    h->has_recovery_point = h->has_recovery_point || h->sei.recovery_point.recovery_frame_cnt != -1;
+    if (avctx->debug & FF_DEBUG_GREEN_MD)
+        debug_green_metadata(&h->sei.green_metadata, avctx);
+    if (ret < 0 && (avctx->err_recognition & AV_EF_EXPLODE))
+        return ret;
+
+    return 0;
+}
+
+/* Decode the SEI NAL units following the slice at idx. */
+static int h264_decode_late_sei(H264Context *h, int idx)
+{
+    for (int i = idx + 1; i < h->pkt.nb_nals; i++) {
+        H2645NAL *nal = &h->pkt.nals[i];
+        int ret;
+
+        if (nal->type != H264_NAL_SEI)
+            continue;
+
+        ret = h264_decode_sei(h, nal);
+        if (ret < 0)
+            return ret;
+    }
+
+    return 0;
+}
+
 static int decode_nal_units(H264Context *h, AVBufferRef *buf_ref,
                             const uint8_t *buf, int buf_size)
 {
@@ -1746,6 +1786,9 @@ static int decode_nal_units(H264Context *h, AVBufferRef *buf_ref,
                     /* Multiview: setup completes only once a non-base view's
                      * picture has started, so its frame_start() runs in SETUP */
                     (h->view_count <= 1 || h->cur_view > 0)) {
+                    ret = h264_decode_late_sei(h, i);
+                    if (ret < 0)
+                        goto end;
                     ff_thread_finish_setup(avctx);
                     h->setup_finished = 1;
                 }
@@ -1776,25 +1819,11 @@ static int decode_nal_units(H264Context *h, AVBufferRef *buf_ref,
                        nal->type == H264_NAL_DPB ? 'B' : 'C');
             break;
         case H264_NAL_SEI:
-            if (h->setup_finished) {
-                avpriv_request_sample(avctx, "Late SEI");
+            /* already decoded by h264_decode_late_sei() */
+            if (h->setup_finished)
                 break;
-            }
-            /* Only a multiview context collects the subtitle-depth metadata:
-             * the message is authored in the dependent view of a multiview
-             * stream, and the block it yields is only ever read back for a
-             * picture of that view. A single-view stream passes NULL and is
-             * not touched by the scan at all. The anchor travels with it: this
-             * packet's access-unit display time, which is what the block's own
-             * disc timestamp gets calibrated against (0-sized and untimestamped
-             * packets leave the last anchor in place, see h264_decode_frame). */
-            ret = ff_h264_sei_decode(&h->sei, &nal->gb, &h->ps,
-                                     h->view_count > 1 ? &h->ofmd : NULL,
-                                     h->ofmd_anchor_pts90k, avctx);
-            h->has_recovery_point = h->has_recovery_point || h->sei.recovery_point.recovery_frame_cnt != -1;
-            if (avctx->debug & FF_DEBUG_GREEN_MD)
-                debug_green_metadata(&h->sei.green_metadata, h->avctx);
-            if (ret < 0 && (h->avctx->err_recognition & AV_EF_EXPLODE))
+            ret = h264_decode_sei(h, nal);
+            if (ret < 0)
                 goto end;
             break;
         case H264_NAL_SPS:
@@ -2195,8 +2224,8 @@ static int finalize_frame(H264Context *h, AVFrame *dst, H264Picture *out, int *g
             av_log(h->avctx, AV_LOG_DEBUG, "Duplicating field %d to fill missing\n", field);
 
             for (p = 0; p<4; p++) {
-                dst_data[p] = f->data[p] + (field^1)*f->linesize[p];
-                src_data[p] = f->data[p] +  field   *f->linesize[p];
+                dst_data[p] = FF_PTR_ADD(f->data[p], (field^1)*f->linesize[p]);
+                src_data[p] = FF_PTR_ADD(f->data[p],  field   *f->linesize[p]);
                 linesizes[p] = 2*f->linesize[p];
             }
 

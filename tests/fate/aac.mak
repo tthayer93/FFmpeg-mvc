@@ -224,7 +224,7 @@ FATE_AAC_ENCODE += fate-aac-ln-encode-128k
 fate-aac-ln-encode-128k: CMD = enc_dec_pcm mp4 wav s16le $(TARGET_SAMPLES)/audio-reference/luckynight_2ch_44kHz_s16.wav -c:a aac -aac_coder fast -aac_is 0 -aac_pns 0 -aac_ms 0 -aac_tns 0 -b:a 128k -cutoff 22050 -fflags +bitexact -flags +bitexact
 fate-aac-ln-encode-128k: CMP = stddev
 fate-aac-ln-encode-128k: REF = $(SAMPLES)/audio-reference/luckynight_2ch_44kHz_s16.wav
-fate-aac-ln-encode-128k: CMP_TARGET = 622
+fate-aac-ln-encode-128k: CMP_TARGET = 618
 fate-aac-ln-encode-128k: FUZZ = 10
 
 FATE_AAC_ENCODE += fate-aac-pns-encode
@@ -238,21 +238,21 @@ FATE_AAC_ENCODE += fate-aac-tns-encode
 fate-aac-tns-encode: CMD = enc_dec_pcm mp4 wav s16le $(TARGET_SAMPLES)/audio-reference/luckynight_2ch_44kHz_s16.wav -c:a aac -aac_coder fast -aac_tns 1 -aac_is 0 -aac_pns 0 -aac_ms 0 -b:a 128k -cutoff 22050  -fflags +bitexact -flags +bitexact
 fate-aac-tns-encode: CMP = stddev
 fate-aac-tns-encode: REF = $(SAMPLES)/audio-reference/luckynight_2ch_44kHz_s16.wav
-fate-aac-tns-encode: CMP_TARGET = 637
+fate-aac-tns-encode: CMP_TARGET = 619
 fate-aac-tns-encode: FUZZ = 7
 
 FATE_AAC_ENCODE += fate-aac-is-encode
 fate-aac-is-encode: CMD = enc_dec_pcm mp4 wav s16le $(TARGET_SAMPLES)/audio-reference/luckynight_2ch_44kHz_s16.wav -c:a aac -aac_coder fast -aac_pns 0 -aac_is 1 -aac_ms 0 -b:a 128k -aac_tns 0 -cutoff 22050 -fflags +bitexact -flags +bitexact
 fate-aac-is-encode: CMP = stddev
 fate-aac-is-encode: REF = $(SAMPLES)/audio-reference/luckynight_2ch_44kHz_s16.wav
-fate-aac-is-encode: CMP_TARGET = 500
+fate-aac-is-encode: CMP_TARGET = 503
 fate-aac-is-encode: FUZZ = 10
 
 FATE_AAC_ENCODE += fate-aac-ms-encode
 fate-aac-ms-encode: CMD = enc_dec_pcm mp4 wav s16le $(TARGET_SAMPLES)/audio-reference/luckynight_2ch_44kHz_s16.wav -c:a aac -aac_coder fast -aac_pns 0 -aac_is 0 -aac_ms 1 -aac_tns 0 -b:a 128k -cutoff 22050 -fflags +bitexact -flags +bitexact
 fate-aac-ms-encode: CMP = stddev
 fate-aac-ms-encode: REF = $(SAMPLES)/audio-reference/luckynight_2ch_44kHz_s16.wav
-fate-aac-ms-encode: CMP_TARGET = 550
+fate-aac-ms-encode: CMP_TARGET = 563
 fate-aac-ms-encode: FUZZ = 15
 
 #Ticket1784
@@ -263,68 +263,54 @@ fate-aac-yoraw-encode: REF = $(SAMPLES)/audio-reference/yo.raw-short.wav
 fate-aac-yoraw-encode: CMP_TARGET = 226
 fate-aac-yoraw-encode: FUZZ = 17
 
-tests/data/fate/aac-5_1_2.adts: TAG = GEN
-tests/data/fate/aac-5_1_2.adts: tests/data/asynth-44100-8.wav
-tests/data/fate/aac-5_1_2.adts: ffmpeg$(PROGSSUF)$(EXESUF) | tests/data/fate
-	$(M)$(TARGET_EXEC) $(TARGET_PATH)/$< -nostdin \
-	-ch_layout "5.1.2(back)" -i $(TARGET_PATH)/tests/data/asynth-44100-8.wav \
-	-c:a aac -aac_pce 1 -aframes 5 -f adts -y $(TARGET_PATH)/$@ 2>/dev/null
+# NMR quality-target modes: VBR at the finest quality drives frames against
+# the decoder-buffer limit; ABR runs through the rate servo's boot
+FATE_AAC_ENCODE += fate-aac-nmr-vbr-encode
+fate-aac-nmr-vbr-encode: CMD = enc_dec_pcm mp4 wav s16le $(TARGET_SAMPLES)/audio-reference/luckynight_2ch_44kHz_s16.wav -c:a aac -q:a 8 -fflags +bitexact -flags +bitexact
+fate-aac-nmr-vbr-encode: CMP = stddev
+fate-aac-nmr-vbr-encode: REF = $(SAMPLES)/audio-reference/luckynight_2ch_44kHz_s16.wav
+fate-aac-nmr-vbr-encode: CMP_TARGET = 67
+fate-aac-nmr-vbr-encode: FUZZ = 5
 
-tests/data/fate/aac-5_1_4.adts: TAG = GEN
-tests/data/fate/aac-5_1_4.adts: tests/data/asynth-44100-10.wav
-tests/data/fate/aac-5_1_4.adts: ffmpeg$(PROGSSUF)$(EXESUF) | tests/data/fate
-	$(M)$(TARGET_EXEC) $(TARGET_PATH)/$< -nostdin \
-	-ch_layout "5.1.4" -i $(TARGET_PATH)/tests/data/asynth-44100-10.wav \
-	-c:a aac -aac_pce 1 -aframes 5 -f adts -y $(TARGET_PATH)/$@ 2>/dev/null
-
-tests/data/fate/aac-7_1_2.adts: TAG = GEN
-tests/data/fate/aac-7_1_2.adts: tests/data/asynth-44100-10.wav
-tests/data/fate/aac-7_1_2.adts: ffmpeg$(PROGSSUF)$(EXESUF) | tests/data/fate
-	$(M)$(TARGET_EXEC) $(TARGET_PATH)/$< -nostdin \
-	-ch_layout "7.1.2" -i $(TARGET_PATH)/tests/data/asynth-44100-10.wav \
-	-c:a aac -aac_pce 1 -aframes 5 -f adts -y $(TARGET_PATH)/$@ 2>/dev/null
-
-tests/data/fate/aac-7_2_3.adts: TAG = GEN
-tests/data/fate/aac-7_2_3.adts: tests/data/asynth-44100-12.wav
-tests/data/fate/aac-7_2_3.adts: ffmpeg$(PROGSSUF)$(EXESUF) | tests/data/fate
-	$(M)$(TARGET_EXEC) $(TARGET_PATH)/$< -nostdin \
-	-ch_layout "7.2.3" -i $(TARGET_PATH)/tests/data/asynth-44100-12.wav \
-	-c:a aac -aac_pce 1 -aframes 5 -f adts -y $(TARGET_PATH)/$@ 2>/dev/null
-
-tests/data/fate/aac-7_1_4.adts: TAG = GEN
-tests/data/fate/aac-7_1_4.adts: tests/data/asynth-44100-12.wav
-tests/data/fate/aac-7_1_4.adts: ffmpeg$(PROGSSUF)$(EXESUF) | tests/data/fate
-	$(M)$(TARGET_EXEC) $(TARGET_PATH)/$< -nostdin \
-	-ch_layout "7.1.4" -i $(TARGET_PATH)/tests/data/asynth-44100-12.wav \
-	-c:a aac -aac_pce 1 -aframes 5 -f adts -y $(TARGET_PATH)/$@ 2>/dev/null
-
-tests/data/fate/aac-9_1_4.adts: TAG = GEN
-tests/data/fate/aac-9_1_4.adts: tests/data/asynth-44100-14.wav
-tests/data/fate/aac-9_1_4.adts: ffmpeg$(PROGSSUF)$(EXESUF) | tests/data/fate
-	$(M)$(TARGET_EXEC) $(TARGET_PATH)/$< -nostdin \
-	-ch_layout "9.1.4" -i $(TARGET_PATH)/tests/data/asynth-44100-14.wav \
-	-c:a aac -aac_pce 1 -aframes 5 -f adts -y $(TARGET_PATH)/$@ 2>/dev/null
-
-tests/data/fate/aac-9_1_6.adts: TAG = GEN
-tests/data/fate/aac-9_1_6.adts: tests/data/asynth-44100-16.wav
-tests/data/fate/aac-9_1_6.adts: ffmpeg$(PROGSSUF)$(EXESUF) | tests/data/fate
-	$(M)$(TARGET_EXEC) $(TARGET_PATH)/$< -nostdin \
-	-ch_layout "9.1.6" -i $(TARGET_PATH)/tests/data/asynth-44100-16.wav \
-	-c:a aac -aac_pce 1 -aframes 5 -f adts -y $(TARGET_PATH)/$@ 2>/dev/null
+FATE_AAC_ENCODE += fate-aac-nmr-abr-encode
+fate-aac-nmr-abr-encode: CMD = enc_dec_pcm mp4 wav s16le $(TARGET_SAMPLES)/audio-reference/luckynight_2ch_44kHz_s16.wav -c:a aac -aac_rc abr -b:a 96k -fflags +bitexact -flags +bitexact
+fate-aac-nmr-abr-encode: CMP = stddev
+fate-aac-nmr-abr-encode: REF = $(SAMPLES)/audio-reference/luckynight_2ch_44kHz_s16.wav
+fate-aac-nmr-abr-encode: CMP_TARGET = 451
+fate-aac-nmr-abr-encode: FUZZ = 15
 
 define FATE_AAC_LAYOUT_TEST
 FATE_AAC_ENCODE_FFPROBE += fate-aac-encode-$(1)
-fate-aac-encode-$(1): tests/data/fate/aac-$(1).adts
-fate-aac-encode-$(1): CMD = probe -show_entries stream=codec_name,channel_layout $(TARGET_PATH)/tests/data/fate/aac-$(1).adts
+fate-aac-encode-$(1): tests/data/asynth-44100-$(3).wav
+fate-aac-encode-$(1): CMD = ffmpeg -auto_conversion_filters -ch_layout "$(2)" -i $(TARGET_PATH)/tests/data/asynth-44100-$(3).wav \
+    -c:a aac -aac_pce 1 -aframes 5 -f adts - | probe -count_packets -show_entries stream=codec_name,channel_layout pipe:
 endef
 
-$(eval $(call FATE_AAC_LAYOUT_TEST,5_1_2))
-$(eval $(call FATE_AAC_LAYOUT_TEST,5_1_4))
-$(eval $(call FATE_AAC_LAYOUT_TEST,7_1_2))
-$(eval $(call FATE_AAC_LAYOUT_TEST,7_1_4))
-$(eval $(call FATE_AAC_LAYOUT_TEST,7_2_3))
-$(eval $(call FATE_AAC_LAYOUT_TEST,9_1_4))
-$(eval $(call FATE_AAC_LAYOUT_TEST,9_1_6))
+$(eval $(call FATE_AAC_LAYOUT_TEST,5_1_2,5.1.2(back),8))
+$(eval $(call FATE_AAC_LAYOUT_TEST,5_1_4,5.1.4,10))
+$(eval $(call FATE_AAC_LAYOUT_TEST,5_1_6,5.1.6,12))
+$(eval $(call FATE_AAC_LAYOUT_TEST,7_1_2,7.1.2,10))
+$(eval $(call FATE_AAC_LAYOUT_TEST,7_1_4,7.1.4,12))
+$(eval $(call FATE_AAC_LAYOUT_TEST,7_1_6,7.1.6,14))
+$(eval $(call FATE_AAC_LAYOUT_TEST,7_2_3,7.2.3,12))
+$(eval $(call FATE_AAC_LAYOUT_TEST,9_1_4,9.1.4,14))
+$(eval $(call FATE_AAC_LAYOUT_TEST,9_1_6,9.1.6,16))
+
+# A near-silent window ahead of an onset: bands under the threshold in quiet
+# must stay uncoded, or no legal scalefactor chain remains and the frame
+# cannot fit the decoder buffer
+FATE_AAC_ENCODE_LAVFI += fate-aac-encode-onset
+fate-aac-encode-onset: CMD = ffmpeg -auto_conversion_filters -f lavfi -i "aevalsrc=1e-10*eq(n\,448)+gte(n\,704)*random(0):d=0.05" \
+    -c:a aac -fflags +bitexact -flags +bitexact -f adts - | probe -count_packets -show_entries stream=codec_name,nb_read_packets pipe:
+
+FATE_AAC_ENCODE_LAVFI += fate-aac-encode-onset-twoloop
+fate-aac-encode-onset-twoloop: CMD = ffmpeg -auto_conversion_filters -f lavfi -i "aevalsrc=1e-10*eq(n\,448)+gte(n\,704)*random(0):d=0.05" \
+    -c:a aac -aac_coder twoloop -b:a 64k -fflags +bitexact -flags +bitexact -f adts - | probe -count_packets -show_entries stream=codec_name,nb_read_packets pipe:
+
+# Strict rate control below what even a silent frame needs
+FATE_AAC_ENCODE_LAVFI += fate-aac-encode-strict-rate
+fate-aac-encode-strict-rate: CMD = ffmpeg -auto_conversion_filters -f lavfi -i "aevalsrc=0:s=48000:d=0.1" \
+    -c:a aac -b:a 1 -bt 0 -fflags +bitexact -flags +bitexact -f adts - | probe -count_packets -show_entries stream=codec_name,nb_read_packets pipe:
 
 FATE_AAC_LATM += fate-aac-latm_000000001180bc60
 fate-aac-latm_000000001180bc60: CMD = pcm -i $(TARGET_SAMPLES)/aac/latm_000000001180bc60.mpg
@@ -347,13 +333,41 @@ FATE_AAC_ALL = $(FATE_AAC-yes) $(FATE_AAC_LATM-yes) $(FATE_AAC_FIXED-yes)
 $(FATE_AAC_ALL): CMP  = oneoff
 $(FATE_AAC_ALL): FUZZ = 2
 
+FATE_AAC_FRAMECRC += fate-aac-sce-in-stereo
+fate-aac-sce-in-stereo: CMD = framecrc -i $(TARGET_SAMPLES)/aac/aac-sce-in-stereo.mp4 -af "pan=mono|c0=c1,aresample" -c:a pcm_f32le
+
+FATE_AAC_FRAMECRC-$(call FRAMECRC, MOV, AAC, ARESAMPLE_FILTER PAN_FILTER PCM_F32LE_ENCODER) += $(FATE_AAC_FRAMECRC)
+
 FATE_AAC_ENCODE-$(call TRANSCODE, AAC, MP4 MOV, WAV_MUXER WAV_DEMUXER PCM_S16LE_DECODER ARESAMPLE_FILTER) += $(FATE_AAC_ENCODE)
 FATE_AAC_ENCODE_FFPROBE-$(call TRANSCODE, AAC, ADTS AAC, WAV_DEMUXER PCM_S16LE_DECODER ARESAMPLE_FILTER) += $(FATE_AAC_ENCODE_FFPROBE)
+FATE_AAC_ENCODE_LAVFI-$(call TRANSCODE, AAC, ADTS AAC, LAVFI_INDEV AEVALSRC_FILTER ARESAMPLE_FILTER PCM_F64LE_DECODER PCM_F64BE_DECODER) += $(FATE_AAC_ENCODE_LAVFI)
 
 FATE_AAC_BSF-$(call FRAMECRC, AAC MATROSKA, AAC, AAC_PARSER AAC_ADTSTOASC_BSF MATROSKA_MUXER) += fate-aac-autobsf-adtstoasc
 
-FATE_SAMPLES_FFMPEG += $(FATE_AAC_ALL) $(FATE_AAC_ENCODE-yes) $(FATE_AAC_BSF-yes)
-FATE_SAMPLES_FFMPEG_FFPROBE += $(FATE_AAC_ENCODE_FFPROBE-yes)
+FATE_AAC_PARSER-$(call FRAMECRC, AAC, AAC, AAC_PARSER CONCAT_PROTOCOL) += fate-aac-adts-splice
+fate-aac-adts-splice: CMD = framecrc "-i concat:$(TARGET_SAMPLES)/audiomatch/tones_afconvert_44100_stereo_aac_lc.adts|$(TARGET_SAMPLES)/audiomatch/tones_afconvert_44100_stereo_aac_he.adts|$(TARGET_SAMPLES)/audiomatch/tones_afconvert_44100_stereo_aac_lc.adts -c:a copy"
 
-fate-aac: $(FATE_AAC_ALL) $(FATE_AAC_ENCODE-yes) $(FATE_AAC_ENCODE_FFPROBE-yes) $(FATE_AAC_BSF-yes)
+# The pre-roll a seek needs, by how long a frame is in output samples.
+FATE_AAC_PREROLL-$(call DEMDEC, MOV, AAC) += fate-aac-seek-preroll-sbr \
+                                            fate-aac-seek-preroll-sbr-no-doubling \
+                                            fate-aac-seek-preroll-frame-length-short \
+                                            fate-aac-seek-preroll-eld
+fate-aac-seek-preroll-sbr: CMD = run ffprobe$(PROGSSUF)$(EXESUF) -show_entries stream=profile,sample_rate,seek_preroll -print_format compact $(TARGET_SAMPLES)/aac/al_sbr_cm_48_2.mp4
+fate-aac-seek-preroll-sbr-no-doubling: CMD = run ffprobe$(PROGSSUF)$(EXESUF) -show_entries stream=profile,sample_rate,seek_preroll -print_format compact $(TARGET_SAMPLES)/aac/al_sbr_sr_48_2_fsaac48.mp4
+fate-aac-seek-preroll-frame-length-short: CMD = run ffprobe$(PROGSSUF)$(EXESUF) -show_entries stream=profile,sample_rate,seek_preroll -print_format compact $(TARGET_SAMPLES)/aac/al04sf_48.mp4
+fate-aac-seek-preroll-eld: CMD = run ffprobe$(PROGSSUF)$(EXESUF) -show_entries stream=profile,sample_rate,seek_preroll -print_format compact $(TARGET_SAMPLES)/aac/er_eld2000np_48_ep0.mp4
+
+# Where a seek lands, by the same lengths of frame.
+FATE_AAC_PREROLL-$(call DEMDEC, MOV, AAC) += fate-aac-seek-landing-sbr \
+                                            fate-aac-seek-landing-frame-length-short
+fate-aac-seek-landing-sbr: CMD = run ffprobe$(PROGSSUF)$(EXESUF) -read_intervals 10.3%+\#3 -show_entries packet=pts,dts,duration -print_format compact $(TARGET_SAMPLES)/aac/al_sbr_cm_48_2.mp4
+fate-aac-seek-landing-frame-length-short: CMD = run ffprobe$(PROGSSUF)$(EXESUF) -read_intervals 3.3%+\#3 -show_entries packet=pts,dts,duration -print_format compact $(TARGET_SAMPLES)/aac/al04sf_48.mp4
+
+FATE_SAMPLES_FFPROBE += $(FATE_AAC_PREROLL-yes)
+
+FATE_SAMPLES_FFMPEG += $(FATE_AAC_ALL) $(FATE_AAC_FRAMECRC-yes) $(FATE_AAC_ENCODE-yes) $(FATE_AAC_BSF-yes) $(FATE_AAC_PARSER-yes)
+FATE_SAMPLES_FFMPEG_FFPROBE += $(FATE_AAC_ENCODE_FFPROBE-yes)
+FATE_FFMPEG_FFPROBE += $(FATE_AAC_ENCODE_LAVFI-yes)
+
+fate-aac: $(FATE_AAC_ALL) $(FATE_AAC_PREROLL-yes) $(FATE_AAC_FRAMECRC-yes) $(FATE_AAC_ENCODE-yes) $(FATE_AAC_ENCODE_FFPROBE-yes) $(FATE_AAC_ENCODE_LAVFI-yes) $(FATE_AAC_BSF-yes) $(FATE_AAC_PARSER-yes)
 fate-aac-latm: $(FATE_AAC_LATM-yes)

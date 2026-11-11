@@ -623,7 +623,7 @@ static const AVCodecDescriptor codec_descriptors[] = {
         .id        = AV_CODEC_ID_AVS,
         .type      = AVMEDIA_TYPE_VIDEO,
         .name      = "avs",
-        .long_name = NULL_IF_CONFIG_SMALL("AVS (Audio Video Standard) video"),
+        .long_name = NULL_IF_CONFIG_SMALL("Argonaut Games Creature Shock video"),
         .props     = AV_CODEC_PROP_LOSSY,
     },
     {
@@ -658,8 +658,9 @@ static const AVCodecDescriptor codec_descriptors[] = {
         .id        = AV_CODEC_ID_CAVS,
         .type      = AVMEDIA_TYPE_VIDEO,
         .name      = "cavs",
-        .long_name = NULL_IF_CONFIG_SMALL("Chinese AVS (Audio Video Standard) (AVS1-P2, JiZhun profile)"),
+        .long_name = NULL_IF_CONFIG_SMALL("Chinese AVS (Audio Video Standard) (AVS1-P2/P16)"),
         .props     = AV_CODEC_PROP_LOSSY | AV_CODEC_PROP_REORDER,
+        .profiles  = NULL_IF_CONFIG_SMALL(ff_cavs_profiles),
     },
     {
         .id        = AV_CODEC_ID_JPEG2000,
@@ -2001,6 +2002,21 @@ static const AVCodecDescriptor codec_descriptors[] = {
         .profiles  = NULL_IF_CONFIG_SMALL(ff_astc_profiles),
         .mime_types= MT("image/astc"),
     },
+    {
+        .id        = AV_CODEC_ID_RW2,
+        .type      = AVMEDIA_TYPE_VIDEO,
+        .name      = "rw2",
+        .long_name = NULL_IF_CONFIG_SMALL("Panasonic RW2"),
+        .props     = AV_CODEC_PROP_INTRA_ONLY | AV_CODEC_PROP_LOSSLESS,
+        .mime_types= MT("image/x-panasonic-rw2"),
+    },
+    {
+	.id        = AV_CODEC_ID_IMM6,
+        .type      = AVMEDIA_TYPE_VIDEO,
+        .name      = "imm6",
+        .long_name = NULL_IF_CONFIG_SMALL("Infinity IMM6"),
+        .props     = AV_CODEC_PROP_LOSSY | AV_CODEC_PROP_REORDER,
+    },
 
     /* various PCM "codecs" */
     {
@@ -2260,6 +2276,13 @@ static const AVCodecDescriptor codec_descriptors[] = {
         .type      = AVMEDIA_TYPE_AUDIO,
         .name      = "pcm_dvda",
         .long_name = NULL_IF_CONFIG_SMALL("PCM signed 16|20|24-bit big-endian for DVD-Audio media"),
+        .props     = AV_CODEC_PROP_INTRA_ONLY | AV_CODEC_PROP_LOSSLESS,
+    },
+    {
+        .id        = AV_CODEC_ID_PCM_PAMF,
+        .type      = AVMEDIA_TYPE_AUDIO,
+        .name      = "pcm_pamf",
+        .long_name = NULL_IF_CONFIG_SMALL("PCM signed 16|20|24-bit big-endian for PAMF streams"),
         .props     = AV_CODEC_PROP_INTRA_ONLY | AV_CODEC_PROP_LOSSLESS,
     },
 
@@ -2696,6 +2719,20 @@ static const AVCodecDescriptor codec_descriptors[] = {
         .type      = AVMEDIA_TYPE_AUDIO,
         .name      = "adpcm_ima_escape",
         .long_name = NULL_IF_CONFIG_SMALL("ADPCM IMA Acorn Escape"),
+        .props     = AV_CODEC_PROP_INTRA_ONLY | AV_CODEC_PROP_LOSSY,
+    },
+    {
+        .id        = AV_CODEC_ID_ADPCM_RHETOREX,
+        .type      = AVMEDIA_TYPE_AUDIO,
+        .name      = "adpcm_rhetorex",
+        .long_name = NULL_IF_CONFIG_SMALL("ADPCM Rhetorex"),
+        .props     = AV_CODEC_PROP_INTRA_ONLY | AV_CODEC_PROP_LOSSY,
+    },
+    {
+        .id        = AV_CODEC_ID_ADPCM_IMA_CITRIX,
+        .type      = AVMEDIA_TYPE_AUDIO,
+        .name      = "adpcm_citrix",
+        .long_name = NULL_IF_CONFIG_SMALL("ADPCM IMA Citrix"),
         .props     = AV_CODEC_PROP_INTRA_ONLY | AV_CODEC_PROP_LOSSY,
     },
 
@@ -3446,6 +3483,7 @@ static const AVCodecDescriptor codec_descriptors[] = {
         .name      = "mpegh_3d_audio",
         .long_name = NULL_IF_CONFIG_SMALL("MPEG-H 3D Audio"),
         .props     = AV_CODEC_PROP_LOSSY,
+        .profiles  = NULL_IF_CONFIG_SMALL(ff_mpegh_3da_profiles),
     },
     {
         .id        = AV_CODEC_ID_SIREN,

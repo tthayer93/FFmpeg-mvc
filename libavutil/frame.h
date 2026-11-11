@@ -307,6 +307,13 @@ enum AVFrameSideDataType {
     AV_FRAME_DATA_DOWNMIX_MATRIX,
 
     /**
+     * Parameters describing how to combine this gain map with its base image
+     * to form an alternate rendition. The payload is the AVGainMapParams
+     * struct defined in libavutil/gain_map.h.
+     */
+    AV_FRAME_DATA_GAIN_MAP_PARAMS,
+
+    /**
      * Per-frame subtitle depth offsets for multiview (stereoscopic) video, as
      * carried by the BD3D offset-metadata (OFMD) SEI of the dependent view.
      *
@@ -765,6 +772,9 @@ typedef struct AVFrame {
      * MPEG vs JPEG YUV range.
      * - encoding: Set by user
      * - decoding: Set by libavcodec
+     *
+     * @note This field is ignored for floating point pixel formats, which
+     *       are always full range. See AVColorRange.
      */
     enum AVColorRange color_range;
 
