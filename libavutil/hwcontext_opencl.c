@@ -197,6 +197,10 @@ typedef struct OpenCLFramesContext {
     ID3D11Texture2D         *sync_tex_2x2;
     ID3D11Asynchronous      *sync_point;
 #endif
+#if HAVE_OPENCL_D3D11
+#define OPENCL_D3D11_MAX_MAPPED_FRAMES 256
+    ID3D11Texture2D        **mapped_textures;
+#endif
 } OpenCLFramesContext;
 
 
@@ -1794,7 +1798,9 @@ fail:
     av_free(desc);
     return NULL;
 }
-
+#if HAVE_OPENCL_D3D11
+    av_freep(&priv->mapped_textures);
+#endif
 static int opencl_frames_init_command_queue(AVHWFramesContext *hwfc)
 {
     OpenCLFramesContext    *priv = hwfc->hwctx;
@@ -2734,7 +2740,6 @@ static void opencl_unmap_from_d3d11_qsv(AVHWFramesContext *dst_fc,
     OpenCLFramesContext *frames_priv = dst_fc->hwctx;
     cl_event event;
     cl_int cle;
-    int p;
 
     av_log(dst_fc, AV_LOG_DEBUG, "Unmap QSV surface from OpenCL.\n");
 
@@ -2747,18 +2752,6 @@ static void opencl_unmap_from_d3d11_qsv(AVHWFramesContext *dst_fc,
     }
 
     opencl_wait_events(dst_fc, &event, 1);
-
-    if (!frames_priv->nb_mapped_frames && !frames_priv->mapped_frames) {
-        for (p = 0; p < desc->nb_planes; p++) {
-            cle = clReleaseMemObject(desc->planes[p]);
-            if (cle != CL_SUCCESS) {
-                av_log(dst_fc, AV_LOG_ERROR, "Failed to release CL "
-                       "image of plane %d of D3D11 texture: %d\n",
-                       p, cle);
-            }
-        }
-        av_freep(&desc);
-    }
 }
 
 static int opencl_map_from_d3d11_qsv(AVHWFramesContext *dst_fc, AVFrame *dst,
@@ -2819,18 +2812,33 @@ static int opencl_map_from_d3d11_qsv(AVHWFramesContext *dst_fc, AVFrame *dst,
     }
     av_log(dst_fc, AV_LOG_DEBUG, "Map QSV surface %#llx to OpenCL.\n", (uintptr_t)pair);
 
-    if (derived_frames && !frames_priv->mapped_frames) {
-        frames_priv->nb_mapped_frames = src_fc->initial_pool_size;
+    if (!frames_priv->mapped_frames) {
+        if (derived_frames) {
+            frames_priv->nb_mapped_frames = src_fc->initial_pool_size;
+            frames_priv->mapped_frames =
+                av_calloc(frames_priv->nb_mapped_frames,
+                          sizeof(*frames_priv->mapped_frames));
+            if (!frames_priv->mapped_frames)
+                return AVERROR(ENOMEM);
 
-        frames_priv->mapped_frames =
-            av_calloc(frames_priv->nb_mapped_frames,
-                      sizeof(*frames_priv->mapped_frames));
-        if (!frames_priv->mapped_frames)
-            return AVERROR(ENOMEM);
-
-        for (i = 0; i < frames_priv->nb_mapped_frames; i++) {
-            desc = &frames_priv->mapped_frames[i];
-            desc->nb_planes = nb_planes;
+            for (i = 0; i < frames_priv->nb_mapped_frames; i++) {
+                desc = &frames_priv->mapped_frames[i];
+                desc->nb_planes = nb_planes;
+            }
+        } else {
+            frames_priv->nb_mapped_frames = 0;
+            frames_priv->mapped_frames =
+                av_calloc(OPENCL_D3D11_MAX_MAPPED_FRAMES,
+                          sizeof(*frames_priv->mapped_frames));
+            frames_priv->mapped_textures =
+                av_calloc(OPENCL_D3D11_MAX_MAPPED_FRAMES,
+                          sizeof(*frames_priv->mapped_textures));
+            if (!frames_priv->mapped_frames ||
+                !frames_priv->mapped_textures) {
+                av_freep(&frames_priv->mapped_frames);
+                av_freep(&frames_priv->mapped_textures);
+                return AVERROR(ENOMEM);
+            }
         }
     }
 
@@ -2850,13 +2858,25 @@ static int opencl_map_from_d3d11_qsv(AVHWFramesContext *dst_fc, AVFrame *dst,
     if (derived_frames)
         desc = &frames_priv->mapped_frames[index];
     else {
-        desc = av_mallocz(sizeof(*desc));
-        if (!desc) {
-            err = AVERROR(ENOMEM);
-            goto fail2;
+        for (i = 0; i < frames_priv->nb_mapped_frames; i++) {
+            if (frames_priv->mapped_textures[i] == tex)
+                break;
         }
-        desc->nb_planes = nb_planes;
+        if (i < frames_priv->nb_mapped_frames)
+            desc = &frames_priv->mapped_frames[i];
+        else {
+            if (frames_priv->nb_mapped_frames >= OPENCL_D3D11_MAX_MAPPED_FRAMES) {
+                av_log(dst_fc, AV_LOG_ERROR, "QSV D3D11 texture mapping slot "
+                       "is full (%d entries).\n", OPENCL_D3D11_MAX_MAPPED_FRAMES);
+                err = AVERROR(ENOSPC);
+                goto fail2;
+            }
+            desc = &frames_priv->mapped_frames[frames_priv->nb_mapped_frames];
+            desc->nb_planes = nb_planes;
+            frames_priv->mapped_textures[frames_priv->nb_mapped_frames++] = tex;
+        }
     }
+
     // deferred clCreateFromD3D11Texture2DKHR() for low startup latency.
     for (p = 0; p < desc->nb_planes; p++) {
         UINT subresource = derived_frames ? (2 * index + p) : p;
@@ -2912,23 +2932,16 @@ fail:
     if (cle == CL_SUCCESS)
         opencl_wait_events(dst_fc, &event, 1);
 fail2:
-    if (derived_frames) {
-        for (i = 0; i < frames_priv->nb_mapped_frames; i++) {
-            desc = &frames_priv->mapped_frames[i];
-            for (p = 0; p < desc->nb_planes; p++) {
-                if (desc->planes[p])
-                    clReleaseMemObject(desc->planes[p]);
-            }
-        }
-        av_freep(&frames_priv->mapped_frames);
-        frames_priv->nb_mapped_frames = 0;
-    } else {
+    for (i = 0; i < frames_priv->nb_mapped_frames; i++) {
+        desc = &frames_priv->mapped_frames[i];
         for (p = 0; p < desc->nb_planes; p++) {
             if (desc->planes[p])
                 clReleaseMemObject(desc->planes[p]);
         }
-        av_freep(&desc);
     }
+    av_freep(&frames_priv->mapped_frames);
+    av_freep(&frames_priv->mapped_textures);
+    frames_priv->nb_mapped_frames = 0;
     memset(dst->data, 0, sizeof(dst->data));
     return err;
 }
