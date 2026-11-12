@@ -2981,7 +2981,7 @@ static int opencl_map_from_d3d11(AVHWFramesContext *dst_fc, AVFrame *dst,
     cl_event event;
     cl_mem_flags cl_flags;
     cl_int cle;
-    cl_mem plane_uint;
+    cl_mem plane_uint = NULL;
     const cl_mem *mem_objs;
     cl_uint num_objs;
     int err, i, p, nb_planes = 2;
