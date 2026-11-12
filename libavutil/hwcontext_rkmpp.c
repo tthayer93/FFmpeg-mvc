@@ -411,7 +411,8 @@ static int rkmpp_map_frame(AVHWFramesContext *hwfc,
 
     if (desc->drm_desc.objects[0].format_modifier != DRM_FORMAT_MOD_LINEAR) {
         av_log(hwfc, AV_LOG_ERROR, "Transfer non-linear DRM_PRIME frame is not supported!\n");
-        return AVERROR(ENOSYS);
+        err = AVERROR(ENOSYS);
+        goto fail;
     }
 
     av_assert0(desc->drm_desc.nb_objects <= AV_DRM_MAX_PLANES);
@@ -564,7 +565,9 @@ static int rkmpp_map_from(AVHWFramesContext *hwfc, AVFrame *dst,
 {
     int err;
 
-    if (hwfc->sw_format != dst->format)
+    if (dst->format == AV_PIX_FMT_NONE)
+        dst->format = hwfc->sw_format;
+    else if (hwfc->sw_format != dst->format)
         return AVERROR(ENOSYS);
 
     err = rkmpp_map_frame(hwfc, dst, src, flags);
