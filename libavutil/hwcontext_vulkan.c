@@ -3930,7 +3930,7 @@ fallback:
         err = prepare_frame(hwfc, &fp->compute_exec,
                             (AVVkFrame *)dst->data[0], PREP_MODE_EXTERNAL_IMPORT);
         if (err)
-            return err;
+            goto fail;
     }
 
     return 0;
