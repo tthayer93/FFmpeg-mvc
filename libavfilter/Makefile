@@ -227,7 +227,7 @@ OBJS-$(CONFIG_BWDIF_D3D11_FILTER)            += vf_yadif_d3d11.o yadif_common.o 
 OBJS-$(CONFIG_BWDIF_CUDA_FILTER)             += vf_bwdif_cuda.o vf_bwdif_cuda.ptx.o \
                                                 yadif_common.o cuda/load_helper.o
 OBJS-$(CONFIG_BWDIF_OPENCL_FILTER)           += vf_bwdif_opencl.o opencl.o opencl/bwdif.o \
-                                                yadif_common.o
+                                                yadif_common.o cuda/load_helper.o
 OBJS-$(CONFIG_BWDIF_VIDEOTOOLBOX_FILTER)     += vf_bwdif_videotoolbox.o \
                                                 metal/vf_bwdif_videotoolbox.metallib.o \
                                                 metal/utils.o \
