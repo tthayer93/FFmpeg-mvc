@@ -2107,8 +2107,10 @@ static av_cold int nvenc_alloc_surface(AVCodecContext *avctx, int idx)
     nv_status = p_nvenc->nvEncCreateBitstreamBuffer(ctx->nvencoder, &allocOut);
     if (nv_status != NV_ENC_SUCCESS) {
         int err = nvenc_print_error(avctx, nv_status, "CreateBitstreamBuffer failed");
-        if (avctx->pix_fmt != AV_PIX_FMT_CUDA && avctx->pix_fmt != AV_PIX_FMT_D3D11)
+        if (avctx->pix_fmt != AV_PIX_FMT_CUDA && avctx->pix_fmt != AV_PIX_FMT_D3D11) {
             p_nvenc->nvEncDestroyInputBuffer(ctx->nvencoder, ctx->surfaces[idx].input_surface);
+            ctx->surfaces[idx].input_surface = NULL;
+        }
         av_frame_free(&ctx->surfaces[idx].in_ref);
         return err;
     }
@@ -2242,10 +2244,11 @@ av_cold int ff_nvenc_encode_close(AVCodecContext *avctx)
 
     if (ctx->surfaces) {
         for (i = 0; i < ctx->nb_surfaces; ++i) {
-            if (avctx->pix_fmt != AV_PIX_FMT_CUDA && avctx->pix_fmt != AV_PIX_FMT_D3D11)
+            if (avctx->pix_fmt != AV_PIX_FMT_CUDA && avctx->pix_fmt != AV_PIX_FMT_D3D11 && ctx->surfaces[i].input_surface)
                 p_nvenc->nvEncDestroyInputBuffer(ctx->nvencoder, ctx->surfaces[i].input_surface);
             av_frame_free(&ctx->surfaces[i].in_ref);
-            p_nvenc->nvEncDestroyBitstreamBuffer(ctx->nvencoder, ctx->surfaces[i].output_surface);
+            if (ctx->surfaces[i].output_surface)
+                p_nvenc->nvEncDestroyBitstreamBuffer(ctx->nvencoder, ctx->surfaces[i].output_surface);
         }
     }
     av_freep(&ctx->surfaces);
@@ -2866,6 +2869,41 @@ static int output_ready(AVCodecContext *avctx, int flush)
     return (nb_ready > 0) && (nb_ready + nb_pending >= ctx->async_depth);
 }
 
+/* hevc_nvenc fails nvEncLockBitstream() with NV_ENC_ERR_OUT_OF_MEMORY when
+ * the SEI of a picture are too large. With driver 615.78.08 at 1080p a single
+ * payload of up to 898 bytes passes on an IDR picture, 672 when it is all
+ * zero bytes; stay well below that. */
+#define NVENC_HEVC_SEI_MAX_PAYLOAD 512
+
+/* Drop the SEI that would take the total payload size of the picture above
+ * NVENC_HEVC_SEI_MAX_PAYLOAD and return the new count. */
+static int nvenc_hevc_sei_size_check(AVCodecContext *avctx, int count)
+{
+    NvencContext *ctx = avctx->priv_data;
+    size_t total = 0;
+    int kept = 0;
+
+    if (avctx->codec->id != AV_CODEC_ID_HEVC)
+        return count;
+
+    for (int i = 0; i < count; i++) {
+        NV_ENC_SEI_PAYLOAD *sei = &ctx->sei_data[i];
+
+        if (total + sei->payloadSize <= NVENC_HEVC_SEI_MAX_PAYLOAD) {
+            total += sei->payloadSize;
+            ctx->sei_data[kept++] = *sei;
+            continue;
+        }
+        av_log(avctx, ctx->sei_size_warned ? AV_LOG_VERBOSE : AV_LOG_WARNING,
+               "Not writing a %"PRIu32"-byte SEI of type %"PRIu32": hevc_nvenc "
+               "fails on more than about %d bytes of SEI per picture.\n",
+               sei->payloadSize, sei->payloadType, NVENC_HEVC_SEI_MAX_PAYLOAD);
+        ctx->sei_size_warned = 1;
+        av_freep(&sei->payload);
+    }
+    return kept;
+}
+
 static int prepare_sei_data_array(AVCodecContext *avctx, const AVFrame *frame)
 {
     NvencContext *ctx = avctx->priv_data;
@@ -3017,7 +3055,7 @@ static int prepare_sei_data_array(AVCodecContext *avctx, const AVFrame *frame)
 #endif
 
     if (!ctx->udu_sei)
-        return sei_count;
+        return nvenc_hevc_sei_size_check(avctx, sei_count);
 
     for (i = 0; i < frame->nb_side_data; i++) {
         AVFrameSideData *side_data = frame->side_data[i];
@@ -3047,7 +3085,7 @@ static int prepare_sei_data_array(AVCodecContext *avctx, const AVFrame *frame)
         }
     }
 
-    return sei_count;
+    return nvenc_hevc_sei_size_check(avctx, sei_count);
 
 error:
     for (i = 0; i < sei_count; i++)
