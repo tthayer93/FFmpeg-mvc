@@ -190,10 +190,9 @@ typedef struct OpenCLFramesContext {
     // For mapping APIs which have separate creation and acquire/release
     // steps, this stores the OpenCL memory objects corresponding to each
     // frame.
-    int                   nb_mapped_frames;
-    AVOpenCLFrameDescriptor *mapped_frames;
-#endif
 #if HAVE_OPENCL_D3D11
+#define OPENCL_D3D11_MAX_MAPPED_FRAMES 256
+    ID3D11Texture2D        **mapped_textures;
     ID3D11Texture2D         *sync_tex_2x2;
     ID3D11Asynchronous      *sync_point;
 #endif
@@ -202,7 +201,6 @@ typedef struct OpenCLFramesContext {
     ID3D11Texture2D        **mapped_textures;
 #endif
 } OpenCLFramesContext;
-
 
 static void CL_CALLBACK opencl_error_callback(const char *errinfo,
                                               const void *private_info,
@@ -1852,10 +1850,9 @@ static void opencl_frames_uninit(AVHWFramesContext *hwfc)
                        i, p, cle);
             }
         }
-    }
-    av_freep(&priv->mapped_frames);
 #endif
 #if HAVE_OPENCL_D3D11
+    av_freep(&priv->mapped_textures);
     if (priv->sync_tex_2x2) {
         ID3D11Texture2D_Release(priv->sync_tex_2x2);
         priv->sync_tex_2x2 = NULL;
@@ -1867,7 +1864,6 @@ static void opencl_frames_uninit(AVHWFramesContext *hwfc)
 #endif
     if (priv->command_queue) {
         cle = clReleaseCommandQueue(priv->command_queue);
-        if (cle != CL_SUCCESS) {
             av_log(hwfc, AV_LOG_ERROR, "Failed to release frame "
                    "command queue: %d.\n", cle);
         }
@@ -2754,17 +2750,14 @@ static void opencl_unmap_from_d3d11_qsv(AVHWFramesContext *dst_fc,
     opencl_wait_events(dst_fc, &event, 1);
 }
 
-static int opencl_map_from_d3d11_qsv(AVHWFramesContext *dst_fc, AVFrame *dst,
-                                     const AVFrame *src, int flags)
-{
     AVHWFramesContext *src_fc =
         (AVHWFramesContext*)src->hw_frames_ctx->data;
+    AVQSVFramesContext     *src_hwctx = src_fc->hwctx;
     AVHWDeviceContext *src_dev = src_fc->device_ctx;
     FFHWDeviceContext *fsrc_dev = (FFHWDeviceContext*)src_dev;
     AVHWDeviceContext *src_subdev =
         (AVHWDeviceContext*)fsrc_dev->source_device->data;
     AVD3D11VADeviceContext *device_hwctx = src_subdev->hwctx;
-    AVQSVFramesContext     *src_hwctx = src_fc->hwctx;
     OpenCLDeviceContext  *device_priv = dst_fc->device_ctx->hwctx;
     OpenCLFramesContext  *frames_priv = dst_fc->hwctx;
     AVOpenCLDeviceContext    *dst_dev = &device_priv->p;
