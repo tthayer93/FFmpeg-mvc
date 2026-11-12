@@ -624,6 +624,7 @@ static int vkfmt_from_pixfmt2(AVHWDeviceContext *dev_ctx, enum AVPixelFormat p,
                 basics_secondary = (feats_secondary & basic_flags) == basic_flags;
                 storage_secondary = !!(feats_secondary & VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT);
             } else {
+                feats_secondary = feats_primary;
                 basics_secondary = basics_primary;
                 storage_secondary = storage_primary;
             }
@@ -2688,8 +2689,10 @@ static int switch_layout(AVHWFramesContext *hwfc, FFVkExecPool *ectx,
     cmd_buf = exec->buf;
     ff_vk_exec_start(&p->vkctx, exec);
 
+    /* NONE does not block any stage, so this queue's layout transition
+     * races a decode write submitted on the video queue. */
     err = ff_vk_exec_add_dep_frame(&p->vkctx, exec, &tmp_frame,
-                                   VK_PIPELINE_STAGE_2_NONE,
+                                   VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
     if (err < 0)
         return err;
@@ -3098,6 +3101,7 @@ static int vulkan_frames_init(AVHWFramesContext *hwfc)
     VkImageUsageFlags supported_usage;
     FFVulkanFunctions *vk = &p->vkctx.vkfn;
     const struct FFVkFormatEntry *fmt;
+    const AVPixFmtDescriptor *desc;
     int disable_multiplane = p->disable_multiplane ||
                              (hwctx->flags & AV_VK_FRAME_FLAG_DISABLE_MULTIPLANE);
     int is_lone_dpb = ((hwctx->usage & VK_IMAGE_USAGE_VIDEO_ENCODE_DPB_BIT_KHR) ||
@@ -3120,6 +3124,12 @@ static int vulkan_frames_init(AVHWFramesContext *hwfc)
                av_get_pix_fmt_name(hwfc->sw_format));
         return AVERROR(EINVAL);
     }
+
+    /* _420 and _422 formats need even dimensions, use one image per plane */
+    desc = av_pix_fmt_desc_get(hwfc->sw_format);
+    if ((hwfc->width  & ((1 << desc->log2_chroma_w) - 1)) ||
+        (hwfc->height & ((1 << desc->log2_chroma_h) - 1)))
+        disable_multiplane = 1;
 
     if (hwctx->format[0] != VK_FORMAT_UNDEFINED) {
         if (hwctx->format[0] != fmt->vkf) {
@@ -3874,8 +3884,13 @@ static int vulkan_map_from_drm_frame_sync(AVHWFramesContext *hwfc, AVFrame *dst,
         if (err < 0)
             goto fail;
 
+        /* The imported DRM sync file only orders the external data, not this
+         * frame's earlier use by FFmpeg. The frame may be recycled from the
+         * pool while it is still in flight (and last used on another queue),
+         * so the map waits on its last signal, at ALL_COMMANDS, to be ordered
+         * after that previous use. */
         err = ff_vk_exec_add_dep_frame(&p->vkctx, exec, dst,
-                                       VK_PIPELINE_STAGE_2_NONE,
+                                       VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                        VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
         if (err < 0)
             goto fail;
@@ -4723,6 +4738,15 @@ static int copy_buffer_data(AVHWFramesContext *hwfc, AVBufferRef *buf,
     int err;
     VulkanDevicePriv *p = hwfc->device_ctx->hwctx;
     FFVkBuffer *vkbuf = (FFVkBuffer *)buf->data;
+    int bytewidth[AV_NUM_DATA_POINTERS];
+
+    /* Copy only the visible bytes of each row, the last row of a plane
+     * does not have to extend to the full linesize. */
+    for (int i = 0; i < planes; i++) {
+        bytewidth[i] = av_image_get_linesize(swf->format, swf->width, i);
+        if (bytewidth[i] < 0)
+            return bytewidth[i];
+    }
 
     if (upload) {
         for (int i = 0; i < planes; i++)
@@ -4730,7 +4754,7 @@ static int copy_buffer_data(AVHWFramesContext *hwfc, AVBufferRef *buf,
                                 region[i].bufferRowLength,
                                 swf->data[i],
                                 swf->linesize[i],
-                                swf->linesize[i],
+                                bytewidth[i],
                                 region[i].imageExtent.height);
 
         err = ff_vk_flush_buffer(&p->vkctx, vkbuf, 0, VK_WHOLE_SIZE, 1);
@@ -4752,7 +4776,7 @@ static int copy_buffer_data(AVHWFramesContext *hwfc, AVBufferRef *buf,
                                 swf->linesize[i],
                                 vkbuf->mapped_mem + region[i].bufferOffset,
                                 region[i].bufferRowLength,
-                                swf->linesize[i],
+                                bytewidth[i],
                                 region[i].imageExtent.height);
     }
 
