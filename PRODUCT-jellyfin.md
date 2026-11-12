@@ -1125,3 +1125,37 @@ verbatim - one attribution and one test inconsistency - on the record.
   recorded, and the entries carried elsewhere stay carried elsewhere. This
   build supersedes **`n8.1.3-mvc10-jf1`**.
 
+- **The queue re-sync onto their `v8.1.3-2` (2026-11-12).** The wave the previous
+  entry deferred has now been done: this branch carries their patch queue at
+  **`v8.1.3-2`**, pinned to the tree it was read from, and the suffix of this
+  name mirrors their release suffix verbatim, so this ship is `-jf2` while their
+  build is at `-2`. What moved is the queue and nothing else: the content of the
+  line is the content already certified at `n8.1.3-mvc11-jf1`, and the work here
+  is the honest carrying of someone else's fixes. Six entries arrive that this
+  tree had never seen - the VideoToolbox closed-caption SEI correction, the
+  unaligned SSE2 scene- SAD input fix, the `int64_t` presentation-timestamp
+  widening in the VAAPI deinterlacer, the frame-threading data-race cure that
+  gives the hardware accelerators a post-decode hook, the oversized A53 caption
+  SEI skip in the QSV H.264 encoder, and the last-frame release on filter-graph
+  teardown. Eight entries this tree already carried are brought forward to what
+  they became in their newer release. Each entry is one commit, one subject that
+  names it, and one provenance line that names the release it came from, so any
+  single fix can be traced back to a byte of their corpus without anyone's
+  memory. The queue directory itself is their directory: every file in it is the
+  blob they shipped, hash-verified before it was added, and the series list is
+  theirs byte for byte.
+- **Compatibility and queue posture (2026-11-12).** Compatible-with:
+  **`jellyfin-ffmpeg v8.1.3-2`**. Of their 106 queue entries this build carries
+  105 byte-exact plus their series file; the one it does not carry is recorded
+  below and is not carried anywhere. Landing a newer queue onto a fork is not a
+  clean application and this wave says so plainly: the entries that interact with
+  our own hardware work, or with each other, had to be carried hunk by hunk with
+  the tree as the arbiter, and every line that entered this tree is verbatim text
+  of the pinned corpus - a gate refuses the commit otherwise. Nothing here was
+  written by us, hand-edited, or invented.
+- **Refusals and supersession (2026-11-12).** The standing licence refusals are
+  unchanged and this re-sync did not revisit them: entry `0054`, the AC-4 decoder
+  for ATSC 3.0, stays refused on licence for the reason already recorded, which
+  is the single queue file this tree does not carry. This build supersedes
+  **`n8.1.3-mvc11-jf1`**.
+
